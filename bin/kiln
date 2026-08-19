@@ -144,9 +144,16 @@ cmd_run() {
 }
 
 host_reachable() {
-  # A VNC client will connect to whatever the engine published; check that.
-  (exec 3<>"/dev/tcp/127.0.0.1/$VNC_PORT") 2>/dev/null && exec 3<&- && return 0
-  return 1
+  # A VNC client connects to whatever the engine published; check that.
+  #
+  # NOT bash's /dev/tcp: macOS ships bash 3.2 built without net-redirections, so
+  # there it fails on every port, open or not — a check that always says "no" is
+  # worse than no check.  nc is present on macOS and on the distros this runs on.
+  if command -v nc >/dev/null; then
+    nc -z -w 2 127.0.0.1 "$VNC_PORT" >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$VNC_PORT") 2>/dev/null && exec 3<&-
+  fi
 }
 
 cmd_address() {

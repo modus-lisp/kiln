@@ -17,8 +17,8 @@ cram            master  5f6f00adaf8112e59fbe5d59ac16ccaa74347b45
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
 folio           master  863aedfb4c00b15fc4e713cf9dc0ef90e3cac5c5
 gesso           master  3d085eb2ec7c9c6569f0449d09ca89cafc457b4f
-glass           master  43d659501635416e8afec81ccd7353b88fa8ae10
-loom            master  48977d30f1c34684fc77f2c6795de1291966c7c7
+glass           master  42a4314462d6efe43232d3fbcc33275dfa4df1fe
+loom            master  4f637b27151274a90f9c35f420a01d4108b64d80
 mill            master  2057165da34dea464f8e3ec8ace2446d3e05a30a
 modus           main    501f2ee2069e98210627e53ce487f23eabca9032
 natrium         master  974ce77bd10d58f5c9ae45ac036fb8bff2812133
@@ -39,5 +39,5 @@ warren          master  335026c9ab8fe3199547c4fc376fa44011bc3497
 webp-pure       master  0b9bd904859b98bff3c9356a40757d3253fdc36f
 webrtc-data     main    73f5e7351e718e6633dffaea1a28372a3894fdb2
 webrtc-media    master  df0f3e2b218f9d19b3a0d4e210d0ec7b37d08d45
-weft            master  01529a7da335df4c14012620b2125cc914faba83
+weft            master  5b9e222979a9bf7375812835cc9db8f304404f56
 zstd-pure       master  b49ca668263f66da96f5afe784f6a3f6e9fb8c4e

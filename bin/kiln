@@ -180,11 +180,22 @@ cmd_stop() {
   true
 }
 
+# Apple's CLI spells this `image list`; docker and podman spell it `images`.
+image_built() {
+  local out
+  if [[ $ENGINE == container ]]; then
+    out=$(container image list 2>/dev/null)
+  else
+    out=$("$ENGINE" images 2>/dev/null)
+  fi
+  grep -q "${IMAGE%%:*}" <<<"$out"
+}
+
 cmd_status() {
   ensure_engine_up
   printf 'engine     %s\n' "$ENGINE"
   printf 'image      %s%s\n' "$IMAGE" \
-    "$("$ENGINE" images 2>/dev/null | grep -q "${IMAGE%%:*}" && echo '  (built)' || echo '  (not built — run: kiln build)')"
+    "$(image_built && echo '  (built)' || echo '  (not built — run: kiln build)')"
   printf 'container  %s  %s\n' "$NAME" "$(running && echo running || { exists && echo stopped || echo absent; })"
   printf 'display    :%s  vnc %s  audio %s  control %s\n' "$DISPLAY_N" "$VNC_PORT" "$AUDIO_PORT" "$CTRL_PORT"
 }

@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# kiln — build and run the modus-lisp desktop image.
+#
+# Speaks to whichever container engine is present: Apple's `container` (the
+# default on Apple silicon), docker, or podman.  Force one with KILN_ENGINE.
+#
+#   kiln build            build the image (first run: coffee)
+#   kiln run              start the desktop, print the VNC address
+#   kiln vnc              start it if needed, then open a VNC client
+#   kiln stop             stop and remove the container
+#   kiln status           engine, image, container, ports
+#   kiln logs [-f]        container logs
+#   kiln shell            a bash prompt inside the running desktop
+#   kiln repl             an SBCL repl with the whole world already loaded
+#   kiln eval '(form)'    evaluate a form in the RUNNING desktop, live
+#   kiln test             glass's RFB self-test, in a throwaway container
+#   kiln lock             refresh repos.lock from the org's live refs
+#   kiln clean            remove the container and the image
+#
+# Env: KILN_ENGINE, KILN_IMAGE, KILN_NAME, KILN_DNS, KILN_HEAP,
+#      GLASS_DISPLAY, GLASS_APPS, GLASS_VOICE, GLASS_EARS.
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+IMAGE=${KILN_IMAGE:-modus-lisp/kiln}
+NAME=${KILN_NAME:-kiln}
+DISPLAY_N=${GLASS_DISPLAY:-1}
+
+VNC_PORT=$((5900 + DISPLAY_N))
+AUDIO_PORT=$((5910 + DISPLAY_N))
+CTRL_PORT=$((4008 + DISPLAY_N))
+
+die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
+note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
+
+# ------------------------------------------------------------------- engine
+
+detect_engine() {
+  if [[ -n ${KILN_ENGINE:-} ]]; then echo "$KILN_ENGINE"; return; fi
+  # Apple's container is preferred on macOS: it is the native VM story here.
+  if [[ $(uname -s) == Darwin ]] && command -v container >/dev/null; then
+    echo container; return
+  fi
+  for e in docker podman container; do
+    command -v "$e" >/dev/null && { echo "$e"; return; }
+  done
+  die "no container engine found (install Apple container, docker, or podman)"
+}
+
+ENGINE=$(detect_engine)
+command -v "$ENGINE" >/dev/null || die "engine '$ENGINE' is not on PATH"
+
+# Apple's container needs its system service up, and says so rather than
+# starting itself.  Starting it for the user is the whole point of a driver.
+ensure_engine_up() {
+  [[ $ENGINE == container ]] || return 0
+  if ! container ls >/dev/null 2>&1; then
+    note "starting the container system service"
+    container system start >/dev/null 2>&1 \
+      || die "could not start the container service — try: container system start"
+  fi
+}
+
+# A fresh Apple container install has no guest kernel, and there is no way to
+# ASK whether one is configured — `container system kernel` only has `set`.  So
+# this is reactive: run the command, and if it failed for exactly that reason,
+# install the kernel once and try again.  One download per machine, and the
+# difference between `kiln build` working and `kiln build` sending you to a
+# manual page.
+with_kernel() {
+  local log rc
+  log=$(mktemp); rc=0
+  "$@" 2>&1 | tee "$log" || rc=${PIPESTATUS[0]}
+  if grep -q "kernel not configured" "$log"; then
+    rm -f "$log"
+    note "no guest kernel configured — installing the recommended one (one time)"
+    container system kernel set --recommended \
+      || die "could not install a kernel — try: container system kernel set --recommended"
+    note "retrying"
+    "$@"
+    return
+  fi
+  rm -f "$log"
+  return "$rc"
+}
+
+# Apple's guests are handed the vmnet gateway as their resolver, and on a good
+# number of Macs it does not answer — apt, the seed fetch and Quicklisp all die
+# with "Temporary failure resolving".  So pass an explicit one.
+#
+# The host's own resolver is used when a guest could actually reach it, which on
+# macOS is often false: a Mac running mDNSResponder or a VPN client advertises a
+# loopback address, and 127.x means something different inside the VM.  In that
+# case fall back to a public resolver.  KILN_DNS overrides the lot.
+DNS_ARGS=()
+set_dns_args() {
+  [[ $ENGINE == container ]] || return 0
+  local ns=${KILN_DNS:-}
+  if [[ -z $ns ]]; then
+    ns=$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/ {print $3; exit}' || true)
+    [[ -z $ns || $ns == 127.* ]] && ns=1.1.1.1
+  fi
+  DNS_ARGS=(--dns "$ns")
+}
+
+running() { ensure_engine_up; "$ENGINE" ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NAME"; }
+exists()  { ensure_engine_up; "$ENGINE" ls --all 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NAME"; }
+
+# ------------------------------------------------------------------ actions
+
+cmd_build() {
+  ensure_engine_up
+  note "building $IMAGE with $ENGINE (this compiles McCLIM once; expect several minutes)"
+  set_dns_args
+  if [[ $ENGINE == container ]]; then
+    with_kernel container build "${DNS_ARGS[@]}" -t "$IMAGE" "$@" "$ROOT"
+  else
+    "$ENGINE" build -t "$IMAGE" "$@" "$ROOT"
+  fi
+  note "built $IMAGE"
+}
+
+cmd_run() {
+  ensure_engine_up
+  running && { note "already running"; cmd_address; return; }
+  exists  && "$ENGINE" rm "$NAME" >/dev/null 2>&1 || true
+  note "starting the desktop"
+  set_dns_args
+  "$ENGINE" run -d --name "$NAME" "${DNS_ARGS[@]}" \
+    -e GLASS_DISPLAY="$DISPLAY_N" \
+    ${KILN_HEAP:+-e KILN_HEAP="$KILN_HEAP"} \
+    ${GLASS_APPS:+-e GLASS_APPS="$GLASS_APPS"} \
+    ${GLASS_VOICE:+-e GLASS_VOICE="$GLASS_VOICE"} \
+    ${GLASS_EARS:+-e GLASS_EARS="$GLASS_EARS"} \
+    -p "$VNC_PORT:$VNC_PORT" \
+    "$@" "$IMAGE" desktop >/dev/null
+  # The desktop compiles nothing at startup, but the RFB listener still needs a
+  # moment; polling beats a fixed sleep.
+  for _ in $(seq 1 40); do
+    host_reachable && break
+    sleep 0.25
+  done
+  cmd_address
+}
+
+host_reachable() {
+  # A VNC client will connect to whatever the engine published; check that.
+  (exec 3<>"/dev/tcp/127.0.0.1/$VNC_PORT") 2>/dev/null && exec 3<&- && return 0
+  return 1
+}
+
+cmd_address() {
+  local ip=""
+  if [[ $ENGINE == container ]]; then
+    ip=$(container inspect "$NAME" 2>/dev/null \
+         | grep -oE '"(address|ipv4)"[^,]*' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+  fi
+  note "VNC      vnc://127.0.0.1:$VNC_PORT${ip:+   (container ip $ip)}"
+  # Only the screen is published.  glass binds the session audio and the control
+  # socket to loopback inside the container, so they are reached from in there —
+  # `kiln eval` does exactly that.
+  note "control  kiln eval '(glass:perf-report)'"
+  note "audio    container-local on $AUDIO_PORT (glass binds it to loopback)"
+}
+
+cmd_vnc() {
+  running || cmd_run
+  local url="vnc://127.0.0.1:$VNC_PORT"
+  if [[ $(uname -s) == Darwin ]]; then
+    note "opening $url"; open "$url"
+  else
+    note "point a VNC client at $url"
+  fi
+}
+
+cmd_stop() {
+  ensure_engine_up
+  running && { "$ENGINE" stop "$NAME" >/dev/null 2>&1 || true; note "stopped"; }
+  exists  && { "$ENGINE" rm "$NAME"   >/dev/null 2>&1 || true; note "removed"; }
+  true
+}
+
+cmd_status() {
+  ensure_engine_up
+  printf 'engine     %s\n' "$ENGINE"
+  printf 'image      %s%s\n' "$IMAGE" \
+    "$("$ENGINE" images 2>/dev/null | grep -q "${IMAGE%%:*}" && echo '  (built)' || echo '  (not built — run: kiln build)')"
+  printf 'container  %s  %s\n' "$NAME" "$(running && echo running || { exists && echo stopped || echo absent; })"
+  printf 'display    :%s  vnc %s  audio %s  control %s\n' "$DISPLAY_N" "$VNC_PORT" "$AUDIO_PORT" "$CTRL_PORT"
+}
+
+cmd_logs()  { ensure_engine_up; "$ENGINE" logs "$@" "$NAME"; }
+cmd_shell() { running || die "not running (kiln run)"; "$ENGINE" exec -ti "$NAME" /bin/bash; }
+cmd_repl()  { running || die "not running (kiln run)"; "$ENGINE" exec -ti "$NAME" /kiln/boot/entrypoint.sh repl; }
+
+# Evaluate in the LIVE desktop through its control socket — the running image,
+# not a fresh one, so you can read perf and poke at a desktop mid-session.
+#
+# Runs INSIDE the container rather than over a published port, because glass
+# binds the control socket to 127.0.0.1 (as it should — it is an unauthenticated
+# eval socket).  Loopback inside a container is not loopback outside it, so
+# publishing 4009 would expose nothing and forward nowhere.  bash's /dev/tcp
+# does the talking, which saves installing a netcat just for this.
+cmd_eval() {
+  [[ $# -gt 0 ]] || die "eval needs a form, e.g. kiln eval '(glass:perf-report)'"
+  running || die "not running (kiln run)"
+  "$ENGINE" exec "$NAME" bash -c '
+      exec 3<>/dev/tcp/127.0.0.1/'"$CTRL_PORT"' || exit 1
+      printf "%s\n" "$1" >&3
+      timeout 10 cat <&3' _ "$1"
+}
+
+cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm "${DNS_ARGS[@]}" "$IMAGE" test; }
+
+cmd_lock() {
+  ensure_engine_up
+  note "reading the org's live refs with cairn"
+  local tmp; tmp=$(mktemp)
+  # The image is only the vehicle; the new lock lands on the host.
+  set_dns_args
+  "$ENGINE" run --rm "${DNS_ARGS[@]}" "$IMAGE" lock > "$tmp"
+  if [[ -s $tmp ]]; then
+    mv "$tmp" "$ROOT/repos.lock"
+    note "repos.lock updated — rebuild to pick it up"
+  else
+    rm -f "$tmp"; die "lock produced no output; repos.lock left alone"
+  fi
+}
+
+cmd_clean() {
+  cmd_stop
+  "$ENGINE" rmi "$IMAGE" >/dev/null 2>&1 || "$ENGINE" image rm "$IMAGE" >/dev/null 2>&1 || true
+  note "image removed"
+}
+
+usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }
+
+case "${1:-}" in
+  build) shift; cmd_build "$@" ;;
+  run)   shift; cmd_run "$@" ;;
+  vnc)   shift; cmd_vnc ;;
+  stop)  shift; cmd_stop ;;
+  status)shift; cmd_status ;;
+  logs)  shift; cmd_logs "$@" ;;
+  shell) shift; cmd_shell ;;
+  repl)  shift; cmd_repl ;;
+  eval)  shift; cmd_eval "$@" ;;
+  test)  shift; cmd_test ;;
+  lock)  shift; cmd_lock ;;
+  clean) shift; cmd_clean ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

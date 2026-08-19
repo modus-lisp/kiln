@@ -1,0 +1,60 @@
+# The end-to-end gate: build the image the way a person would, then make the
+# desktop prove itself inside it.  glass's self-test draws a known pattern,
+# reads it back through an in-process RFB client and asserts the pixels, so a
+# green run here means the whole stack — cairn's clone, the McCLIM build, the
+# saved core — actually produced a working display.
+name: image
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Compiling McCLIM from source is the long pole, and it only happens once.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t modus-lisp/kiln .
+
+      - name: glass RFB self-test
+        run: docker run --rm modus-lisp/kiln test
+
+      - name: The desktop starts and serves RFB
+        run: |
+          docker run -d --name kiln -p 5901:5901 modus-lisp/kiln desktop
+          # Poll rather than sleep: the core loads fast, but "fast" is not "instant".
+          for i in $(seq 1 60); do
+            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901' 2>/dev/null; then
+              echo "RFB is listening on 5901"; ok=1; break
+            fi
+            sleep 1
+          done
+          docker logs kiln
+          [ "${ok:-}" = 1 ] || { echo "::error::desktop never opened 5901"; exit 1; }
+
+      - name: Every repo is pinned to the commit repos.lock names
+        run: |
+          docker run --rm modus-lisp/kiln sh -c '
+            fail=0
+            while read -r name branch commit; do
+              case "$name" in \#*|"") continue ;; esac
+              have=$(cat "/opt/modus-lisp/$name/.git/HEAD" 2>/dev/null)
+              case "$have" in
+                ref:*) ref=${have#ref: }
+                       have=$(cat "/opt/modus-lisp/$name/.git/$ref" 2>/dev/null) ;;
+              esac
+              if [ "$have" != "$commit" ]; then
+                echo "MISMATCH $name: want $commit, have ${have:-nothing}"; fail=1
+              fi
+            done < /kiln/repos.lock
+            [ "$fail" = 0 ] && echo "all repos match repos.lock"
+            exit $fail'

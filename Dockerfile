@@ -140,8 +140,9 @@ RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 COPY boot/entrypoint.sh boot/lock.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
-# VNC / RFB, session audio, and the control+eval socket, for GLASS_DISPLAY=1.
-EXPOSE 5901 5911 4009
+# VNC / RFB, session audio, the control+eval socket (GLASS_DISPLAY=1), and the
+# browser gateway.
+EXPOSE 5901 5911 4009 8765
 
 ENV GLASS_DISPLAY=1
 ENTRYPOINT ["/kiln/boot/entrypoint.sh"]

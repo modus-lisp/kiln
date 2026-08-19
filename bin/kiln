@@ -6,7 +6,8 @@
 #
 #   kiln build            build the image (first run: coffee)
 #   kiln run              start the desktop, print the VNC address
-#   kiln vnc              start it if needed, then open a VNC client
+#   kiln web              open the browser client (the default surface)
+#   kiln vnc              ALSO publish RFB and open a VNC client (off by default)
 #   kiln stop             stop and remove the container
 #   kiln status           engine, image, container, ports
 #   kiln logs [-f]        container logs
@@ -29,6 +30,10 @@ DISPLAY_N=${GLASS_DISPLAY:-1}
 VNC_PORT=$((5900 + DISPLAY_N))
 AUDIO_PORT=$((5910 + DISPLAY_N))
 CTRL_PORT=$((4008 + DISPLAY_N))
+GW_PORT=${GW_PORT:-8765}
+# Two SBCLs share this container on the web path (desktop + gateway), and the
+# engine's default is 1 GB.
+KILN_MEM=${KILN_MEM:-4G}
 
 die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
@@ -120,6 +125,11 @@ cmd_build() {
   note "built $IMAGE"
 }
 
+# MODE is the entrypoint command.  "web" — the desktop plus the browser gateway —
+# is the default, because the gateway is the surface that can actually be
+# authenticated.  "desktop" is VNC only.
+MODE=${MODE:-web}
+
 cmd_run() {
   ensure_engine_up
   running && { note "already running"; cmd_address; return; }
@@ -132,8 +142,10 @@ cmd_run() {
     ${GLASS_APPS:+-e GLASS_APPS="$GLASS_APPS"} \
     ${GLASS_VOICE:+-e GLASS_VOICE="$GLASS_VOICE"} \
     ${GLASS_EARS:+-e GLASS_EARS="$GLASS_EARS"} \
-    -p "$VNC_PORT:$VNC_PORT" \
-    "$@" "$IMAGE" desktop >/dev/null
+    -m "$KILN_MEM" \
+    -p "$GW_PORT:$GW_PORT" \
+    ${KILN_VNC:+-p "$VNC_PORT:$VNC_PORT"} \
+    "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.
   for _ in $(seq 1 40); do
@@ -149,11 +161,12 @@ host_reachable() {
   # NOT bash's /dev/tcp: macOS ships bash 3.2 built without net-redirections, so
   # there it fails on every port, open or not — a check that always says "no" is
   # worse than no check.  nc is present on macOS and on the distros this runs on.
-  if command -v nc >/dev/null; then
-    nc -z -w 2 127.0.0.1 "$VNC_PORT" >/dev/null 2>&1
-  else
-    (exec 3<>"/dev/tcp/127.0.0.1/$VNC_PORT") 2>/dev/null && exec 3<&-
-  fi
+  #
+  # And not a bare connect test either: Apple's container publishes ports through
+  # a host-side proxy that ACCEPTS before anything inside is listening, so `nc -z`
+  # reports success against a dead port.  RFB servers announce themselves first
+  # ("RFB 003.008\n"), so reading the banner is what actually proves a server.
+  [[ $(nc -w 3 127.0.0.1 "$VNC_PORT" 2>/dev/null | head -c 3) == RFB ]]
 }
 
 cmd_address() {
@@ -162,15 +175,46 @@ cmd_address() {
     ip=$(container inspect "$NAME" 2>/dev/null \
          | grep -oE '"(address|ipv4)"[^,]*' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
   fi
-  note "VNC      vnc://127.0.0.1:$VNC_PORT${ip:+   (container ip $ip)}"
+
   # Only the screen is published.  glass binds the session audio and the control
   # socket to loopback inside the container, so they are reached from in there —
   # `kiln eval` does exactly that.
+  note "browser  http://localhost:$GW_PORT/"
+  if [[ -n ${KILN_VNC:-} ]]; then
+    note "VNC      vnc://127.0.0.1:$VNC_PORT  (exposed by request)"
+  else
+    note "VNC      not published — container-local only (kiln vnc to expose)"
+  fi
   note "control  kiln eval '(glass:perf-report)'"
   note "audio    container-local on $AUDIO_PORT (glass binds it to loopback)"
 }
 
+# The browser path: noVNC over a WebRTC data channel, served from the container.
+#
+# No TLS, no certificate, no signalling relay and no TURN — because the port is
+# published to the HOST'S LOOPBACK, and http://localhost is a secure context.
+# Verified in Safari: isSecureContext, RTCPeerConnection, data channels and even
+# getUserMedia all pass there.  The Nostr gateway beside this one solves a
+# different problem — reaching a box that ISN'T the machine you are sitting at.
+cmd_web() {
+  KILN_WEB=1 MODE=web
+  export KILN_WEB
+  running || cmd_run
+  local url="http://localhost:$GW_PORT/"
+  note "opening $url"
+  [[ $(uname -s) == Darwin ]] && open "$url" || note "point a browser at $url"
+}
+
+# RFB is NOT published by default.  The desktop still listens on it inside the
+# container — that is how the gateway reaches it — but nothing outside can. This
+# turns it on, and it is a real widening: RFB's own auth is DES over a password
+# truncated to eight characters, so the honest posture is off unless asked for.
 cmd_vnc() {
+  KILN_VNC=1; export KILN_VNC
+  if running && ! nc -z -w2 127.0.0.1 "$VNC_PORT" 2>/dev/null; then
+    note "restarting to publish $VNC_PORT"
+    cmd_stop >/dev/null
+  fi
   running || cmd_run
   local url="vnc://127.0.0.1:$VNC_PORT"
   if [[ $(uname -s) == Darwin ]]; then
@@ -257,6 +301,7 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   run)   shift; cmd_run "$@" ;;
   vnc)   shift; cmd_vnc ;;
+  web)   shift; cmd_web ;;
   stop)  shift; cmd_stop ;;
   status)shift; cmd_status ;;
   logs)  shift; cmd_logs "$@" ;;

@@ -29,7 +29,9 @@
   '(;; third-party, from Quicklisp
     :mcclim :mcclim-render :clim-examples :clim-listener :chipz
     ;; the display stack itself
-    :sb-concurrency :glass :glass/vncauth :glass/text :glass/term :pigment))
+    :sb-concurrency :glass :glass/vncauth :glass/text :glass/term :pigment
+    ;; the browser path: noVNC over a WebRTC data channel, served by hunchentoot
+    :webrtc-data :hunchentoot))
 
 ;;; Systems the desktop is explicitly written to run without — serve-desktop.lisp
 ;;; wraps each in ignore-errors and adapts (a silent desktop is a working

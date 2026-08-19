@@ -14,6 +14,18 @@ DISPLAY_N=${GLASS_DISPLAY:-1}
 # image build already paid for is never paid again.
 lisp() { exec sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}" "$@"; }
 
+# Is something LISTENING on this port, in this namespace?
+#
+# Not bash's /dev/tcp: this script is #!/bin/sh, which is dash on Debian, and
+# dash has no such thing — the loop below silently never succeeded.  And not a
+# connect test either, since a connect proves only that something accepted.
+# /proc/net/tcp is the direct answer: state 0A is TCP_LISTEN.
+port_listening() {
+  awk -v p="$(printf '%04X' "$1")" \
+      '$4 == "0A" && $2 ~ (":" p "$") { found = 1 } END { exit !found }' \
+      /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
 cmd=${1:-desktop}
 [ $# -gt 0 ] && shift
 
@@ -24,6 +36,37 @@ case "$cmd" in
     # changes.  Its quickload calls find everything already in the core.
     echo "kiln: glass desktop :$DISPLAY_N — VNC on $((5900 + DISPLAY_N)), audio $((5910 + DISPLAY_N)), control $((4008 + DISPLAY_N))"
     lisp --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" "$@"
+    ;;
+
+  web)
+    # The desktop AND the browser gateway, in one container.
+    #
+    # gateway.lisp (webrtc-data's demo) serves a noVNC page plus one POST /signal
+    # for the SDP exchange, then pumps RFB bytes over a WebRTC data channel.  The
+    # browser is the RFB client and glass is the RFB server; the gateway is
+    # transparent between them.
+    #
+    # Worth knowing why this needs no TLS and no signalling server: kiln publishes
+    # this port to the host's LOOPBACK, and http://localhost is a secure context —
+    # verified in Safari, which allows RTCPeerConnection, data channels and even
+    # getUserMedia there.  So the local path needs no certificate, no nsite, no
+    # relay and no TURN.  The Nostr gateway beside this one is for when the box is
+    # NOT the machine you are sitting at; that is a different problem.
+    GW_PORT=${GW_PORT:-8765}
+    echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT"
+    sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-2048}" \
+         --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" &
+    # The gateway dials RFB on connect, so the desktop has to be listening first.
+    waited=0
+    while ! port_listening $((5900 + DISPLAY_N)); do
+      waited=$((waited + 1))
+      [ "$waited" -gt 120 ] && { echo "kiln: desktop never opened $((5900 + DISPLAY_N))" >&2; exit 1; }
+      sleep 0.5
+    done
+    echo "kiln: desktop is up; starting the gateway"
+    export GLASS_HOST=127.0.0.1 GLASS_PORT=$((5900 + DISPLAY_N)) GW_PORT
+    exec sbcl --core "$CORE" --dynamic-space-size "${KILN_HEAP:-2048}" \
+         --load "$ROOT/webrtc-data/demo/glass-webrtc/gateway.lisp"
     ;;
 
   repl)

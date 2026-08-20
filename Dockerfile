@@ -137,12 +137,12 @@ RUN sbcl --script boot/clone-org.lisp \
 COPY boot/build.lisp boot/
 RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 
-COPY boot/entrypoint.sh boot/lock.lisp boot/
+COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
 # VNC / RFB, session audio, the control+eval socket (GLASS_DISPLAY=1), and the
 # browser gateway.
-EXPOSE 5901 5911 4009 8765
+EXPOSE 5901 5911 4009 8765 2222
 
 ENV GLASS_DISPLAY=1
 ENTRYPOINT ["/kiln/boot/entrypoint.sh"]

@@ -7,6 +7,7 @@
 #   kiln build            build the image (first run: coffee)
 #   kiln run              start the desktop, print the VNC address
 #   kiln web              open the browser client (the default surface)
+#   kiln config           ssh in with your own key and configure the box (menuconfig)
 #   kiln vnc              ALSO publish RFB and open a VNC client (off by default)
 #   kiln stop             stop and remove the container
 #   kiln status           engine, image, container, ports
@@ -34,6 +35,10 @@ GW_PORT=${GW_PORT:-8765}
 # Two SBCLs share this container on the web path (desktop + gateway), and the
 # engine's default is 1 GB.
 KILN_MEM=${KILN_MEM:-4G}
+SSH_PORT=${KILN_SSH_PORT:-2222}
+# Everything that must outlive an image rebuild: the box's SSH host key, the keys
+# allowed to configure it, and the .config the TUI writes.
+KILN_ETC=${KILN_ETC:-$HOME/.kiln}
 
 die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
@@ -144,6 +149,10 @@ cmd_run() {
     ${GLASS_EARS:+-e GLASS_EARS="$GLASS_EARS"} \
     -m "$KILN_MEM" \
     -p "$GW_PORT:$GW_PORT" \
+    -p "$SSH_PORT:$SSH_PORT" \
+    -v "$KILN_ETC:/etc/kiln" \
+    ${KILN_MOUNT_REPOS:+$(mount_repo_args)} \
+    -e KILN_SSH_PORT="$SSH_PORT" \
     ${KILN_VNC:+-p "$VNC_PORT:$VNC_PORT"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
@@ -185,6 +194,7 @@ cmd_address() {
   else
     note "VNC      not published — container-local only (kiln vnc to expose)"
   fi
+  note "config   kiln config    (ssh, your own key)"
   note "control  kiln eval '(glass:perf-report)'"
   note "audio    container-local on $AUDIO_PORT (glass binds it to loopback)"
 }
@@ -196,6 +206,79 @@ cmd_address() {
 # Verified in Safari: isSecureContext, RTCPeerConnection, data channels and even
 # getUserMedia all pass there.  The Nostr gateway beside this one solves a
 # different problem — reaching a box that ISN'T the machine you are sitting at.
+# The box's identity and the keys allowed to configure it.  Generated on the
+# HOST, with ssh-keygen, and mounted in — so the container never has to invent a
+# credential, the host key is stable across rebuilds (known_hosts stays quiet),
+# and you can read exactly what is trusted with cat.
+# KILN_MOUNT_REPOS="conch glass" bind-mounts those local checkouts over the
+# image's cloned copies, so uncommitted work can be tested without a push and a
+# repin.  Development only — the image alone is no longer self-contained.
+mount_repo_args() {
+  local args=() repo
+  for repo in $KILN_MOUNT_REPOS; do
+    args+=(-v "$ROOT/../$repo:/opt/modus-lisp/$repo")
+  done
+  printf '%s\n' "${args[@]}"
+}
+
+ensure_etc() {
+  mkdir -p "$KILN_ETC"
+  chmod 700 "$KILN_ETC"
+  if [[ ! -f $KILN_ETC/host_ed25519 ]]; then
+    note "generating the box's SSH host key (once)"
+    ssh-keygen -q -t ed25519 -N '' -C "kiln-box" -f "$KILN_ETC/host_ed25519"
+  fi
+  if [[ ! -s $KILN_ETC/authorized_keys ]]; then
+    local pub=${KILN_AUTHORIZED_KEY:-}
+    if [[ -z $pub ]]; then
+      # conch verifies ssh-ed25519 only, so an RSA key here would be accepted by
+      # the file and rejected at login — better to say so now.
+      for cand in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ecdsa.pub" "$HOME/.ssh/id_rsa.pub"; do
+        [[ -f $cand ]] && { pub=$(cat "$cand"); break; }
+      done
+    fi
+    [[ -n $pub ]] || die "no ssh public key found.
+  kiln authenticates its config TUI with YOUR key, and needs one to trust.
+  Make one:            ssh-keygen -t ed25519
+  or name one:         KILN_AUTHORIZED_KEY=\"\$(cat some_key.pub)\" kiln config"
+    [[ $pub == ssh-ed25519* ]] || die "kiln needs an ssh-ed25519 key (conch verifies only that type).
+  Found: ${pub%% *}.  Make one with:  ssh-keygen -t ed25519"
+    printf '%s\n' "$pub" > "$KILN_ETC/authorized_keys"
+    chmod 600 "$KILN_ETC/authorized_keys"
+    note "trusting $(printf '%s' "$pub" | awk '{print $3}')"
+  fi
+}
+
+# Configure the box the way you would configure a kernel: ssh in with the key you
+# already have, and get a menuconfig.
+cmd_config() {
+  ensure_etc
+  running || cmd_run
+  # The control plane comes up beside the desktop; give it a moment on first boot.
+  # Read the banner, do not merely connect: Apple's published-port proxy accepts
+  # before anything inside is listening, so a bare `nc -z` says yes to a dead
+  # port and ssh then dies with "Connection reset by peer".  SSH servers speak
+  # first ("SSH-2.0-..."), which is a real liveness test.
+  local up=""
+  for _ in $(seq 1 90); do
+    if [[ $(nc -w 2 127.0.0.1 "$SSH_PORT" 2>/dev/null | head -c 4) == SSH- ]]; then
+      up=1; break
+    fi
+    sleep 1
+  done
+  [[ -n $up ]] || die "the SSH control plane never came up on $SSH_PORT (kiln logs)"
+  note "connecting to the config TUI"
+  # A pty is the point (it is a full-screen TUI), and the host key is kiln's own,
+  # kept in $KILN_ETC — checked against a known_hosts file of its own so it never
+  # argues with your real one.
+  exec ssh -t -p "$SSH_PORT" \
+       -i "${KILN_SSH_KEY:-$HOME/.ssh/id_ed25519}" \
+       -o UserKnownHostsFile="$KILN_ETC/known_hosts" \
+       -o StrictHostKeyChecking=accept-new \
+       -o LogLevel=ERROR \
+       kiln@127.0.0.1
+}
+
 cmd_web() {
   KILN_WEB=1 MODE=web
   export KILN_WEB
@@ -302,6 +385,7 @@ case "${1:-}" in
   run)   shift; cmd_run "$@" ;;
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;
+  config) shift; cmd_config ;;
   stop)  shift; cmd_stop ;;
   status)shift; cmd_status ;;
   logs)  shift; cmd_logs "$@" ;;

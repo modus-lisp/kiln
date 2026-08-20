@@ -38,6 +38,10 @@ case "$cmd" in
     lisp --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" "$@"
     ;;
 
+  sshd)
+    exec sbcl --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp
+    ;;
+
   web)
     # The desktop AND the browser gateway, in one container.
     #
@@ -54,6 +58,11 @@ case "$cmd" in
     # NOT the machine you are sitting at; that is a different problem.
     GW_PORT=${GW_PORT:-8765}
     echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT"
+    # The control plane, if the host mounted an identity for it.  Backgrounded:
+    # it is how you configure the box, not what the box is for.
+    if [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ]; then
+      sbcl --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp &
+    fi
     sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-2048}" \
          --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" &
     # The gateway dials RFB on connect, so the desktop has to be listening first.

@@ -151,10 +151,14 @@ desktop is one environment variable rather than an edited file:
 GLASS_DISPLAY=2 KILN_NAME=kiln2 bin/kiln run    # a second desktop on 5902
 ```
 
-Only the screen is published. glass binds the session audio and the control
-socket to loopback *inside* the container — correctly, since the control socket
-is an unauthenticated eval socket — so `kiln eval` reaches it by running in
-there rather than through a forwarded port.
+Published ports land on **127.0.0.1** of the host unless `KILN_EXPOSE=1` says
+otherwise — `-p 8765:8765` with no address means every interface, which is not a
+thing to arrive at by default. glass binds the session audio and the control
+socket to loopback *inside* the container as well — correctly, since the control
+socket is an unauthenticated eval socket — so `kiln eval` reaches it by running
+in there rather than through a forwarded port. The screen is published only when
+asked for (`kiln vnc`); the gateway and the ssh control plane are published
+whenever the container runs, since they are how you reach it at all.
 
 ## One image
 

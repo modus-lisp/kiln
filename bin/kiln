@@ -42,6 +42,11 @@ SSH_PORT=${KILN_SSH_PORT:-2222}
 # Everything that must outlive an image rebuild: the box's SSH host key, the keys
 # allowed to configure it, and the .config the TUI writes.
 KILN_ETC=${KILN_ETC:-$HOME/.kiln}
+# WHERE A PUBLISHED PORT LANDS ON THE HOST.  "-p 8765:8765" with no address is
+# every interface, which is what the gateway and the ssh control plane were doing
+# unconditionally — while the README said "only the screen is published", the
+# screen being in fact the one that is conditional.  Loopback unless KILN_EXPOSE.
+if [[ -n ${KILN_EXPOSE:-} ]]; then PUBLISH_ON=""; else PUBLISH_ON="127.0.0.1:"; fi
 # Where the sibling checkouts live when running WITHOUT a container.  kiln sits
 # among them, so its parent is the default.
 KILN_ROOT=${KILN_ROOT:-$(cd -- "$ROOT/.." && pwd)}
@@ -168,12 +173,12 @@ cmd_run() {
     ${GLASS_VOICE:+-e GLASS_VOICE="$GLASS_VOICE"} \
     ${GLASS_EARS:+-e GLASS_EARS="$GLASS_EARS"} \
     -m "$KILN_MEM" \
-    -p "$GW_PORT:$GW_PORT" \
-    -p "$SSH_PORT:$SSH_PORT" \
+    -p "$PUBLISH_ON$GW_PORT:$GW_PORT" \
+    -p "$PUBLISH_ON$SSH_PORT:$SSH_PORT" \
     -v "$KILN_ETC:/etc/kiln" \
     ${KILN_MOUNT_REPOS:+$(mount_repo_args)} \
     -e KILN_SSH_PORT="$SSH_PORT" \
-    ${KILN_VNC:+-p "$VNC_PORT:$VNC_PORT"} \
+    ${KILN_VNC:+-p "$PUBLISH_ON$VNC_PORT:$VNC_PORT"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.

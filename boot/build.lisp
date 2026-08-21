@@ -25,7 +25,23 @@
      `(:source-registry (:tree ,(pathname (concatenate 'string tree "/")))
                         (:exclude "vendor" "deps") :inherit-configuration))))
 
-(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+;; Quicklisp lives in two places, for a reason.  On a host it is the user's, at
+;; ~/quicklisp.  In the image it is /opt/quicklisp -- system-wide, because the
+;; image runs as an unprivileged user who does not own /root and should not need
+;; to.  KILN_QUICKLISP overrides both.
+(let ((setup (find-if #'probe-file
+                      (remove nil
+                              (list (let ((e (sb-ext:posix-getenv "KILN_QUICKLISP")))
+                                      (and e (merge-pathnames "setup.lisp" (concatenate 'string e "/"))))
+                                    #p"/opt/quicklisp/setup.lisp"
+                                    (merge-pathnames "quicklisp/setup.lisp"
+                                                     (user-homedir-pathname)))))))
+  (unless setup
+    (format *error-output* "~&kiln/build: no Quicklisp found (tried KILN_QUICKLISP, ~
+                            /opt/quicklisp, ~~/quicklisp).~%~
+                            kiln/build: the desktop needs McCLIM, which comes from there.~%")
+    (sb-ext:quit :unix-status 1))
+  (load setup))
 
 (defvar *core* (or (sb-ext:posix-getenv "KILN_CORE") "/opt/kiln/modus.core"))
 

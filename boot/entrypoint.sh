@@ -60,7 +60,11 @@ case "$cmd" in
     # relay and no TURN.  The Nostr gateway beside this one is for when the box is
     # NOT the machine you are sitting at; that is a different problem.
     GW_PORT=${GW_PORT:-8765}
-    export GW_PORT
+    # one.lisp made the gateway opt-in -- rightly, since a service that listens is
+    # a thing to ask for.  `web' IS the asking: it is the mode whose whole point is
+    # the browser client, and it was announcing a gateway it never started.
+    KILN_GATEWAY=1
+    export GW_PORT KILN_GATEWAY
     echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT (one image)"
     # The control plane comes up inside one.lisp, on a thread of the same image,
     # when the host mounted an identity for it.
@@ -87,12 +91,15 @@ case "$cmd" in
     lisp --non-interactive --disable-debugger --eval "(print $form)" "$@"
     ;;
 
-  agent)
-    # The operandi agent, and NOTHING ELSE in this container.  No desktop, no
-    # gateway, no ssh: the point of running it here is that what it can read is
-    # what somebody mounted, and the smaller that list is the better.  Whatever
-    # the model is told, the inference provider sees — so the fence that counts
-    # is the one INSIDE the container, not the wall around it.
+  operandi)
+    # The agent, in the same fenced container everything else runs in.  It used to
+    # need a `kiln agent' invocation to get a non-root uid, dropped capabilities
+    # and a read-only rootfs; those are what the image IS now, so this is just
+    # another thing to run in it.
+    #
+    # Worth keeping in view: everything it reads reaches the inference provider in
+    # the next request, so the mounts are the disclosure list.  The fences do not
+    # cover the network -- a container here can reach the LAN.
     shift
     cd /work 2>/dev/null || cd /tmp
     exec sbcl --core "$CORE" --control-stack-size 256 \

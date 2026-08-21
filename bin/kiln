@@ -119,6 +119,40 @@ with_kernel() {
   return "$rc"
 }
 
+# THE FENCES.  Applied to every container this driver starts, which is the whole
+# point: a hardening flag you have to remember is a hardening flag you do not
+# have.  There was a `kiln agent' that turned these on for one subcommand; the
+# desktop ran privileged the rest of the time, so the default was "no fence" and
+# the default is what runs.
+#
+# What they are NOT is a network boundary.  A container here can reach the LAN --
+# verified: an otherwise fenced container opened 445 on another host on this
+# subnet.  For an image that carries an agent, the thing that matters is that
+# everything it reads reaches the inference provider in the next request, and the
+# LAN is full of readable things.  So this list fences the FILESYSTEM and the
+# privileges, and the network is a separate problem that wants a separate answer
+# (cl-transport can make egress Tor-only; that is not wired up here yet).
+#
+# Engines disagree about the spelling, and Apple's `container' has neither
+# --security-opt nor --pids-limit.  Asking it costs one help invocation.
+FENCE_ARGS=()
+fences_computed=""
+set_fence_args() {
+  [[ -n $fences_computed ]] && return 0
+  fences_computed=1
+  local help; help=$("$ENGINE" run --help 2>&1)
+  FENCE_ARGS=(--user 1000:1000)
+  grep -q -- "--cap-drop"      <<<"$help" && FENCE_ARGS+=(--cap-drop ALL)
+  grep -q -- "--security-opt"  <<<"$help" && FENCE_ARGS+=(--security-opt no-new-privileges)
+  grep -q -- "--pids-limit"    <<<"$help" && FENCE_ARGS+=(--pids-limit 512)
+  # A read-only rootfs needs somewhere to write, and the image sends fasls to
+  # /tmp precisely so this is the only hole it needs.
+  if [[ -z ${KILN_WRITABLE:-} ]] && grep -q -- "--read-only" <<<"$help"; then
+    FENCE_ARGS+=(--read-only)
+    grep -q -- "--tmpfs" <<<"$help" && FENCE_ARGS+=(--tmpfs /tmp:rw,size=256m)
+  fi
+}
+
 # Apple's guests are handed the vmnet gateway as their resolver, and on a good
 # number of Macs it does not answer — apt, the seed fetch and Quicklisp all die
 # with "Temporary failure resolving".  So pass an explicit one.
@@ -148,7 +182,7 @@ cmd_build() {
   note "building $IMAGE with $ENGINE (this compiles McCLIM once; expect several minutes)"
   set_dns_args
   if [[ $ENGINE == container ]]; then
-    with_kernel container build "${DNS_ARGS[@]}" -t "$IMAGE" "$@" "$ROOT"
+    with_kernel container build ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} -t "$IMAGE" "$@" "$ROOT"
   else
     "$ENGINE" build -t "$IMAGE" "$@" "$ROOT"
   fi
@@ -166,7 +200,9 @@ cmd_run() {
   exists  && "$ENGINE" rm "$NAME" >/dev/null 2>&1 || true
   note "starting the desktop"
   set_dns_args
-  "$ENGINE" run -d --name "$NAME" "${DNS_ARGS[@]}" \
+  set_fence_args
+  "$ENGINE" run -d --name "$NAME" ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} \
+    "${FENCE_ARGS[@]}" \
     -e GLASS_DISPLAY="$DISPLAY_N" \
     ${KILN_HEAP:+-e KILN_HEAP="$KILN_HEAP"} \
     ${GLASS_APPS:+-e GLASS_APPS="$GLASS_APPS"} \
@@ -515,7 +551,7 @@ cmd_bundle() {
   while read -r name branch commit; do
     case "$name" in \#*|"") continue ;; esac
     [[ -d $KILN_ROOT/$name ]] || { note "  skipping $name (not checked out)"; continue; }
-    rsync -a "${ex[@]}" "$KILN_ROOT/$name/" "$out/repos/$name/" 2>/dev/null || \
+    rsync -a ${ex[@]+"${ex[@]}"} "$KILN_ROOT/$name/" "$out/repos/$name/" 2>/dev/null || \
       die "rsync failed for $name"
     n=$((n+1))
   done < "$ROOT/repos.lock"
@@ -751,78 +787,7 @@ cmd_eval() {
       timeout 10 cat <&3' _ "$1"
 }
 
-cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm "${DNS_ARGS[@]}" "$IMAGE" test; }
-
-cmd_agent() {
-  # A DIFFERENT CONTAINER SHAPE FROM THE DESKTOP, deliberately.  `kiln run' mounts
-  # the host identity directory and, on request, the checkouts — right for a desktop
-  # you drive yourself, wrong for an agent driven by a model you did not write.
-  #
-  # The threat here is not the network.  It is that everything the agent reads goes
-  # to the inference endpoint in the next request: a container with your keys
-  # mounted is a set of keys you have emailed to somebody.  So the fence is the
-  # MOUNT LIST, and by default it is empty — /work is a tmpfs that dies with the
-  # container, and the host filesystem is not in the picture at all.  On macOS and
-  # Windows that is real isolation rather than a promise, because the engine's VM
-  # has no view of the host disk except what -v hands it.
-  local work="" mem="${KILN_AGENT_MEM:-2G}" ro=1
-  local -a envs=()
-  while [[ $# -gt 0 ]]; do
-    local arg=$1 val=""
-    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
-    case $arg in
-      --work)     work=${val:?--work=DIR} ;;
-      --mem)      mem=${val:?--mem=SIZE} ;;
-      --writable) ro="" ;;                       # a writable rootfs, if it must
-      --env)      envs+=(-e "${val:?--env=NAME[=VALUE]}") ;;
-      --)         shift; break ;;
-      -h|--help)  agent_usage; return 0 ;;
-      *) break ;;                                # the rest is the agent's own
-    esac
-    shift
-  done
-  ensure_engine_up
-  set_dns_args
-
-  local -a mounts=()
-  if [[ -n $work ]]; then
-    [[ -d $work ]] || die "no such directory: $work"
-    work=$(cd -- "$work" && pwd)
-    mounts=(-v "$work:/work")
-    note "workspace  $work  (the ONLY host directory it can see)"
-  else
-    mounts=(--tmpfs /work:rw,size=512m)
-    note "workspace  none — /work is a tmpfs and dies with the container"
-  fi
-  note "network    unrestricted (in the container is fair game)"
-
-  "$ENGINE" run --rm -it "${DNS_ARGS[@]}" \
-    --user 1000:1000 -e HOME=/home/kiln \
-    --cap-drop ALL \
-    --security-opt no-new-privileges \
-    ${ro:+--read-only} --tmpfs /tmp:rw,size=256m \
-    --pids-limit 256 -m "$mem" \
-    "${mounts[@]}" "${envs[@]}" \
-    "$IMAGE" agent "$@"
-}
-
-agent_usage() {
-  cat >&2 <<'USAGE'
-kiln agent [flags] [-- args…] — run the operandi agent behind fences.
-
-  What it can read is what you mounted, and nothing is mounted by default.
-  Everything it reads reaches the inference provider, so the mount list is the
-  security boundary — not the network, which is unrestricted.
-
-  --work=DIR      the one host directory it can see (default: a tmpfs)
-  --env=NAME      forward an environment variable (the API key, the model)
-  --env=NAME=VAL  set one outright
-  --mem=SIZE      memory ceiling (default 2G)
-  --writable      writable rootfs (default: read-only + tmpfs /tmp, /work)
-
-  Runs as uid 1000, all capabilities dropped, no-new-privileges, 256 pids.
-USAGE
-}
+cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "$IMAGE" test; }
 
 cmd_lock() {
   # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
@@ -868,7 +833,6 @@ case "${1:-}" in
   repl)  shift; cmd_repl ;;
   eval)  shift; cmd_eval "$@" ;;
   test)  shift; cmd_test ;;
-  agent) shift; cmd_agent "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

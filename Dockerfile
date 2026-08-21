@@ -48,7 +48,7 @@ LABEL org.opencontainers.image.title="kiln" \
       org.opencontainers.image.licenses="MIT"
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    HOME=/root \
+    HOME=/home/kiln \
     MODUS_ORG=modus-lisp \
     MODUS_ROOT=/opt/modus-lisp \
     KILN_SEED=/opt/kiln-seed \
@@ -93,13 +93,13 @@ RUN mkdir -p /etc/common-lisp/source-registry.conf.d \
 RUN curl -fsSL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp \
  && sbcl --non-interactive --disable-debugger \
          --load /tmp/quicklisp.lisp \
-         --eval '(quicklisp-quickstart:install :path "/root/quicklisp/")' \
+         --eval '(quicklisp-quickstart:install :path "/opt/quicklisp/")' \
  && rm /tmp/quicklisp.lisp
 
 # --dynamic-space-size is a RUNTIME option and SBCL rejects it once toplevel
 # options have started, so it has to come first.
 RUN sbcl --dynamic-space-size 4096 --non-interactive --disable-debugger \
-         --load /root/quicklisp/setup.lisp \
+         --load /opt/quicklisp/setup.lisp \
          --eval '(handler-bind ((warning (function muffle-warning))) (ql:quickload (list :mcclim :mcclim-render :clim-examples :clim-listener :chipz)))'
 
 # Make Quicklisp present for a bare `sbcl`, not just for scripts that load
@@ -111,9 +111,9 @@ RUN sbcl --dynamic-space-size 4096 --non-interactive --disable-debugger \
 # Deliberately below the McCLIM layer so adding it does not recompile McCLIM,
 # and harmless to the boot scripts: `sbcl --script` ignores the init file.
 RUN printf '%s\n' \
-      '(let ((ql (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))' \
+      '(let ((ql #p"/opt/quicklisp/setup.lisp"))' \
       '  (when (probe-file ql) (load ql)))' \
-      > /root/.sbclrc
+      > /etc/sbclrc
 
 # ---- from here down, everything is pinned by repos.lock -------------------
 
@@ -130,7 +130,11 @@ RUN sh boot/seed.sh
 # checkout of cairn itself, replacing the seed, which is deleted in this same
 # layer so it never reaches the image.
 COPY boot/clone-org.lisp boot/
-RUN sbcl --script boot/clone-org.lisp \
+# --dynamic-space-size, because cairn holds a whole packfile in memory while it
+# resolves deltas, and the biggest repos here (weft carries test vectors) have
+# outgrown SBCL's default heap.  Four clones run at once, so the ceiling is per
+# job and they share it.
+RUN sbcl --dynamic-space-size 4096 --script boot/clone-org.lisp \
  && rm -rf "$KILN_SEED"
 
 # Load the world and dump it, so `kiln run` starts in about a second.
@@ -140,13 +144,28 @@ RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
-# A NON-ROOT USER FOR `kiln agent'.  The desktop still runs as root (its terminal
-# is meant to be a root shell in a throwaway filesystem), but an agent driven by a
-# model you did not write has no business being uid 0 even in here.  It needs a
-# real passwd entry and a home: without one, --user 1000:1000 lands somewhere with
-# no $HOME and SBCL goes looking for a cache directory it cannot have.
-RUN useradd -u 1000 -m -s /bin/bash kiln \
- && chmod -R a+rX /opt/modus-lisp /kiln
+# THE USER EVERYTHING RUNS AS.  Not a flag on one subcommand -- the fences are
+# either the default or they are decoration, and what runs is the default.  The
+# desktop used to be root on the argument that its terminal was a root shell in a
+# throwaway filesystem; that terminal is a Unix artifact on the way out, and the
+# listener that replaces it is inside this image rather than a process under it.
+#
+# The passwd entry and a real home are load-bearing: without them uid 1000 lands
+# somewhere it cannot write and SBCL goes looking for a cache directory it cannot
+# have -- which is exactly how this broke the first time it was tried.
+RUN useradd -u 1000 -m -d /home/kiln -s /bin/bash kiln \
+ && chmod -R a+rX /opt/modus-lisp /kiln /opt/quicklisp \
+ && mkdir -p /home/kiln/.cache && chown -R 1000:1000 /home/kiln
+
+# EVERY container gets a read-only rootfs, so nothing may assume it can write
+# beside its source.  ASDF's default output is next to the .asd; send it to /tmp,
+# which is the one place a fenced container always has (tmpfs, dies with it).
+ENV ASDF_OUTPUT_TRANSLATIONS="/:/tmp/fasl/"
+
+# The image runs as this user.  Not a flag on one subcommand: a container that is
+# only unprivileged when invoked a particular way is a container that is
+# privileged by default, and the default is what runs.
+USER 1000:1000
 
 # VNC / RFB, session audio, the control+eval socket (GLASS_DISPLAY=1), and the
 # browser gateway.

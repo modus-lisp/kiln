@@ -136,6 +136,33 @@ bundle*, from the bundle's own sources, so it works wherever you unpack it — t
 wallpaper and fonts resolve to the copy sitting next to them. `repos.lock` travels
 with it, recording the commit each repo came from.
 
+## The fences
+
+Every container this driver starts runs unprivileged, and the image is built that
+way rather than patched at run time: `USER 1000:1000`, Quicklisp in
+`/opt/quicklisp` and its init file in `/etc/sbclrc`, so nothing needs a home
+directory it owns. On top of that, `bin/kiln` adds what the engine supports —
+dropped capabilities, `no-new-privileges`, a read-only rootfs with a tmpfs `/tmp`,
+pid and memory ceilings. It asks the engine rather than assuming: Apple's
+`container` has `--cap-drop` and `--read-only` but neither `--security-opt` nor
+`--pids-limit`.
+
+There is no flag for this and no subcommand that turns it on. A hardening flag you
+have to remember is a hardening flag you do not have — if the fences are optional
+then the default is "no fence", and the default is what runs.
+
+**What they do not cover is the network.** A container here can reach the LAN —
+verified, by opening a port on another host on this subnet from inside an
+otherwise fenced container. That matters most for anything agent-shaped, where
+everything read reaches an inference provider in the next request and the LAN is
+full of readable things. The mount list fences the host's disk, not the network
+its host sits on. Making egress Tor-only via
+[cl-transport](https://github.com/modus-lisp/cl-transport) is the shape of the
+answer; it is not wired up yet, and until it is, "unrestricted" is the honest word.
+
+One mount is not optional for the desktop: `~/.kiln` is bind-mounted read-write,
+because that is where the SSH host key lives and where the config TUI writes.
+
 ## Ports
 
 Every port is derived from `GLASS_DISPLAY` (default 1), X-style, so a second

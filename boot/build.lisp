@@ -38,8 +38,11 @@
     :sb-concurrency :glass :glass/vncauth :glass/text :glass/term :pigment
     ;; the browser path: noVNC over a WebRTC data channel, served by hunchentoot
     :webrtc-data :hunchentoot
-    ;; the config TUI: seal/http + jzon, for resolving a NIP-05 at config time
-    :seal/http :com.inuoe.jzon))
+    ;; the control plane: conch's SSH server, and what the config TUI needs to
+    ;; resolve a NIP-05 (seal/http + jzon).  These are in the CORE because
+    ;; sshd.lisp runs from it -- `sbcl --script' implies --no-userinit, so a
+    ;; plain script cannot see Quicklisp and cannot find jzon at all.
+    :conch :seal/http :com.inuoe.jzon))
 
 ;;; Systems the desktop is explicitly written to run without — serve-desktop.lisp
 ;;; wraps each in ignore-errors and adapts (a silent desktop is a working

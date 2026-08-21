@@ -39,7 +39,10 @@ case "$cmd" in
     ;;
 
   sshd)
-    exec sbcl --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp
+    # From the CORE, not a bare sbcl: --script implies --no-userinit, so a plain
+    # script sees no Quicklisp and cannot find jzon.  The core already has conch,
+    # seal/http and jzon in it, which also makes this start instantly.
+    exec sbcl --core "$CORE" --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp
     ;;
 
   web)
@@ -61,7 +64,7 @@ case "$cmd" in
     # The control plane, if the host mounted an identity for it.  Backgrounded:
     # it is how you configure the box, not what the box is for.
     if [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ]; then
-      sbcl --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp &
+      sbcl --core "$CORE" --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp &
     fi
     sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-2048}" \
          --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" &

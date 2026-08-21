@@ -749,13 +749,18 @@ cmd_eval() {
 cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm "${DNS_ARGS[@]}" "$IMAGE" test; }
 
 cmd_lock() {
-  ensure_engine_up
-  note "reading the org's live refs with cairn"
+  # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
+  # Lisp git over seal's TLS, one HTTPS GET apiece, no GitHub API and so no token
+  # and no rate limit.  That is the whole boast, and it was being made from inside
+  # a container image that had to be BUILT first: refreshing a list of commits
+  # required an engine, a build, and several minutes, to do something a host SBCL
+  # does in seconds.  Same conflation as `kiln local' — the work never needed the
+  # container, only the invocation did.
+  host_prereqs
+  note "reading the org's live refs with cairn (no container)"
   local tmp; tmp=$(mktemp)
-  # The image is only the vehicle; the new lock lands on the host.
-  set_dns_args
-  "$ENGINE" run --rm "${DNS_ARGS[@]}" "$IMAGE" lock > "$tmp"
-  if [[ -s $tmp ]]; then
+  if MODUS_ROOT="$KILN_ROOT" KILN_LOCK="$ROOT/repos.lock" MODUS_ORG="${MODUS_ORG:-modus-lisp}" \
+     sbcl --script "$ROOT/boot/lock.lisp" > "$tmp" 2>/dev/null && [[ -s $tmp ]]; then
     mv "$tmp" "$ROOT/repos.lock"
     note "repos.lock updated — rebuild to pick it up"
   else

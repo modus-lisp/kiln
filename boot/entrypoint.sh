@@ -87,6 +87,19 @@ case "$cmd" in
     lisp --non-interactive --disable-debugger --eval "(print $form)" "$@"
     ;;
 
+  agent)
+    # The operandi agent, and NOTHING ELSE in this container.  No desktop, no
+    # gateway, no ssh: the point of running it here is that what it can read is
+    # what somebody mounted, and the smaller that list is the better.  Whatever
+    # the model is told, the inference provider sees — so the fence that counts
+    # is the one INSIDE the container, not the wall around it.
+    shift
+    cd /work 2>/dev/null || cd /tmp
+    exec sbcl --core "$CORE" --control-stack-size 256 \
+         --dynamic-space-size "${KILN_HEAP:-4096}" \
+         --load /opt/modus-lisp/operandi/bin/operandi.lisp "$@"
+    ;;
+
   lock)
     # Refresh repos.lock against the org's live refs and print it to stdout.
     # Runs on a plain sbcl, not the core: the core has no cairn in it.

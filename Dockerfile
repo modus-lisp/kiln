@@ -140,6 +140,14 @@ RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
+# A NON-ROOT USER FOR `kiln agent'.  The desktop still runs as root (its terminal
+# is meant to be a root shell in a throwaway filesystem), but an agent driven by a
+# model you did not write has no business being uid 0 even in here.  It needs a
+# real passwd entry and a home: without one, --user 1000:1000 lands somewhere with
+# no $HOME and SBCL goes looking for a cache directory it cannot have.
+RUN useradd -u 1000 -m -s /bin/bash kiln \
+ && chmod -R a+rX /opt/modus-lisp /kiln
+
 # VNC / RFB, session audio, the control+eval socket (GLASS_DISPLAY=1), and the
 # browser gateway.
 EXPOSE 5901 5911 4009 8765 2222

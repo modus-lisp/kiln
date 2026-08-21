@@ -8,6 +8,8 @@
 #   kiln run              start the desktop, print the VNC address
 #   kiln web              open the browser client (the default surface)
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
+#   kiln local            run on THIS machine, no container (no isolation either)
+#   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
 #   kiln vnc              ALSO publish RFB and open a VNC client (off by default)
 #   kiln stop             stop and remove the container
 #   kiln status           engine, image, container, ports
@@ -39,6 +41,9 @@ SSH_PORT=${KILN_SSH_PORT:-2222}
 # Everything that must outlive an image rebuild: the box's SSH host key, the keys
 # allowed to configure it, and the .config the TUI writes.
 KILN_ETC=${KILN_ETC:-$HOME/.kiln}
+# Where the sibling checkouts live when running WITHOUT a container.  kiln sits
+# among them, so its parent is the default.
+KILN_ROOT=${KILN_ROOT:-$(cd -- "$ROOT/.." && pwd)}
 
 die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
@@ -206,6 +211,156 @@ cmd_address() {
 # Verified in Safari: isSecureContext, RTCPeerConnection, data channels and even
 # getUserMedia all pass there.  The Nostr gateway beside this one solves a
 # different problem — reaching a box that ISN'T the machine you are sitting at.
+# ---- running on this machine, no container ---------------------------------
+#
+# The container buys isolation: the desktop's terminal is a root shell in a
+# throwaway filesystem, and the ports it opens are the engine's to publish. None
+# of that is true here -- `kiln local' is your user, your files, your ports. What
+# it buys instead is that there is nothing to reason about: one SBCL process you
+# can see in ps, reading the checkouts in place, so an edit is live on the next
+# start with no image to rebuild.
+
+host_prereqs() {
+  command -v sbcl >/dev/null || die "no sbcl on PATH.
+  kiln local runs on this machine's Lisp.  brew install sbcl, or use kiln run."
+  [[ -f $HOME/quicklisp/setup.lisp ]] || die "no Quicklisp at ~/quicklisp.
+  The desktop needs McCLIM, which comes from Quicklisp.  Install it from
+  https://beta.quicklisp.org/quicklisp.lisp, or use kiln run."
+  [[ -d $KILN_ROOT/glass ]] || die "no checkouts at $KILN_ROOT.
+  kiln local reads the sibling repos in place; point KILN_ROOT at them, or
+  unpack a bundle and run its own launcher."
+}
+
+# The core is what makes a start instant rather than a minute of McCLIM. Built
+# once per machine, and only when missing -- editing a repo does NOT invalidate
+# it, because ASDF still loads changed systems over the top on the next start.
+# `kiln local --rebuild' is the button for when you want it re-dumped anyway.
+ensure_local_core() {
+  local core="$KILN_ETC/modus.core"
+  if [[ -f $core && -z ${KILN_REBUILD:-} ]]; then LOCAL_CORE=$core; return; fi
+  mkdir -p "$KILN_ETC"
+  note "building a core for this machine (once; McCLIM takes a few minutes)"
+  KILN_SOURCE_TREE="$KILN_ROOT" KILN_CORE="$core" \
+    sbcl --dynamic-space-size 4096 --script "$ROOT/boot/build.lisp" || die "core build failed"
+  LOCAL_CORE=$core
+}
+
+cmd_local() {
+  [[ ${1:-} == --rebuild ]] && { KILN_REBUILD=1; shift; }
+  host_prereqs
+  ensure_local_core
+  local display=${GLASS_DISPLAY:-1}
+  local vnc=$((5900 + display)) gw=${GW_PORT:-8765}
+  if nc -z -w2 127.0.0.1 "$vnc" 2>/dev/null; then
+    die "something is already on $vnc (the container, perhaps: kiln stop).
+  Or pick another display:  GLASS_DISPLAY=3 kiln local"
+  fi
+  note "desktop :$display on this machine — no container, no isolation"
+  GLASS_DISPLAY=$display \
+  sbcl --core "$LOCAL_CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}" \
+       --load "$KILN_ROOT/glass/backend/inspect/serve-desktop.lisp" &
+  local desktop=$!
+  trap 'kill $desktop 2>/dev/null' EXIT INT TERM
+  for _ in $(seq 1 120); do
+    [[ $(nc -w 2 127.0.0.1 "$vnc" 2>/dev/null | head -c 3) == RFB ]] && break
+    sleep 0.5
+  done
+  note "VNC      vnc://127.0.0.1:$vnc"
+  note "browser  http://localhost:$gw/  (starting)"
+  GLASS_HOST=127.0.0.1 GLASS_PORT=$vnc GW_PORT=$gw \
+  sbcl --core "$LOCAL_CORE" --dynamic-space-size "${KILN_HEAP:-4096}" \
+       --load "$KILN_ROOT/webrtc-data/demo/glass-webrtc/gateway.lisp"
+}
+
+# ---- a folder you can move ---------------------------------------------------
+
+cmd_bundle() {
+  local zip="" out="$PWD/kiln-bundle" full=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --zip) zip=1 ;;
+      --full) full=1 ;;
+      --out) out=$2; shift ;;
+      *) die "bundle: unknown option $1" ;;
+    esac
+    shift
+  done
+  [[ -d $KILN_ROOT/glass ]] || die "no checkouts at $KILN_ROOT to bundle"
+  note "bundling from $KILN_ROOT -> $out"
+  rm -rf "$out"; mkdir -p "$out/repos"
+
+  # Excluded by default: version control, build artifacts, and the external
+  # conformance corpora, which are most of the bytes and none of the desktop.
+  # --full keeps everything.
+  local ex=(--exclude ".git")
+  [[ -z $full ]] && ex+=(--exclude "*.core"
+                        --exclude "test262-full" --exclude "wpt"
+                        --exclude "ansi-test" --exclude "modus-ref"
+                        --exclude "inspect/vectors" --exclude "inspect/*.png")
+  local n=0
+  while read -r name branch commit; do
+    case "$name" in \#*|"") continue ;; esac
+    [[ -d $KILN_ROOT/$name ]] || { note "  skipping $name (not checked out)"; continue; }
+    rsync -a "${ex[@]}" "$KILN_ROOT/$name/" "$out/repos/$name/" 2>/dev/null || \
+      die "rsync failed for $name"
+    n=$((n+1))
+  done < "$ROOT/repos.lock"
+  cp "$ROOT/repos.lock" "$out/repos.lock"
+  mkdir -p "$out/boot"; cp "$ROOT/boot/build.lisp" "$out/boot/"
+
+  cat > "$out/kiln-run" <<'LAUNCH'
+#!/usr/bin/env bash
+# kiln-run — start the desktop from this bundle, on this machine's SBCL.
+#
+# No container: this is your user and your ports.  The first run builds a core
+# (McCLIM takes a few minutes); after that it starts in about a second.
+set -euo pipefail
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$HERE/repos
+CORE=$HERE/modus.core
+DISPLAY_N=${GLASS_DISPLAY:-1}
+
+command -v sbcl >/dev/null || { echo "kiln: no sbcl on PATH" >&2; exit 1; }
+[ -f "$HOME/quicklisp/setup.lisp" ] || {
+  echo "kiln: needs Quicklisp at ~/quicklisp (the desktop uses McCLIM)" >&2; exit 1; }
+
+if [ ! -f "$CORE" ]; then
+  echo "kiln: building the core, once — McCLIM takes a few minutes" >&2
+  KILN_SOURCE_TREE="$ROOT" KILN_CORE="$CORE"     sbcl --dynamic-space-size 4096 --script "$HERE/boot/build.lisp"
+fi
+
+echo "kiln: desktop :$DISPLAY_N  ->  vnc://127.0.0.1:$((5900 + DISPLAY_N))" >&2
+exec sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}"      --load "$ROOT/glass/backend/inspect/serve-desktop.lisp"
+LAUNCH
+  chmod +x "$out/kiln-run"
+
+  cat > "$out/README" <<'RM'
+The modus-lisp desktop, as a folder.
+
+    ./kiln-run                 vnc://127.0.0.1:5901
+    GLASS_DISPLAY=3 ./kiln-run  ... on 5903 instead
+
+Needs SBCL and a Quicklisp at ~/quicklisp (McCLIM comes from there).  The first
+run compiles and dumps modus.core beside this file; later runs reuse it.
+
+This is NOT the container.  It is your user, your files and your ports, and the
+desktop's terminal is a shell as you.  What you get instead is that there is
+nothing between you and the process: the sources are right here in repos/, and
+editing one is live on the next start.
+
+repos.lock records the commit every repo was taken from.
+RM
+
+  local size
+  size=$(find "$out" -type f -print0 | xargs -0 stat -f%z 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s/1048576}')
+  note "$n repos, ${size} MB -> $out"
+  if [[ -n $zip ]]; then
+    note "zipping"
+    (cd "$(dirname "$out")" && zip -qr "$(basename "$out").zip" "$(basename "$out")")
+    note "$(dirname "$out")/$(basename "$out").zip"
+  fi
+}
+
 # The box's identity and the keys allowed to configure it.  Generated on the
 # HOST, with ssh-keygen, and mounted in — so the container never has to invent a
 # credential, the host key is stable across rebuilds (known_hosts stays quiet),
@@ -386,6 +541,8 @@ case "${1:-}" in
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;
   config) shift; cmd_config ;;
+  local)  shift; cmd_local "$@" ;;
+  bundle) shift; cmd_bundle "$@" ;;
   stop)  shift; cmd_stop ;;
   status)shift; cmd_status ;;
   logs)  shift; cmd_logs "$@" ;;

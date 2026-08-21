@@ -14,6 +14,17 @@
 ;;;;   sbcl --dynamic-space-size 4096 --script boot/build.lisp
 
 (require :asdf)
+
+;; In the image, ASDF is configured by /etc/common-lisp/source-registry.conf.d.
+;; Running on a host there is no such file, so KILN_SOURCE_TREE says "scan this
+;; tree instead" -- with the same exclusions, which are not optional: without them
+;; scribe's deps/cram and modus's vendor/chipz turn up as duplicate systems.
+(let ((tree (sb-ext:posix-getenv "KILN_SOURCE_TREE")))
+  (when tree
+    (asdf:initialize-source-registry
+     `(:source-registry (:tree ,(pathname (concatenate 'string tree "/")))
+                        (:exclude "vendor" "deps") :inherit-configuration))))
+
 (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
 
 (defvar *core* (or (sb-ext:posix-getenv "KILN_CORE") "/opt/kiln/modus.core"))

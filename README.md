@@ -91,6 +91,36 @@ The engine is auto-detected — Apple's `container` on macOS, else docker, else
 podman — and `KILN_ENGINE` overrides it. `bin/kiln` starts Apple's system
 service for you rather than telling you to.
 
+## Without a container
+
+The container buys isolation: the desktop's terminal is a root shell in a
+throwaway filesystem, and the ports are the engine's to publish. `kiln local`
+gives none of that — it is your user, your files, your ports. What it gives
+instead is that there is nothing to reason about. One SBCL process in `ps`,
+reading the checkouts in place, so an edit is live on the next start with no
+image to rebuild.
+
+```sh
+bin/kiln local            # desktop + gateway on this machine
+bin/kiln local --rebuild  # re-dump the core
+```
+
+It needs SBCL and a Quicklisp at `~/quicklisp` (McCLIM comes from there). The
+first run dumps a core into `~/.kiln`; after that it starts in about a second.
+
+`kiln bundle` packs the sources and a launcher into a folder you can move:
+
+```sh
+bin/kiln bundle --zip
+```
+
+38 repos, ~85 MB — version control, build artifacts and the external conformance
+corpora (test262, wpt) are left out, since they are most of the bytes and none of
+the desktop; `--full` keeps them. The bundle's `kiln-run` builds its core *in the
+bundle*, from the bundle's own sources, so it works wherever you unpack it — the
+wallpaper and fonts resolve to the copy sitting next to them. `repos.lock` travels
+with it, recording the commit each repo came from.
+
 ## Ports
 
 Every port is derived from `GLASS_DISPLAY` (default 1), X-style, so a second

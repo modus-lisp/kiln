@@ -18,6 +18,12 @@
 
 (defvar *core* (or (sb-ext:posix-getenv "KILN_CORE") "/opt/kiln/modus.core"))
 
+;; Hunchentoot pulls cl+ssl -- OpenSSL through a CFFI binding -- unless told not
+;; to, and it is the only thing that puts a C library in this image.  The gateway
+;; serves plain HTTP on the container's loopback and lets WebRTC do the
+;; encrypting, so its TLS half is dead weight here.  Set before anything loads it.
+(push :hunchentoot-no-ssl *features*)
+
 (defun note (fmt &rest args)
   (format *error-output* "~&kiln/build: ~?~%" fmt args)
   (finish-output *error-output*))
@@ -31,7 +37,9 @@
     ;; the display stack itself
     :sb-concurrency :glass :glass/vncauth :glass/text :glass/term :pigment
     ;; the browser path: noVNC over a WebRTC data channel, served by hunchentoot
-    :webrtc-data :hunchentoot))
+    :webrtc-data :hunchentoot
+    ;; the config TUI: seal/http + jzon, for resolving a NIP-05 at config time
+    :seal/http :com.inuoe.jzon))
 
 ;;; Systems the desktop is explicitly written to run without — serve-desktop.lisp
 ;;; wraps each in ignore-errors and adapts (a silent desktop is a working

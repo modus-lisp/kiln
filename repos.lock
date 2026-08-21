@@ -5,11 +5,11 @@
 
 brotli-pure     master  e7ba1fc305ca2b735dddfeecd02b7ad6de79de1b
 cabinet         master  00d6fa796f9fba8f53eeef6acc812481b1c1932f
-cairn           master  567bc024dd88626e8a426adc78ef09c2df92009a
+cairn           master  9ab70af9ee718f77d96bb0f108fe000360bd5c9b
 chord           master  1559fa3d3e20bb6f2a44f742866d593d0dbc061f
 cl-consensus    master  37611d5b5b61d8101f055d6fe68b51f9c086f8d1
 cl-frpc         main    05b6b39d168df99705149e67f7d3db00c2dbf9db
-cl-nostr        master  e691972c6d4bb1102c0d4e7d38e3127238dbb3ba
+cl-nostr        master  fcded280e21bdd81d951b225de54cbb12bb52a9d
 cl-tor          master  6b681c73f6de41181b6824d1cdda81dfc18c8561
 cl-transport    master  80eaf6fd2807b124b50f019013856953b14e86ef
 conch           master  55f146dedce7dbfae2942b1caae3e98381ba45bd
@@ -27,7 +27,7 @@ pagetree        master  89d19e19f0b08dd58e5ac1cefff337f1ae9ab520
 pigment         master  abcd72f4e9528b3e5942d21df6dfb75123fe463e
 reed            master  3e084b9fca07872c1c380cc8b83869765a82134c
 scribe          master  f68299a132744f25f0c9eb49eab9293b3aa72a4f
-seal            master  ca6bd1ef8ebb55871f9ecc6c23ff517555866f4d
+seal            master  e8b67160ff7c8317471192488b57a8dea4fcea78
 secp256k1-fast  master  7b4b718e733b2d3ccc0ed2a4aa7cd32416fd9abb
 shuttle         master  020eb99bd217646a47cfb055245accb569b1e330
 skep            main    d6838b4cf6328d0de0e9b81382ff5d9a60a38cb1

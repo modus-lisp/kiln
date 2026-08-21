@@ -21,11 +21,56 @@
 
 (handler-bind ((warning #'muffle-warning))
   (let ((*standard-output* (make-broadcast-stream)))
-    (asdf:load-system :conch)))
+    (asdf:load-system :conch)
+    ;; seal/http for the fetch, jzon to read the reply.
+    ;;
+    ;; NOT cl-nostr, which has a nip05 resolver already and is the proper home for
+    ;; one: it still depends on cl+ssl for wss:// relay TLS, and cl+ssl is an FFI
+    ;; binding to OpenSSL.  This control plane needs to look up one string, not a
+    ;; C TLS stack, so it goes to seal directly and stays FFI-free.
+    (asdf:load-system :seal/http)
+    (asdf:load-system :com.inuoe.jzon)))
 
 (load (merge-pathnames "config.lisp" (or *load-truename* #p"/kiln/boot/")))
 
 (setf kiln-config:*config-path* (format nil "~a/config" *etc*))
+
+;;; ---- NIP-05 ------------------------------------------------------------------
+
+(defun split-at (char string)
+  (let ((i (position char string)))
+    (if i (values (subseq string 0 i) (subseq string (1+ i))) (values "_" string))))
+
+(defun resolve-nip05 (address)
+  "NIP-05 name@domain -> (VALUES PUBKEY-HEX ERROR-STRING).
+
+   GET https://domain/.well-known/nostr.json?name=NAME and read names[name].  A
+   bare domain resolves the special name \"_\", per the spec."
+  (handler-case
+      (multiple-value-bind (name domain) (split-at #\@ address)
+        (let ((r (seal.http:http-get
+                  (format nil "https://~a/.well-known/nostr.json?name=~a" domain name)
+                  :headers '(("Accept" . "application/json")))))
+          (cond
+            ((/= (seal.http:response-status r) 200)
+             (values nil (format nil "HTTP ~d" (seal.http:response-status r))))
+            (t
+             (let* ((text (sb-ext:octets-to-string
+                           (coerce (seal.http:response-body r) '(vector (unsigned-byte 8)))
+                           :external-format :utf-8))
+                    (json (com.inuoe.jzon:parse text))
+                    (names (and (hash-table-p json) (gethash "names" json)))
+                    (key (and (hash-table-p names) (gethash name names))))
+               (cond
+                 ((null names) (values nil "no \"names\" object"))
+                 ((null key) (values nil (format nil "~a is not listed" name)))
+                 ((not (and (stringp key) (= (length key) 64)))
+                  (values nil "listed value is not a 64-hex pubkey"))
+                 (t (values (string-downcase key) nil))))))))
+    (error (e) (values nil (let ((s (princ-to-string e)))
+                             (subseq s 0 (min 60 (length s))))))))
+
+(setf kiln-config:*resolve-nip05* #'resolve-nip05)
 
 ;;; ---- authorized_keys --------------------------------------------------------
 

@@ -13,9 +13,14 @@
 
 (defpackage #:kiln-config
   (:use #:cl)
-  (:export #:run-tui #:load-config #:save-config #:config-value #:*config-path*))
+  (:export #:run-tui #:load-config #:save-config #:config-value
+           #:*config-path* #:*resolve-nip05*))
 
 (in-package #:kiln-config)
+
+(defvar *resolve-nip05* nil
+  "Function of an address, returning (VALUES PUBKEY-HEX ERROR-STRING).  Installed
+   by whoever runs the TUI, so this file needs no HTTP client of its own.")
 
 (defparameter *config-path* "/etc/kiln/config"
   "The .config, on the volume the host mounts — this is what persists.")
@@ -92,8 +97,19 @@ a certificate.
 
 Pointless on a laptop -- localhost already works -- and the reason it exists is
 the hardware this is eventually meant to run on.")
-      (:string "NOSTR_ALLOW" "Allowed npub" ""
-       "npub, 64-hex, or a NIP-05 name@domain permitted to open a session.")
+      (:identity "NOSTR_ALLOW" "Allowed identity" ""
+       "The identity permitted to open a session: an npub, a 64-hex pubkey, or a
+NIP-05 name@domain.
+
+A NIP-05 is resolved HERE, once, while you watch -- not at every boot.  That
+matters twice over.  A boot-time lookup fails silently: the gateway wraps it in
+ignore-errors and drops the entry, so one DNS hiccup leaves an empty allowlist,
+and an empty allowlist refuses everyone.  You would get a box that starts
+perfectly and rejects you with no reason given.
+
+And a NIP-05 is a NAME, resolved over DNS and HTTPS by whoever runs that domain.
+An npub is self-certifying.  Resolving once and storing the key keeps the
+convenience of typing a name while what is actually trusted stays a key.")
       (:string "NOSTR_RELAYS" "Relays" "wss://relay.damus.io,wss://nos.lol"
        "Comma-separated relay URLs used for signalling.")))))
 
@@ -108,6 +124,21 @@ the hardware this is eventually meant to run on.")
 (defun item-default (i) (fourth i))
 (defun item-help (i) (fifth i))
 
+(defun source-key (item)
+  "Where an :identity records the NIP-05 it was resolved FROM, so the display can
+   show the name and the config can be re-resolved later."
+  (concatenate 'string (item-key item) "_NIP05"))
+
+(defun nip05-address-p (s)
+  "An email-shaped identifier rather than an npub or hex: text, @, text, and a dot
+   in the domain."
+  (and (stringp s)
+       (let ((at (position #\@ s)))
+         (and at (plusp at) (< (1+ at) (length s)) (find #\. s :start at)))))
+
+(defun abbrev-key (s)
+  (if (and s (> (length s) 14)) (concatenate 'string (subseq s 0 10) "…") (or s "")))
+
 (defun walk-items (nodes fn)
   (dolist (n nodes)
     (if (menu-p n) (walk-items (menu-children n) fn) (funcall fn n))))
@@ -120,7 +151,11 @@ the hardware this is eventually meant to run on.")
 
 (defun defaults ()
   (let ((h (make-hash-table :test 'equal)))
-    (walk-items *schema* (lambda (i) (setf (gethash (item-key i) h) (item-default i))))
+    (walk-items *schema*
+                (lambda (i)
+                  (setf (gethash (item-key i) h) (item-default i))
+                  (when (eq (item-kind i) :identity)
+                    (setf (gethash (source-key i) h) ""))))
     h))
 
 (defun parse-line (line h)
@@ -171,7 +206,11 @@ the hardware this is eventually meant to run on.")
                                     (format out "~a=y~%" (item-key n))
                                     (format out "# ~a is not set~%" (item-key n))))
                          (:int (format out "~a=~d~%" (item-key n) (or v 0)))
-                         (:string (format out "~a=\"~a\"~%" (item-key n) (or v "")))))))))
+                         (:string (format out "~a=\"~a\"~%" (item-key n) (or v "")))
+                         (:identity
+                          (format out "~a=\"~a\"~%" (item-key n) (or v ""))
+                          (format out "~a=\"~a\"~%" (source-key n)
+                                  (or (gethash (source-key n) *values*) "")))))))))
       (emit *schema* 0)))
   path)
 
@@ -201,6 +240,12 @@ the hardware this is eventually meant to run on.")
       (:bool (if v "[*]" "[ ]"))
       (:int (format nil "(~d)" (or v 0)))
       (:string (format nil "(~a)" (if (and v (plusp (length v))) v "")))
+      (:identity
+       (let ((src (gethash (source-key item) *values*)))
+         (cond ((and src (plusp (length src)))
+                (format nil "(~a -> ~a)" src (abbrev-key v)))
+               ((and v (plusp (length v))) (format nil "(~a)" (abbrev-key v)))
+               (t "()"))))
       (t "   "))))
 
 ;;; ---- drawing ----------------------------------------------------------------
@@ -289,6 +334,65 @@ the hardware this is eventually meant to run on.")
       ((or (= b 127) (= b 8)) :backspace)
       (t (code-char b)))))
 
+(defun status-line (fmt &rest args)
+  (at (- *rows* 1) 1)
+  (emit "~c[2K " #\Escape)
+  (emit "~?" fmt args))
+
+(defun prompt-identity (item read-byte more-p)
+  "Edit an identity, resolving a NIP-05 on the spot.
+
+   The resolution is the whole point of the type, so its outcome is reported
+   rather than swallowed: a name that does not resolve leaves the stored key
+   ALONE instead of blanking it, because a config that silently forgets who is
+   allowed is how you lock yourself out of your own box."
+  (let ((typed (prompt-string item read-byte more-p
+                              (or (gethash (source-key item) *values*)
+                                  (gethash (item-key item) *values*)))))
+    (when (null typed) (return-from prompt-identity nil))
+    (cond
+      ((zerop (length typed))
+       (setf (gethash (item-key item) *values*) ""
+             (gethash (source-key item) *values*) "")
+       t)
+      ((not (nip05-address-p typed))
+       ;; An npub or hex is already self-certifying; nothing to look up.
+       (setf (gethash (item-key item) *values*) typed
+             (gethash (source-key item) *values*) "")
+       t)
+      ((null *resolve-nip05*)
+       (status-line "no resolver available — stored ~a as typed" typed)
+       (setf (gethash (item-key item) *values*) typed
+             (gethash (source-key item) *values*) "")
+       (read-key read-byte more-p)
+       t)
+      (t
+       (status-line "resolving ~a …" typed)
+       (multiple-value-bind (hex err) (funcall *resolve-nip05* typed)
+         (cond
+           (hex (setf (gethash (item-key item) *values*) hex
+                      (gethash (source-key item) *values*) typed)
+                (status-line "~a -> ~a" typed hex))
+           (t (status-line "could not resolve ~a: ~a (keeping previous)" typed
+                           (or err "no key listed"))))
+         (read-key read-byte more-p)
+         t)))))
+
+(defun prompt-string (item read-byte more-p &optional initial)
+  "Line-edit a value at the bottom of the screen.  Returns the string, or NIL if
+   the edit was abandoned."
+  (let ((buf (format nil "~a" (or initial ""))))
+    (loop
+      (status-line "~a = ~a" (item-key item) buf)
+      (show-cursor)
+      (let ((k (read-key read-byte more-p)))
+        (cond
+          ((eq k :enter) (hide-cursor) (return buf))
+          ((or (eq k :escape) (eq k :eof)) (hide-cursor) (return nil))
+          ((eq k :backspace)
+           (when (plusp (length buf)) (setf buf (subseq buf 0 (1- (length buf))))))
+          ((characterp k) (setf buf (concatenate 'string buf (string k)))))))))
+
 (defun prompt-value (item read-byte more-p)
   "Edit an int/string at the bottom of the screen."
   (let* ((cur (gethash (item-key item) *values*))
@@ -350,13 +454,16 @@ the hardware this is eventually meant to run on.")
                    ((and item (eq (item-kind item) :bool))
                     (setf (gethash (item-key item) *values*)
                           (not (gethash (item-key item) *values*))))
+                   ((and item (eq (item-kind item) :identity))
+                    (prompt-identity item read-byte more-p))
                    (item (prompt-value item read-byte more-p))))
             (:space
              (when (and item (not (menu-p item)))
-               (if (eq (item-kind item) :bool)
-                   (setf (gethash (item-key item) *values*)
-                         (not (gethash (item-key item) *values*)))
-                   (prompt-value item read-byte more-p))))
+               (case (item-kind item)
+                 (:bool (setf (gethash (item-key item) *values*)
+                              (not (gethash (item-key item) *values*))))
+                 (:identity (prompt-identity item read-byte more-p))
+                 (t (prompt-value item read-byte more-p)))))
             ((:left :escape)
              (if path
                  (setf path (butlast path) cursor (or (pop stack) 0))

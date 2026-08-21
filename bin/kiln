@@ -10,6 +10,7 @@
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
 #   kiln local            run on THIS machine, no container (no isolation either)
 #   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
+#   kiln view             a NATIVE window onto the desktop (glass-sdl)
 #   kiln vnc              ALSO publish RFB and open a VNC client (off by default)
 #   kiln stop             stop and remove the container
 #   kiln status           engine, image, container, ports
@@ -433,6 +434,33 @@ cmd_config() {
        kiln@127.0.0.1
 }
 
+# A native window onto the desktop — no browser, no VNC client.
+#
+# glass-sdl is the one FFI in the workspace, and this is where it belongs: glass
+# is a framebuffer and an RFB server in Common Lisp, but putting its pixels on a
+# screen means asking somebody else's window server, and on a hosted OS that is
+# always C.  Runs HERE, on your machine, against the desktop wherever it is.
+cmd_view() {
+  command -v sbcl >/dev/null || die "kiln view needs sbcl on this machine"
+  [[ -d $KILN_ROOT/glass-sdl ]] || die "no glass-sdl at $KILN_ROOT/glass-sdl"
+  KILN_VNC=1; export KILN_VNC
+  if running && ! [[ $(nc -w 2 127.0.0.1 "$VNC_PORT" 2>/dev/null | head -c 3) == RFB ]]; then
+    note "restarting to publish $VNC_PORT"
+    cmd_stop >/dev/null
+  fi
+  running || cmd_run
+  for _ in $(seq 1 90); do
+    [[ $(nc -w 2 127.0.0.1 "$VNC_PORT" 2>/dev/null | head -c 3) == RFB ]] && break
+    sleep 1
+  done
+  note "opening a native window on 127.0.0.1:$VNC_PORT"
+  exec sbcl --dynamic-space-size 2048 --disable-debugger --non-interactive \
+    --eval "(require :asdf)" \
+    --eval "(asdf:initialize-source-registry '(:source-registry (:tree #p\"$KILN_ROOT/\") (:exclude \"vendor\" \"deps\") :inherit-configuration))" \
+    --eval "(handler-bind ((warning (function muffle-warning))) (let ((*standard-output* (make-broadcast-stream))) (asdf:load-system :glass-sdl)))" \
+    --eval "(glass-sdl:view :host \"127.0.0.1\" :port $VNC_PORT)"
+}
+
 cmd_web() {
   KILN_WEB=1 MODE=web
   export KILN_WEB
@@ -539,6 +567,7 @@ case "${1:-}" in
   run)   shift; cmd_run "$@" ;;
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;
+  view)  shift; cmd_view ;;
   config) shift; cmd_config ;;
   local)  shift; cmd_local "$@" ;;
   bundle) shift; cmd_bundle "$@" ;;

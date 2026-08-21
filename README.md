@@ -91,6 +91,21 @@ The engine is auto-detected — Apple's `container` on macOS, else docker, else
 podman — and `KILN_ENGINE` overrides it. `bin/kiln` starts Apple's system
 service for you rather than telling you to.
 
+## A native window
+
+`kiln view` opens the desktop in a real window on your machine — no browser, no
+VNC client — using [glass-sdl](https://github.com/modus-lisp/glass-sdl).
+
+```sh
+bin/kiln view
+```
+
+It needs libSDL2 (`brew install sdl2`) and runs on your machine, against the
+desktop wherever it is. That is the one FFI in the workspace and the right place
+for it: glass is a framebuffer and an RFB server in Common Lisp, but putting its
+pixels on a screen means asking somebody else's window server, and on a hosted OS
+that is always C. On modus there is nothing to ask — `glass/fb` *is* the screen.
+
 ## Without a container
 
 The container buys isolation: the desktop's terminal is a root shell in a

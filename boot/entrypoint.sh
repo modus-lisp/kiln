@@ -60,25 +60,13 @@ case "$cmd" in
     # relay and no TURN.  The Nostr gateway beside this one is for when the box is
     # NOT the machine you are sitting at; that is a different problem.
     GW_PORT=${GW_PORT:-8765}
-    echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT"
-    # The control plane, if the host mounted an identity for it.  Backgrounded:
-    # it is how you configure the box, not what the box is for.
-    if [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ]; then
-      sbcl --core "$CORE" --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp &
-    fi
-    sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-2048}" \
-         --load "$ROOT/glass/backend/inspect/serve-desktop.lisp" &
-    # The gateway dials RFB on connect, so the desktop has to be listening first.
-    waited=0
-    while ! port_listening $((5900 + DISPLAY_N)); do
-      waited=$((waited + 1))
-      [ "$waited" -gt 120 ] && { echo "kiln: desktop never opened $((5900 + DISPLAY_N))" >&2; exit 1; }
-      sleep 0.5
-    done
-    echo "kiln: desktop is up; starting the gateway"
-    export GLASS_HOST=127.0.0.1 GLASS_PORT=$((5900 + DISPLAY_N)) GW_PORT
-    exec sbcl --core "$CORE" --dynamic-space-size "${KILN_HEAP:-2048}" \
-         --load "$ROOT/webrtc-data/demo/glass-webrtc/gateway.lisp"
+    export GW_PORT
+    echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT (one image)"
+    # The control plane comes up inside one.lisp, on a thread of the same image,
+    # when the host mounted an identity for it.
+    [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ] && { KILN_SSHD=1; export KILN_SSHD; }
+    exec sbcl --core "$CORE" --control-stack-size 256 \
+         --dynamic-space-size "${KILN_HEAP:-4096}" --load /kiln/boot/one.lisp
     ;;
 
   repl)

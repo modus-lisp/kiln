@@ -135,23 +135,35 @@
 
 ;;; ---- main -------------------------------------------------------------------
 
-(let* ((host-key (format nil "~a/host_ed25519" *etc*))
-       (auth-file (format nil "~a/authorized_keys" *etc*))
-       (keys (authorized-keys auth-file)))
-  (unless (probe-file host-key)
-    (format *error-output* "~&kiln/sshd: no host key at ~a — not starting~%" host-key)
-    (sb-ext:quit :unix-status 1))
-  (when (null keys)
-    ;; conch treats NIL as "any key with a valid signature", which for a control
-    ;; plane is no authentication at all.  Refuse rather than quietly open up.
-    (format *error-output* "~&kiln/sshd: no ssh-ed25519 keys in ~a — refusing to start~%~
-                            kiln/sshd: an empty authorized_keys would accept ANY key.~%"
-            auth-file)
-    (sb-ext:quit :unix-status 1))
-  (format *error-output* "~&kiln/sshd: ~d authorized key(s), config at ~a~%"
-          (length keys) kiln-config:*config-path*)
-  (force-output *error-output*)
-  ;; No forwarding: this session exists to configure the box.  The desktop has
-  ;; its own published surface and does not need a tunnel punched to it.
-  (conch:serve *port* :host-key host-key :authorized-keys keys
-                      :handler #'session :allow-forwarding nil))
+(defun start ()
+  "Serve the control plane.  Returns NIL (having said why) rather than exiting,
+   so this can be a thread inside the desktop's image as well as a process."
+  (let* ((host-key (format nil "~a/host_ed25519" *etc*))
+         (auth-file (format nil "~a/authorized_keys" *etc*))
+         (keys (authorized-keys auth-file)))
+    (cond
+      ((not (probe-file host-key))
+       (format *error-output* "~&kiln/sshd: no host key at ~a — not starting~%" host-key)
+       (finish-output *error-output*)
+       nil)
+      ((null keys)
+       ;; conch reads NIL as "any key with a valid signature", which for a control
+       ;; plane is no authentication at all.  Refuse rather than quietly open up.
+       (format *error-output* "~&kiln/sshd: no ssh-ed25519 keys in ~a — refusing to start~%~
+                               kiln/sshd: an empty authorized_keys would accept ANY key.~%"
+               auth-file)
+       (finish-output *error-output*)
+       nil)
+      (t
+       (format *error-output* "~&kiln/sshd: ~d authorized key(s), config at ~a~%"
+               (length keys) kiln-config:*config-path*)
+       (finish-output *error-output*)
+       ;; No forwarding: this session exists to configure the box.  The desktop
+       ;; has its own published surface and does not need a tunnel punched to it.
+       (conch:serve *port* :host-key host-key :authorized-keys keys
+                           :handler #'session :allow-forwarding nil)))))
+
+;;; Run on load only when this file IS the program.  one.lisp sets
+;;; KILN_SSHD_EMBEDDED and calls START on a thread of its own instead.
+(unless (sb-ext:posix-getenv "KILN_SSHD_EMBEDDED")
+  (unless (start) (sb-ext:quit :unix-status 1)))

@@ -141,6 +141,23 @@ socket to loopback *inside* the container — correctly, since the control socke
 is an unauthenticated eval socket — so `kiln eval` reaches it by running in
 there rather than through a forwarded port.
 
+## One image
+
+The desktop, the browser gateway and the SSH control plane run in a single SBCL
+process — PID 1 in the container, one line in `ps` locally. They were three
+processes because they were three scripts, which is a fact about scripts and not
+about the system: [modus](https://github.com/modus-lisp/modus) boots one image
+and everything lives in it, so the hosted arrangement is shaped the same way and
+the difference stops being something you rediscover.
+
+Nothing is forked to do it. `serve-desktop.lisp` ends by blocking in `run-wm` and
+keeps the main thread; `gateway.lisp` ends by parking in `(loop (sleep 5))` purely
+to hold its own process open, so it is loaded on a thread where that park costs
+nothing. The gateway still reaches the desktop through RFB on `127.0.0.1` — a
+loopback socket to ourselves, which is deliberate: RFB is the seam between them,
+and collapsing it would mean rewriting the gateway around glass's internals for
+no gain today.
+
 ## Startup windows
 
 The desktop comes up as a bare workspace; every app is one right-click away on

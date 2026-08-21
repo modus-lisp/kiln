@@ -137,7 +137,7 @@ RUN sbcl --script boot/clone-org.lisp \
 COPY boot/build.lisp boot/
 RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 
-COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/
+COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
 # VNC / RFB, session audio, the control+eval socket (GLASS_DISPLAY=1), and the

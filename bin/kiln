@@ -246,7 +246,14 @@ ensure_local_core() {
 }
 
 cmd_local() {
-  [[ ${1:-} == --rebuild ]] && { KILN_REBUILD=1; shift; }
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --rebuild) KILN_REBUILD=1 ;;
+      --ssh)     KILN_SSHD=1 ;;   # also serve the config TUI over ssh, here
+      *) die "local: unknown option $1" ;;
+    esac
+    shift
+  done
   host_prereqs
   ensure_local_core
   local display=${GLASS_DISPLAY:-1}
@@ -255,21 +262,13 @@ cmd_local() {
     die "something is already on $vnc (the container, perhaps: kiln stop).
   Or pick another display:  GLASS_DISPLAY=3 kiln local"
   fi
-  note "desktop :$display on this machine — no container, no isolation"
-  GLASS_DISPLAY=$display \
-  sbcl --core "$LOCAL_CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}" \
-       --load "$KILN_ROOT/glass/backend/inspect/serve-desktop.lisp" &
-  local desktop=$!
-  trap 'kill $desktop 2>/dev/null' EXIT INT TERM
-  for _ in $(seq 1 120); do
-    [[ $(nc -w 2 127.0.0.1 "$vnc" 2>/dev/null | head -c 3) == RFB ]] && break
-    sleep 0.5
-  done
+  note "desktop :$display on this machine — one image, no container, no isolation"
   note "VNC      vnc://127.0.0.1:$vnc"
-  note "browser  http://localhost:$gw/  (starting)"
-  GLASS_HOST=127.0.0.1 GLASS_PORT=$vnc GW_PORT=$gw \
-  sbcl --core "$LOCAL_CORE" --dynamic-space-size "${KILN_HEAP:-4096}" \
-       --load "$KILN_ROOT/webrtc-data/demo/glass-webrtc/gateway.lisp"
+  note "browser  http://localhost:$gw/"
+  MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
+  GLASS_DISPLAY=$display GW_PORT=$gw ${KILN_SSHD:+KILN_SSHD=$KILN_SSHD} \
+  exec sbcl --core "$LOCAL_CORE" --control-stack-size 256 \
+       --dynamic-space-size "${KILN_HEAP:-4096}" --load "$ROOT/boot/one.lisp"
 }
 
 # ---- a folder you can move ---------------------------------------------------
@@ -306,7 +305,7 @@ cmd_bundle() {
     n=$((n+1))
   done < "$ROOT/repos.lock"
   cp "$ROOT/repos.lock" "$out/repos.lock"
-  mkdir -p "$out/boot"; cp "$ROOT/boot/build.lisp" "$out/boot/"
+  mkdir -p "$out/boot"; cp "$ROOT/boot/build.lisp" "$ROOT/boot/one.lisp" "$out/boot/"
 
   cat > "$out/kiln-run" <<'LAUNCH'
 #!/usr/bin/env bash

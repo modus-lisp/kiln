@@ -31,8 +31,17 @@
 (sb-posix:setenv "GLASS_HOST" "127.0.0.1" 1)
 (sb-posix:setenv "GLASS_PORT" (princ-to-string (+ 5900 *display*)) 1)
 
+;;; THE GATEWAY IS OPT-IN.  It is an HTTP server, and a service that listens is a thing
+;;; to ask for rather than a thing a desktop brings with it.  In the container the engine
+;;; decided what was published, so starting it always was nearly free; `kiln local' has no
+;;; engine, so "always" meant a socket on every interface that nobody asked for.  Removing
+;;; the isolation layer is not the same as publishing the ports, and this is the line where
+;;; those two got conflated.  KILN_GATEWAY=1 (or `kiln local --gateway') brings it back.
+(defvar *gateway-wanted*
+  (let ((v (kiln-env "KILN_GATEWAY" "0"))) (not (or (string= v "0") (string= v "")))))
+
 (defvar *gateway-thread*
-  (when (probe-file *gateway-file*)
+  (when (and *gateway-wanted* (probe-file *gateway-file*))
     (sb-thread:make-thread
      (lambda ()
        (handler-case (load *gateway-file*)

@@ -63,12 +63,24 @@ detect_engine() {
   die "no container engine found (install Apple container, docker, or podman)"
 }
 
-ENGINE=$(detect_engine)
-command -v "$ENGINE" >/dev/null || die "engine '$ENGINE' is not on PATH"
+# LAZILY, and only for the commands that actually need a container.  This ran at
+# top level, so `kiln local' and `kiln bundle' — the two commands whose entire
+# purpose is not needing a container — died with "no container engine found" on
+# any machine without docker or podman.  KILN_ENGINE=none did not help either:
+# the PATH check below it rejected that too.  So the documented container-free
+# path could not run on a container-free host, which is the only kind of host
+# that needs it.
+ENGINE=""
+need_engine() {
+  [[ -n $ENGINE ]] && return 0
+  ENGINE=$(detect_engine) || exit 1
+  command -v "$ENGINE" >/dev/null || die "engine '$ENGINE' is not on PATH"
+}
 
 # Apple's container needs its system service up, and says so rather than
 # starting itself.  Starting it for the user is the whole point of a driver.
 ensure_engine_up() {
+  need_engine
   [[ $ENGINE == container ]] || return 0
   if ! container ls >/dev/null 2>&1; then
     note "starting the container system service"
@@ -251,6 +263,8 @@ cmd_local() {
     case $1 in
       --rebuild) KILN_REBUILD=1 ;;
       --ssh)     KILN_SSHD=1 ;;   # also serve the config TUI over ssh, here
+      --gateway) KILN_GATEWAY=1 ;;      # the browser gateway is a service; ask for it
+      --expose)  KILN_BIND=0.0.0.0 ;;   # off-loopback, and say the word to get it
       *) die "local: unknown option $1" ;;
     esac
     shift
@@ -264,10 +278,16 @@ cmd_local() {
   Or pick another display:  GLASS_DISPLAY=3 kiln local"
   fi
   note "desktop :$display on this machine — one image, no container, no isolation"
-  note "VNC      vnc://127.0.0.1:$vnc"
-  note "browser  http://localhost:$gw/"
+  note "VNC      vnc://${KILN_BIND:-127.0.0.1}:$vnc"
+  if [[ -n ${KILN_GATEWAY:-} ]]; then
+    note "browser  http://localhost:$gw/"
+  else
+    note "browser  not started (--gateway)"
+  fi
+  [[ -n ${KILN_BIND:-} ]] && note "EXPOSED on $KILN_BIND — every interface, by request"
   MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
-  GLASS_DISPLAY=$display GW_PORT=$gw ${KILN_SSHD:+KILN_SSHD=$KILN_SSHD} \
+  GLASS_DISPLAY=$display GW_PORT=$gw GLASS_BIND="${KILN_BIND:-127.0.0.1}" \
+  ${KILN_GATEWAY:+KILN_GATEWAY=$KILN_GATEWAY} ${KILN_SSHD:+KILN_SSHD=$KILN_SSHD} \
   exec sbcl --core "$LOCAL_CORE" --control-stack-size 256 \
        --dynamic-space-size "${KILN_HEAP:-4096}" --load "$ROOT/boot/one.lisp"
 }

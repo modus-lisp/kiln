@@ -789,6 +789,50 @@ cmd_eval() {
 
 cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "$IMAGE" test; }
 
+cmd_modus() {
+  # modus-lisp's own Lisp, in the image, as an ordinary process.  Nothing is
+  # mounted unless --work names it: running a REPL in a container is the same
+  # argument as running anything else in one, and modus needs no host directory
+  # to be useful.  The fences come from SET_FENCE_ARGS like every other container
+  # here — they are the default now, not something a subcommand turns on.
+  local work=""
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      --work) work=${val:?--work=DIR} ;;
+      --)     shift; break ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln modus [--work=DIR] [-- args…] — modus's own hosted Lisp, in the image.
+
+  A REPL on stdin/stdout by default; SBCL-faithful flags pass straight through
+  (--script FILE, --eval FORM, --load FILE, --non-interactive, --quit).
+
+  --work=DIR   the one host directory it can see (default: none at all)
+
+  NOT the desktop: modus has CLOS but no threads and no sockets yet, so it
+  cannot serve RFB.  It loads and runs pure-CL source today.
+USAGE
+        return 0 ;;
+      *) break ;;
+    esac
+    shift
+  done
+  ensure_engine_up
+  set_dns_args
+  set_fence_args
+  local -a mounts=()
+  if [[ -n $work ]]; then
+    [[ -d $work ]] || die "no such directory: $work"
+    work=$(cd -- "$work" && pwd)
+    mounts=(-v "$work:/work" -w /work)
+    note "workspace  $work"
+  fi
+  "$ENGINE" run --rm -it ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "${FENCE_ARGS[@]}" \
+    ${mounts[@]+"${mounts[@]}"} "$IMAGE" modus "$@"
+}
+
 cmd_lock() {
   # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
   # Lisp git over seal's TLS, one HTTPS GET apiece, no GitHub API and so no token
@@ -833,6 +877,7 @@ case "${1:-}" in
   repl)  shift; cmd_repl ;;
   eval)  shift; cmd_eval "$@" ;;
   test)  shift; cmd_test ;;
+  modus) shift; cmd_modus "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

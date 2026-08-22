@@ -78,6 +78,16 @@ case "$cmd" in
     lisp "$@"
     ;;
 
+  modus)
+    # modus-lisp's OWN Lisp, hosted: SBCL-faithful toplevel flags (--script,
+    # --eval, --load, --non-interactive, --quit), its own self-hosted compiler
+    # inside the image.  Not the desktop — modus has no threads and no sockets
+    # yet, so there is nothing here to serve RFB with.  This is the REPL and the
+    # script runner, which is what it is good for today.
+    shift
+    exec "$ROOT/modus/modus" "$@"
+    ;;
+
   test)
     # glass's RFB self-test: draws a known pattern, reads it back through an
     # in-process client, asserts the pixels. Exits non-zero on any failure.

@@ -141,6 +141,24 @@ RUN sbcl --dynamic-space-size 4096 --script boot/clone-org.lisp \
 COPY boot/build.lisp boot/
 RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 
+# THE MODUS CLI — modus-lisp's own Lisp, hosted, as an ordinary ELF beside the
+# SBCL core.  A second Lisp in the image is deliberate: it is the one this
+# project is ultimately FOR, and having it here means `kiln modus' is a command
+# rather than a build.  It is a static binary with no runtime dependency on
+# SBCL — SBCL only cross-builds it, here, once.
+#
+# It does NOT run the desktop and is not meant to: modus has CLOS but no threads
+# and no sockets yet, and the desktop needs both.  What it can do today is load
+# and run pure-CL source (verified: cram's four files load, and its inflate
+# gunzips a real gzip file byte-exactly).
+# MODUS_CLI_OUT is not optional: the build's default output path is the RELATIVE
+# name "modus", so with WORKDIR /kiln it would land in /kiln and the test below
+# would fail on a path that does not exist.  Name it outright.
+RUN MODUS_CLI_OUT="$MODUS_ROOT/modus/modus" \
+    sbcl --dynamic-space-size 4096 --script "$MODUS_ROOT/modus/mvm/build-generic-cli.lisp" \
+ && test -x "$MODUS_ROOT/modus/modus" \
+ && chmod a+rx "$MODUS_ROOT/modus/modus"
+
 COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 

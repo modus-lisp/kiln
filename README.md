@@ -82,6 +82,7 @@ rate limit.
 | `kiln logs [-f]` | container logs |
 | `kiln shell` | a bash prompt inside the running desktop |
 | `kiln repl` | an SBCL REPL with the whole world already loaded |
+| `kiln modus` | modus-lisp's **own** Lisp, hosted — REPL or `--script` |
 | `kiln eval '(form)'` | evaluate in the **running** desktop, live |
 | `kiln test` | glass's RFB self-test in a throwaway container |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
@@ -90,6 +91,24 @@ rate limit.
 The engine is auto-detected — Apple's `container` on macOS, else docker, else
 podman — and `KILN_ENGINE` overrides it. `bin/kiln` starts Apple's system
 service for you rather than telling you to.
+
+## The other Lisp
+
+The image carries two. SBCL runs the desktop; `kiln modus` runs
+[modus](https://github.com/modus-lisp/modus)'s own hosted Lisp — a static ELF
+with its self-hosted compiler inside it, taking the same toplevel flags
+(`--script`, `--eval`, `--load`, `--quit`).
+
+```sh
+kiln modus                       # a REPL on stdin/stdout
+kiln modus --work=. -- --script build.lisp
+```
+
+It is **not** the desktop and cannot be yet: modus has CLOS, file and block I/O,
+and loads pure-CL source (cram's four files load, and its inflate gunzips a real
+gzip file byte-exactly), but it has no threads and no sockets — and RFB needs
+both. Having it in the image makes running it a command rather than a build,
+which is the point: this is the Lisp the project is ultimately for.
 
 ## A native window
 

@@ -45,6 +45,19 @@
   (let ((v (kiln-env name nil)))
     (and v (not (string= v "")) (not (string= v "0")) (not (string= v "n")))))
 
+(defun kiln-file-has-relative-import-p (path)
+  "T iff PATH contains an ES import of a ./relative module.  Cheap and textual on
+   purpose: the question is only whether this file was bundled, and the answer is
+   worth having at boot rather than on somebody's phone."
+  (ignore-errors
+   (with-open-file (in path :if-does-not-exist nil)
+     (when in
+       (loop for line = (read-line in nil nil)
+             while line
+             thereis (and (search "import" line)
+                          (or (search "from './" line) (search "from \"./" line))
+                          t))))))
+
 (defun kiln-file-line (path)
   "The first non-blank line of PATH, or NIL.  How a secret gets in here: a file with
    a mode on it, not an environment variable inherited by every child of this image."
@@ -191,12 +204,36 @@
          ;; box does not serve a client, which is a working connection that cannot draw
          ;; anything.  The file ships beside the gateway; if it is missing, say so here
          ;; rather than letting the phone discover it twelve seconds into a black page.
-         (let ((payload (format nil "~a/webrtc-data/demo/glass-webrtc/payload.js" *root*)))
-           (cond ((probe-file payload)
-                  (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)
-                  (sb-posix:setenv "PAYLOAD_FILE" payload 1))
-                 (t (format *error-output* "~&@@ nostr: no payload.js at ~a — the phone will ~
-                                              connect and have nothing to draw with~%" payload))))
+         ;;
+         ;; WHICH payload, though.  The file in the repo is the SOURCE, and it still has
+         ;; `import RFB from "./novnc/core/rfb.js"' at the top: the client runs from a blob
+         ;; URL, where a relative path resolves against nothing, so serving the source gets
+         ;; "does not resolve to a valid URL" on the phone and a dead Retry button.  The
+         ;; bundle (mksplit.py, esbuild) is a separate artefact and is not in the clone.
+         ;;
+         ;; So: an explicit PAYLOAD_FILE wins, then a bundle dropped in /etc/kiln, then the
+         ;; repo's own file -- and if what we end up with still carries a relative import,
+         ;; SAY SO HERE.  That check is the whole point: every other part of this failure
+         ;; looks healthy, and the phone is the only place the truth shows up.
+         (let* ((etc-payload (format nil "~a/payload.js" *etc*))
+                (repo-payload (format nil "~a/webrtc-data/demo/glass-webrtc/payload.js" *root*))
+                (payload (or (kiln-env "PAYLOAD_FILE" nil)
+                             (and (probe-file etc-payload) etc-payload)
+                             (and (probe-file repo-payload) repo-payload))))
+           (cond
+             ((null payload)
+              (format *error-output* "~&@@ nostr: no payload.js — the phone will connect ~
+                                        and have nothing to draw with~%"))
+             (t
+              (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)
+              (sb-posix:setenv "PAYLOAD_FILE" payload 1)
+              (when (kiln-file-has-relative-import-p payload)
+                (format *error-output*
+                        "~&@@ nostr: ~a is UNBUNDLED — it imports a relative path, which cannot~%~
+                           @@   resolve in the browser (the client runs from a blob URL).  The phone~%~
+                           @@   will say \"does not resolve to a valid URL\".  Build it:~%~
+                           @@   esbuild payload.js --bundle --format=esm --outfile=<out>/payload.js~%"
+                        payload)))))
          (sb-thread:make-thread
           (lambda ()
             (handler-case (load *nostr-gateway-file*)

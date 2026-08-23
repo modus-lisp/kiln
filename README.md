@@ -197,6 +197,23 @@ desktop is one environment variable rather than an edited file:
 GLASS_DISPLAY=2 KILN_NAME=kiln2 bin/kiln run    # a second desktop on 5902
 ```
 
+Those are the *port* spellings. By default the screen is not on a port at all: it
+is a socket file in `/tmp/glass`, and the other three endpoints are named beside
+it rather than counted from it.
+
+| | socket | display 1 |
+|---|---|---|
+| screen / RFB | `seat-N.rfb` | `/tmp/glass/seat-1.rfb` |
+| session audio | `seat-N.audio` | `/tmp/glass/seat-1.audio` |
+| microphone | `seat-N.mic` | `/tmp/glass/seat-1.mic` |
+| admission | `seat-N.admit` | `/tmp/glass/seat-1.admit` |
+
+A loopback port inside a container is open to every uid in that container, and
+here the gateway is a *thread of the desktop's own process* — so the port bought
+nothing and cost the boundary. A socket file at 0600 is owner-only and the kernel
+enforces it. `kiln vnc` switches the screen back to a port, because that is what a
+VNC client dials.
+
 Published ports land on **127.0.0.1** of the host unless `KILN_EXPOSE=1` says
 otherwise — `-p 8765:8765` with no address means every interface, which is not a
 thing to arrive at by default. glass binds the session audio and the control
@@ -222,6 +239,48 @@ nothing. The gateway still reaches the desktop through RFB on `127.0.0.1` — a
 loopback socket to ourselves, which is deliberate: RFB is the seam between them,
 and collapsing it would mean rewriting the gateway around glass's internals for
 no gain today.
+
+## Reaching it from away
+
+`http://localhost:8765` works because the port is on the host's loopback and
+`http://localhost` is a secure context. That is the whole local story, and none of
+it applies to a box you are not sitting at.
+
+For that there is a second gateway in the same image, signalling over nostr:
+NIP-59 gift wrap on public relays, so nothing needs a forwarded port, a DNS record
+or a certificate. It is off by default and turned on in the config:
+
+```sh
+kiln config          # Remote access -> Nostr signalling
+```
+
+Three things have to be true, and the box tells you which one is missing rather
+than failing as a black screen:
+
+1. **An identity**, 64 hex in `/etc/kiln/nostr-sec` (`$HOME/.kiln/nostr-sec` on
+   the host). `openssl rand -hex 32 > ~/.kiln/nostr-sec`. The desktop and the
+   gateway share it — it signs the box's events *and* is the HMAC key for login
+   codes, so two identities in one image means every link ever issued and every
+   device already enrolled silently stops verifying.
+2. **An allowlist**, `NOSTR_ALLOW`: an npub, a 64-hex pubkey, or a NIP-05
+   `name@domain`. A NIP-05 is resolved once, in the TUI, while you watch — never
+   at boot, where a DNS hiccup would leave an empty allowlist, and an empty
+   allowlist refuses everyone.
+3. **A route**, sometimes. Two peers behind carrier NAT, or on a VPN handing both
+   ends addresses neither can route to, will gather candidates and pair with none
+   of them: the session authenticates, the screen never arrives. `TURN_SERVER` /
+   `TURN_USER` / `TURN_PASS` give it the route that always exists, since both ends
+   dial out to it.
+
+The client itself is served down the data channel the phone just opened
+(`payload.js`, stream 104). Without it a phone authenticates, gets a session, gets
+a screen, and is told *"this desktop is not serving the client"* — a working
+connection with nothing to draw with.
+
+Admission is answered by the **desktop**, not the gateway: the allowlist, the
+enrolment store and the login tokens live in glass, and the gateway asks. So a
+desktop built without `:glass/nostr` refuses every offer no matter what the
+gateway is configured with. It is in the core for that reason.
 
 ## Startup windows
 
@@ -269,8 +328,11 @@ is. kiln does not fork it.
   Point `GLASS_VOICE` at a `.graph` and `GLASS_EARS` at the recognizer directory
   to wake them up. A silent desktop is a working desktop — the code is written
   to adapt, not to fail.
-- **It runs as root**, which is ordinary for a single-user desktop image and
-  means the desktop's terminal is a root shell *inside its own container*.
+- **It does not run as root** any more — the fences run it as uid 1000 with all
+  capabilities dropped and a read-only rootfs. That last one has a consequence
+  worth knowing: a system that is not in the saved core cannot be compiled at
+  boot, and the failure arrives as `Can't create directory` naming a fasl cache,
+  which points at everything except the system that is actually missing.
 - **The build needs the network**, and reaches three places: Debian's mirrors,
   Quicklisp, and GitHub. Nothing here works air-gapped.
 - **On Apple's `container`, guest DNS does not resolve** on a good number of

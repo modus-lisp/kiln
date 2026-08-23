@@ -32,6 +32,13 @@
   (format nil "~a/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp" *root*))
 (defvar *etc* (kiln-env "KILN_ETC" "/etc/kiln"))
 
+(defun kiln-flag-default (name default)
+  "KILN-FLAG, but for a setting whose default is ON.  Absent means DEFAULT; a value
+   that is 0/n/empty is off whatever the default was."
+  (let ((v (kiln-env name nil)))
+    (if (null v) default
+        (and (not (string= v "")) (not (string= v "0")) (not (string= v "n"))))))
+
 (defun kiln-flag (name)
   "T iff NAME is set to something that is not 0 or empty.  `y' from the .config,
    `1' from a shell, both mean the same thing."
@@ -165,6 +172,20 @@
          (let ((allow (kiln-env "NOSTR_ALLOW" "")))
            (when (plusp (length allow))
              (sb-posix:setenv "GLASS_NOSTR_ALLOW" allow 1)))
+         ;; THE PICTURE.  Without VIDEO_PRIMARY the gateway starts no desktop capture, so
+         ;; START-VIDEO is handed :SOURCE NIL -- it negotiates a video track and then has
+         ;; nothing to put on it.  The viewer gets a stream that never produces a frame,
+         ;; which looks like a broken desktop rather than a missing setting: the channel is
+         ;; healthy, the payload arrives, and the screen flickers on an empty <video>.
+         ;;
+         ;; It is the default here because this gateway exists for a phone on the far side
+         ;; of a relay, where VP8 is the point -- shipping raw RFB rectangles over SCTP to a
+         ;; handset is the arrangement video-primary was written to replace.  KILN_VIDEO=n
+         ;; puts the pixels back on the data channel.
+         (unless (kiln-env "VIDEO_PRIMARY" nil)
+           (if (kiln-flag-default "KILN_VIDEO" t)
+               (sb-posix:setenv "VIDEO_PRIMARY" "1" 1)
+               (format *error-output* "~&@@ nostr: KILN_VIDEO=n — pixels go over the data channel~%")))
          ;; THE CLIENT ITSELF, served down the channel the phone just opened.  Without
          ;; it the phone authenticates, gets a session, gets a screen — and is told the
          ;; box does not serve a client, which is a working connection that cannot draw

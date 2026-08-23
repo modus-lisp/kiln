@@ -110,8 +110,25 @@ perfectly and rejects you with no reason given.
 And a NIP-05 is a NAME, resolved over DNS and HTTPS by whoever runs that domain.
 An npub is self-certifying.  Resolving once and storing the key keeps the
 convenience of typing a name while what is actually trusted stays a key.")
-      (:string "NOSTR_RELAYS" "Relays" "wss://relay.damus.io,wss://nos.lol"
-       "Comma-separated relay URLs used for signalling.")
+      (:string "NOSTR_RELAYS" "Relays" "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net"
+       "Comma-separated relay URLs used for signalling.
+
+Match the CLIENT's list, or an offer can be published somewhere the box is not
+listening and simply never arrive -- which looks exactly like a box that is
+ignoring you.  The browser client publishes to all three of these, so the default
+is all three: signalling is one message each way, and the redundancy costs
+nothing next to a session that silently never starts.")
+      (:bool "KILN_VIDEO" "Send the screen as video" t
+       "How the desktop reaches a remote viewer: VP8 video (on), or raw RFB
+rectangles over the data channel (off).
+
+On is right for a phone across a relay, which is what this gateway is for.
+Off is the older arrangement and still useful on a fast local link, where
+rectangles are sharper than a lossy codec.
+
+The failure worth knowing: with video negotiated but no capture running, the
+viewer gets a stream that never produces a frame -- a healthy connection, a
+delivered client, and a screen that flickers on an empty video element.")
       (:string "TURN_SERVER" "TURN relay" ""
        "host:port of a TURN server, for when the two ends cannot reach each other
 directly.

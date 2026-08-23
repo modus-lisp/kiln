@@ -226,6 +226,8 @@ cmd_run() {
     ${KILN_DEV_CACHE:+--tmpfs /home/kiln/.cache} \
     -e KILN_SSH_PORT="$SSH_PORT" \
     ${KILN_VNC:+-p "$PUBLISH_ON$VNC_PORT:$VNC_PORT"} \
+    ${KILN_VNC:+-e KILN_VNC="$KILN_VNC"} \
+    ${KILN_VNC:+-e GLASS_BIND=0.0.0.0} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.
@@ -745,8 +747,18 @@ cmd_web() {
   [[ $(uname -s) == Darwin ]] && open "$url" || note "point a browser at $url"
 }
 
-# RFB is NOT published by default.  The desktop still listens on it inside the
-# container — that is how the gateway reaches it — but nothing outside can. This
+# ...and the screen must bind the container's OWN interface for a published port to
+# reach it.  glass binds 127.0.0.1 by default, correctly -- but a published port
+# arrives on eth0, so forwarding to a loopback-bound server delivers to nothing, and
+# Apple's proxy accepts first so the viewer sees an open port and an empty stream.
+# 0.0.0.0 is every interface OF THE CONTAINER, which is not the LAN: the host side is
+# still published to 127.0.0.1 unless KILN_EXPOSE says otherwise.
+#
+# RFB is NOT published by default.  The desktop does not even LISTEN on a port by
+# default now -- the screen is a socket file, and KILN_VNC is what puts it back on
+# 5900+N, which is why the variable has to reach the container and not merely open a
+# hole in front of it.  Publishing without it forwards to nothing, and Apple's port
+# proxy accepts anyway, so the viewer connects and reads no banner at all. This
 # turns it on, and it is a real widening: RFB's own auth is DES over a password
 # truncated to eight characters, so the honest posture is off unless asked for.
 cmd_vnc() {

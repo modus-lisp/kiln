@@ -43,6 +43,27 @@
     (sb-ext:quit :unix-status 1))
   (load setup))
 
+;; QUICKLISP'S OWN HTTP CLIENT STALLS IN THE BUILD GUEST, and it stalls in the way
+;; that is hardest to read: it resolves the host, gets a response, prints the
+;; archive's size -- and then the transfer never finishes.  The build sits on one
+;; fetch that takes half a second from the host, with no error and no timeout, so it
+;; looks like a slow compile rather than a dead socket.
+;;
+;; curl is already how this image fetches quicklisp.lisp itself, so use it for the
+;; archives too.  Both schemes, because the default dist serves plain http and it is
+;; the http one that hangs.  Looked up by name: ql-http does not exist until the line
+;; above ran.
+(let ((var (find-symbol "*FETCH-SCHEME-FUNCTIONS*" :ql-http))
+      (fetch (lambda (url file &rest ignored)
+               (declare (ignore ignored))
+               (let ((out (merge-pathnames file)))
+                 (uiop:run-program (list "curl" "-fsSL" "--retry" "3" "--retry-all-errors"
+                                         "-o" (namestring out) url))
+                 (values out out)))))
+  (when (and var (boundp var))
+    (dolist (scheme '("http" "https"))
+      (push (cons scheme fetch) (symbol-value var)))))
+
 (defvar *core* (or (sb-ext:posix-getenv "KILN_CORE") "/opt/kiln/modus.core"))
 
 ;; Hunchentoot pulls cl+ssl -- OpenSSL through a CFFI binding -- unless told not

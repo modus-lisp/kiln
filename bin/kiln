@@ -149,7 +149,16 @@ set_fence_args() {
   # /tmp precisely so this is the only hole it needs.
   if [[ -z ${KILN_WRITABLE:-} ]] && grep -q -- "--read-only" <<<"$help"; then
     FENCE_ARGS+=(--read-only)
-    grep -q -- "--tmpfs" <<<"$help" && FENCE_ARGS+=(--tmpfs /tmp:rw,size=256m)
+    # "path:options" is DOCKER's spelling.  Apple's container takes a bare PATH, and
+    # given the docker form it does not complain -- it mounts a tmpfs at a directory
+    # literally named "/tmp:rw,size=256m" and leaves the real /tmp on the read-only
+    # rootfs.  Every fence flag still reads as applied, and the container still boots;
+    # what breaks is the first process that tries to write a fasl, which is a long way
+    # from the flag that caused it.
+    if grep -q -- "--tmpfs" <<<"$help"; then
+      if [[ $ENGINE == container ]]; then FENCE_ARGS+=(--tmpfs /tmp)
+      else FENCE_ARGS+=(--tmpfs /tmp:rw,size=256m); fi
+    fi
   fi
 }
 
@@ -213,6 +222,8 @@ cmd_run() {
     -p "$PUBLISH_ON$SSH_PORT:$SSH_PORT" \
     -v "$KILN_ETC:/etc/kiln" \
     ${KILN_MOUNT_REPOS:+$(mount_repo_args)} \
+    ${KILN_MOUNT_BOOT:+-v "$ROOT/boot:/kiln/boot"} \
+    ${KILN_DEV_CACHE:+--tmpfs /home/kiln/.cache} \
     -e KILN_SSH_PORT="$SSH_PORT" \
     ${KILN_VNC:+-p "$PUBLISH_ON$VNC_PORT:$VNC_PORT"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
@@ -618,6 +629,20 @@ RM
 # KILN_MOUNT_REPOS="conch glass" bind-mounts those local checkouts over the
 # image's cloned copies, so uncommitted work can be tested without a push and a
 # repin.  Development only — the image alone is no longer self-contained.
+# KILN_MOUNT_BOOT=1 does the same for kiln's own boot files (entrypoint.sh,
+# one.lisp, config.lisp), which are COPYed into the image rather than cloned --
+# so without it, changing how the image BOOTS costs a full rebuild to try once.
+#
+# Either of those means SOURCE NEWER THAN THE CORE, so ASDF recompiles it -- and the
+# rootfs is read-only, including the fasl cache under $HOME.  KILN_DEV_CACHE=1 puts a
+# tmpfs there so the recompile has somewhere to land.
+#
+# It is a tmpfs OVER THE DEFAULT PATH rather than a redirect (ASDF_OUTPUT_TRANSLATIONS)
+# on purpose.  Re-pointing ASDF's output at boot makes every fasl in the saved core
+# look missing, so it rebuilds systems the image already has LOADED -- and recompiling
+# a struct that live code is holding instances of is fatal: "attempt to redefine the
+# STRUCTURE-OBJECT class 3BZ::CONTEXT-BOXES incompatibly".  Keep the path, add the
+# writability.
 mount_repo_args() {
   local args=() repo
   for repo in $KILN_MOUNT_REPOS; do

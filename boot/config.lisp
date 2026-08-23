@@ -111,7 +111,24 @@ And a NIP-05 is a NAME, resolved over DNS and HTTPS by whoever runs that domain.
 An npub is self-certifying.  Resolving once and storing the key keeps the
 convenience of typing a name while what is actually trusted stays a key.")
       (:string "NOSTR_RELAYS" "Relays" "wss://relay.damus.io,wss://nos.lol"
-       "Comma-separated relay URLs used for signalling.")))))
+       "Comma-separated relay URLs used for signalling.")
+      (:string "TURN_SERVER" "TURN relay" ""
+       "host:port of a TURN server, for when the two ends cannot reach each other
+directly.
+
+They often cannot.  Two peers behind carrier NAT, or on a VPN that hands both
+ends addresses on networks neither can route to, gather plenty of candidates and
+pair with none of them -- the session authenticates, the screen never arrives,
+and nothing in the log says why.  A relay is the route that always exists,
+because both ends dial OUT to it.
+
+Empty means direct-only: fine on a LAN, and the first thing to suspect when a
+phone connects from outside and hangs.")
+      (:string "TURN_USER" "TURN username" ""
+       "Long-term credential for the TURN server.  Empty when it needs none.")
+      (:string "TURN_PASS" "TURN password" ""
+       "Its password.  Stored in this file, so the file's mode is what protects it
+-- which is why /etc/kiln is 0700 and not a mount anyone can read.")))))
 
 ;;; ---- item accessors ---------------------------------------------------------
 

@@ -65,6 +65,15 @@
     :sb-concurrency :glass :glass/vncauth :glass/text :glass/term :pigment
     ;; the browser path: noVNC over a WebRTC data channel, served by hunchentoot
     :webrtc-data :hunchentoot
+    ;; ...and the SAME path from away, over nostr signalling.  These are in the CORE
+    ;; and not optional, because the alternative is what shipped: a box whose config
+    ;; says KILN_NOSTR=y, which starts, announces the gateway, and then cannot load
+    ;; it -- the rootfs is read-only, so a system that is not in the core cannot be
+    ;; compiled at boot, and the failure surfaces as "Can't create directory"
+    ;; naming a fasl cache rather than the system that is actually missing.
+    ;; glass/nostr earns its place twice over: the DESKTOP answers admission with
+    ;; it now, so without it the screen comes up and refuses every offer.
+    :webrtc-media/rtc :glass/mic-stream :glass/nostr :cl-nostr
     ;; the control plane: conch's SSH server, and what the config TUI needs to
     ;; resolve a NIP-05 (seal/http + jzon).  These are in the CORE because
     ;; sshd.lisp runs from it -- `sbcl --script' implies --no-userinit, so a

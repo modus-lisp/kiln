@@ -26,6 +26,65 @@ port_listening() {
       /proc/net/tcp /proc/net/tcp6 2>/dev/null
 }
 
+# ---- the .config, applied ----------------------------------------------------
+#
+# `kiln config' (the menuconfig TUI, over ssh) writes /etc/kiln/config, and until now
+# NOTHING READ IT AT BOOT.  The file recorded a choice that never took effect, which is
+# worse than having no file at all: the setting is right there in the config, so the
+# reasonable conclusion when the box does not do it is that the feature is broken.
+#
+# Kernel format, so "off" and "never mentioned" stay distinguishable: KEY=value for a
+# setting, "# KEY is not set" for a disabled bool.  A commented key is simply not
+# exported, which is exactly what makes a disabled bool false here.
+#
+# THE ENVIRONMENT WINS.  A value passed with -e is this run's explicit instruction and
+# the file is the standing preference, so a flag on the command line is never silently
+# overridden by something written weeks ago.
+load_config() {
+  cfg=${KILN_ETC:-/etc/kiln}/config
+  [ -f "$cfg" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*|' '*) continue ;;
+      [A-Z_]*=*) : ;;
+      *) continue ;;
+    esac
+    k=${line%%=*}
+    v=${line#*=}
+    # A key is a key: anything else in this file is not ours to export.
+    case "$k" in
+      *[!A-Z0-9_]*) continue ;;
+    esac
+    # One layer of quotes, the way the writer emits them.
+    case "$v" in
+      \"*\") v=${v#\"}; v=${v%\"} ;;
+      \'*\') v=${v#\'}; v=${v%\'} ;;
+    esac
+    [ -n "$v" ] || continue
+    eval "cur=\${$k-}"
+    [ -n "$cur" ] && continue
+    export "$k=$v"
+  done < "$cfg"
+}
+load_config
+
+# ---- where the sockets go ----------------------------------------------------
+#
+# The rootfs is read-only and $HOME is part of it, so glass's default (~/.glass/run)
+# cannot be created and the desktop silently falls back to a PORT -- which on a box
+# whose gateway is a thread of the desktop's own process is strictly worse: a loopback
+# port is open to every uid in the container, a 0700 socket file is not.
+#
+# /tmp is the one writable place in this image (a 256M tmpfs), and runtime sockets
+# belong on a tmpfs anyway -- none of this should survive a restart.
+: "${GLASS_RUNTIME_DIR:=/tmp/glass}"
+if mkdir -p "$GLASS_RUNTIME_DIR" 2>/dev/null; then
+  chmod 700 "$GLASS_RUNTIME_DIR" 2>/dev/null || true
+  export GLASS_RUNTIME_DIR
+else
+  echo "kiln: $GLASS_RUNTIME_DIR is not writable — the screen will use a port" >&2
+fi
+
 cmd=${1:-desktop}
 [ $# -gt 0 ] && shift
 
@@ -66,6 +125,12 @@ case "$cmd" in
     KILN_GATEWAY=1
     export GW_PORT KILN_GATEWAY
     echo "kiln: desktop :$DISPLAY_N + web gateway on $GW_PORT (one image)"
+    # The nostr gateway rides in the same image when the config asks for it; one.lisp
+    # owns the decision and the identity check, this only says whether it was asked.
+    case "${KILN_NOSTR:-}" in
+      ''|0|n) echo "kiln: nostr signalling off (KILN_NOSTR in kiln config)" ;;
+      *)      echo "kiln: nostr signalling on — reaching this box from away" ;;
+    esac
     # The control plane comes up inside one.lisp, on a thread of the same image,
     # when the host mounted an identity for it.
     [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ] && { KILN_SSHD=1; export KILN_SSHD; }

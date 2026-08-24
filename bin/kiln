@@ -28,17 +28,23 @@ set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=${KILN_IMAGE:-modus-lisp/kiln}
-NAME=${KILN_NAME:-kiln}
+# ...and so is the container's name, for the same reason: `kiln' on display 1, `kiln2'
+# on display 2.  Otherwise a second `kiln run' finds the first already running and
+# reports success about somebody else's desktop.
+NAME=${KILN_NAME:-kiln$([[ ${GLASS_DISPLAY:-1} == 1 ]] || echo "${GLASS_DISPLAY:-1}")}
 DISPLAY_N=${GLASS_DISPLAY:-1}
 
 VNC_PORT=$((5900 + DISPLAY_N))
 AUDIO_PORT=$((5910 + DISPLAY_N))
 CTRL_PORT=$((4008 + DISPLAY_N))
-GW_PORT=${GW_PORT:-8765}
+# DERIVED FROM THE DISPLAY, like the three above, because a second desktop that
+# collides on two of its five ports is not a second desktop.  The offsets are chosen
+# so display 1 keeps the numbers it has always had: 8765 and 2222.
+GW_PORT=${GW_PORT:-$((8764 + DISPLAY_N))}
 # Two SBCLs share this container on the web path (desktop + gateway), and the
 # engine's default is 1 GB.
 KILN_MEM=${KILN_MEM:-4G}
-SSH_PORT=${KILN_SSH_PORT:-2222}
+SSH_PORT=${KILN_SSH_PORT:-$((2221 + DISPLAY_N))}
 # Everything that must outlive an image rebuild: the box's SSH host key, the keys
 # allowed to configure it, and the .config the TUI writes.
 KILN_ETC=${KILN_ETC:-$HOME/.kiln}

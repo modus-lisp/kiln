@@ -211,8 +211,24 @@ desktop is one environment variable rather than an edited file:
 | control + eval | `4008 + N` | 4009 |
 
 ```sh
-GLASS_DISPLAY=2 KILN_NAME=kiln2 bin/kiln run    # a second desktop on 5902
+GLASS_DISPLAY=2 bin/kiln run       # a second desktop: kiln2, 5902 / 8766 / 2223
 ```
+
+Every port and the container's name come off the display, so a second desktop needs
+one variable and collides with the first on nothing. Display 1 keeps the numbers it
+has always had.
+
+`~/.kiln` is shared between them on purpose — it is the *box's* state, not a
+session's: the SSH host key, the keys allowed to configure it, the saved core, the
+`.config`. What is per-session is keyed by display (`boot-N.lisp`) or lives inside
+the container.
+
+**Two things to know before running two.** A second `kiln local` on the *same*
+display overwrites the first's `boot-N.lisp`, and nothing warns you — same display
+means same session, so give the second one its own `GLASS_DISPLAY`. And
+`nostr-sec` is shared, which is exactly right for one box and exactly wrong for
+two: two gateways holding one identity both answer the same offer, and the phone
+gets whichever replies first. If you run two, only one of them gets `KILN_NOSTR`.
 
 Those are the *port* spellings. By default the screen is not on a port at all: it
 is a socket file in `/tmp/glass`, and the other three endpoints are named beside

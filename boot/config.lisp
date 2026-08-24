@@ -96,7 +96,12 @@ NIP-59 gift wrap over relays, so nothing needs a forwarded port, a DNS record or
 a certificate.
 
 Pointless on a laptop -- localhost already works -- and the reason it exists is
-the hardware this is eventually meant to run on.")
+the hardware this is eventually meant to run on.
+
+ONE BOX ONLY.  The identity in nostr-sec is shared by everything that reads
+/etc/kiln, so turning this on for a second desktop puts two gateways on the relays
+answering as the same npub -- and a phone gets whichever replies first, which is
+not reliably the one you meant.  Two boxes want two identities.")
       (:identity "NOSTR_ALLOW" "Allowed identity" ""
        "The identity permitted to open a session: an npub, a 64-hex pubkey, or a
 NIP-05 name@domain.

@@ -319,7 +319,7 @@ cmd_local() {
   # SBCL's REPL on stdin and stdout, the whole workspace loaded, not a byte
   # leaving the process.  That is the useful shape of useless — you can reach
   # anything from a REPL, and nothing reaches you.
-  local vnc="" vnc_sock="" control="" audio="" apps="" gateway="" gateway_id=""
+  local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id=""
   local size="" wallpaper="" voice="" ears="" config="" expose="" sshd=""
   local display=${GLASS_DISPLAY:-1}
   # Kept before the parse loop eats them: the header records the command that
@@ -336,6 +336,7 @@ cmd_local() {
       # the screen: a socket file where a viewer is local, a port where it is not
       --vnc)        vnc=${val:-auto} ;;
       --vnc-socket) vnc_sock=${val:-auto} ;;
+      --view)       view=1 ;;
       --control)    control=${val:-auto} ;;
       --audio)      audio=${val:-auto} ;;
       --apps)       apps=${val:?--apps=terminal,...} ;;
@@ -376,7 +377,7 @@ cmd_local() {
     printf ';;;; the list of things somebody typed.\n\n'
     printf '(in-package :cl-user)\n\n'
 
-    [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock ]] &&
+    [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock || -n $view ]] &&
       printf '(setf glass:*desktop-name* "modus-lisp :: glass desktop :%s")\n\n' "$display"
 
     if [[ -n $control ]]; then
@@ -450,8 +451,41 @@ cmd_local() {
       printf '             (error (e) (format *error-output* "~&kiln: ssh failed: ~a~%%" e))))))\n\n'
     }
 
-    # The screen goes LAST, because RUN-WM blocks and keeps the main thread.
-    if [[ -n $vnc || -n $vnc_sock ]]; then
+    # ---- the screen, LAST, because whatever draws it keeps the main thread ----
+    #
+    # --view is the one-image shape: the desktop composites into a framebuffer and SDL
+    # puts that framebuffer on your screen, in this process, with NO WIRE AT ALL.  No
+    # port, no socket file, no RFB handshake, no encode/decode -- the viewer reads the
+    # pixels where they already are.  RUN-WM is the same thing with a listener bolted
+    # into the middle of it, which is worth having when the viewer is elsewhere and is
+    # pure ceremony when it is not.
+    #
+    # Two threads and not two processes: SDL owns the main thread because Cocoa insists
+    # on it, so the compositor gets the background one.
+    if [[ -n $view ]]; then
+      [[ -d $KILN_ROOT/glass-sdl ]] || die "--view needs glass-sdl at $KILN_ROOT/glass-sdl"
+      local w=1280 h=800
+      [[ -n $size ]] && { w=${size%%x*}; h=${size##*x}; }
+      printf '(handler-bind ((warning (function muffle-warning)))\n'
+      printf '  (let ((*standard-output* (make-broadcast-stream)))\n'
+      printf '    (asdf:load-system :glass-sdl)))\n\n'
+      printf '(let ((p (clim-glass:make-wm-session :width %s :height %s' "$w" "$h"
+      [[ -n $wallpaper ]] && printf ' :background "%s" :background-mode :cover' "$wallpaper"
+      printf ')))\n'
+      printf '  (clim-glass:start-wm-session p (list'
+      local a; local IFS=,
+      for a in $apps; do
+        [[ -z $a ]] && continue
+        if [[ $a == terminal ]]; then printf ' (list :terminal :cols 80 :rows 24 :ppem 14)'
+        else printf ' (list (let ((*package* (find-package :clim-glass))) (read-from-string "%s")))' "$a"; fi
+      done
+      unset IFS
+      printf '))\n'
+      printf '  (sb-thread:make-thread (lambda () (clim-glass:run-wm-loop p)) :name "kiln-wm")\n'
+      printf '  (format t "~&kiln: window   one image, no wire~%%")\n'
+      printf '  (finish-output)\n'
+      printf '  (glass-sdl:view :seat (clim-glass:port-seat p)))\n'
+    elif [[ -n $vnc || -n $vnc_sock ]]; then
       local w=1280 h=800
       [[ -n $size ]] && { w=${size%%x*}; h=${size##*x}; }
       printf '(clim-glass:run-wm\n  (list'
@@ -483,14 +517,16 @@ cmd_local() {
     fi
   } > "$boot"
 
-  if [[ -z $vnc && -z $vnc_sock && -z $control && -z $audio && -z $gateway && -z $sshd ]]; then
+  if [[ -z $vnc && -z $vnc_sock && -z $view && -z $control && -z $audio && -z $gateway && -z $sshd ]]; then
     note "nothing enabled — the image and a REPL on stdin/stdout"
-    note "ask for something:  --vnc  --vnc-socket  --control  --audio  --gateway"
+    note "ask for something:  --view  --vnc  --vnc-socket  --control  --audio  --gateway"
     note "                    --apps=terminal  --size=WxH  --wallpaper=P  --voice=P"
     exec_local "" "$display" "$addr" "" ""
   fi
 
-  if [[ -n $vnc || -n $vnc_sock ]]; then
+  if [[ -n $view ]]; then
+    note "desktop :$display — one image, no container, no wire: a window on this screen"
+  elif [[ -n $vnc || -n $vnc_sock ]]; then
     note "desktop :$display — one image, no container, no isolation"
   else
     note "no screen — services only, on display :$display"
@@ -507,6 +543,7 @@ kiln local [flags] — run the desktop on this machine, no container.
   stdin/stdout: every capability below is something you ask for by name, and the
   boot file kiln generates contains only what you asked for.
 
+  --view               open the desktop in a window HERE, with no wire at all
   --vnc[=PORT]         serve the screen over RFB (default 5900+display)
   --vnc-socket[=PATH]  serve the screen on a UNIX socket instead (no port)
   --control[=PORT|PATH] eval control socket; bare gives a 0600 socket file

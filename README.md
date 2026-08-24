@@ -112,18 +112,35 @@ which is the point: this is the Lisp the project is ultimately for.
 
 ## A native window
 
-`kiln view` opens the desktop in a real window on your machine — no browser, no
-VNC client — using [glass-sdl](https://github.com/modus-lisp/glass-sdl).
+Two ways, and the difference is the container boundary rather than a preference.
 
 ```sh
-bin/kiln view
+bin/kiln view              # containerised desktop, viewer beside it
+bin/kiln local --view      # one process, no wire at all
 ```
 
-It needs libSDL2 (`brew install sdl2`) and runs on your machine, against the
-desktop wherever it is. That is the one FFI in the workspace and the right place
-for it: glass is a framebuffer and an RFB server in Common Lisp, but putting its
-pixels on a screen means asking somebody else's window server, and on a hosted OS
-that is always C. On modus there is nothing to ask — `glass/fb` *is* the screen.
+`kiln view` runs the desktop in the container and the viewer on your machine, so
+there has to be something between them: it publishes RFB on 5900+N to your
+loopback and [glass-sdl](https://github.com/modus-lisp/glass-sdl) connects to it.
+A VM boundary is a real boundary — a socket file on a virtiofs mount is not
+connectable from the other side — so the port is not ceremony there, it is the
+only door.
+
+`kiln local --view` has no boundary to cross, and so crosses none. The desktop
+composites into a framebuffer and SDL puts *that framebuffer* on your screen, in
+the same image: no port, no socket file, no RFB handshake, no encoding a screen
+we are already holding. Two threads, not two processes — SDL owns the main one
+because Cocoa insists, so the compositor takes the other. `lsof` on it shows no
+network file descriptors at all.
+
+That second shape is the one the hardware is aimed at. On modus there is no socket
+to have and no second process to be: the desktop draws into `glass/fb` and
+something puts it on a screen. Here that something is SDL; there it is the screen.
+
+Both need libSDL2 (`brew install sdl2`). That is the one FFI in the workspace and
+the right place for it: glass is a framebuffer and an RFB server in Common Lisp,
+but putting its pixels on a screen means asking somebody else's window server, and
+on a hosted OS that is always C.
 
 ## Without a container
 

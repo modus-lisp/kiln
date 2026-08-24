@@ -23,7 +23,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build the image
-        run: docker build -t modus-lisp/kiln .
+        # --progress=plain, because buildkit collapses each step to its last few
+        # lines and this build's interesting failures are Lisp backtraces in the
+        # middle of one.  A gate you cannot read the failure of costs more than it
+        # saves.
+        run: docker build --progress=plain -t modus-lisp/kiln .
 
       - name: glass RFB self-test
         run: docker run --rm modus-lisp/kiln test

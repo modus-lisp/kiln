@@ -14,6 +14,19 @@ DISPLAY_N=${GLASS_DISPLAY:-1}
 # image build already paid for is never paid again.
 lisp() { exec sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}" "$@"; }
 
+# modus-lisp's OWN Lisp, as the HOST rather than as a guest.  Everything above
+# runs glass on SBCL; this runs it on modus.  There is no --core: modus does not
+# save images, so every start pays its own compile of whatever it loads.
+#
+# A SEPARATE FUNCTION AND NOT A FLAG ON lisp(), because the two are not
+# interchangeable — the core has McCLIM in it and modus has none, so the desktop
+# cannot be served this way and must not silently try.
+MODUS_BIN=${MODUS_BIN:-$ROOT/modus/modus}
+modus_lisp() {
+  [ -x "$MODUS_BIN" ] || { echo "kiln: no modus binary at $MODUS_BIN" >&2; exit 1; }
+  exec "$MODUS_BIN" "$@"
+}
+
 # Is something LISTENING on this port, in this namespace?
 #
 # Not bash's /dev/tcp: this script is #!/bin/sh, which is dash on Debian, and
@@ -110,11 +123,42 @@ case "$cmd" in
   modus)
     # modus-lisp's OWN Lisp, hosted: SBCL-faithful toplevel flags (--script,
     # --eval, --load, --non-interactive, --quit), its own self-hosted compiler
-    # inside the image.  Not the desktop — modus has no threads and no sockets
-    # yet, so there is nothing here to serve RFB with.  This is the REPL and the
-    # script runner, which is what it is good for today.
+    # inside the image.  A REPL and a script runner.  It is NOT the desktop —
+    # that is mcclim-glass, and modus has no McCLIM.  For glass's RFB server on
+    # modus, see `modus-rfb' below.
+    modus_lisp "$@"
+    ;;
+
+  modus-rfb)
+    # glass's RFB SERVER — the :glass system and nothing above it — running on
+    # MODUS instead of on SBCL.  Still not the desktop: mcclim-glass needs
+    # McCLIM, sb-concurrency and glass/term, none of which modus has.
+    #
+    # THE PORT IS AN ARGUMENT AND HAS NO DEFAULT.  With no port this prints
+    # usage and exits; it does not pick 5900 and it does not pick an ephemeral
+    # one, because a VNC client has to be told a number in advance and a number
+    # nobody chose is not one you can be told.  It binds 127.0.0.1 and there is
+    # no argument that changes that — publishing a port is kiln's own plumbing,
+    # one layer up, where it already is.
+    #
+    # STALENESS: the binary this runs is built ONCE, in the Dockerfile, from the
+    # modus checkout as it stood at image build time.  Editing modus afterwards
+    # changes nothing here until the image is rebuilt (`kiln build'), because —
+    # unlike the SBCL side, where ASDF loads changed systems over the core on
+    # every start — modus is a static ELF with its own compiler baked in and
+    # nothing reloads it.  MODUS_BIN overrides the path for a hand-built one.
+    port=${1:-}
+    [ -n "$port" ] || { echo "usage: kiln run modus-rfb PORT" >&2; exit 2; }
     shift
-    exec "$ROOT/modus/modus" "$@"
+    case "$port" in
+      ''|*[!0-9]*) echo "kiln: modus-rfb: PORT must be a number" >&2; exit 2 ;;
+    esac
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || {
+      echo "kiln: modus-rfb: PORT out of range" >&2; exit 2; }
+    echo "kiln: glass RFB on modus — 127.0.0.1:$port"
+    MODUS_RFB_PORT=$port
+    export MODUS_RFB_PORT
+    modus_lisp --script /kiln/boot/modus-rfb.lisp "$@"
     ;;
 
   test)

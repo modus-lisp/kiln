@@ -83,6 +83,7 @@ rate limit.
 | `kiln shell` | a bash prompt inside the running desktop |
 | `kiln repl` | an SBCL REPL with the whole world already loaded |
 | `kiln modus` | modus-lisp's **own** Lisp, hosted — REPL or `--script` |
+| `kiln modus-rfb PORT` | glass's RFB **server**, on modus, on a port you name |
 | `kiln eval '(form)'` | evaluate in the **running** desktop, live |
 | `kiln test` | glass's RFB self-test in a throwaway container |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
@@ -102,13 +103,25 @@ with its self-hosted compiler inside it, taking the same toplevel flags
 ```sh
 kiln modus                       # a REPL on stdin/stdout
 kiln modus --work=. -- --script build.lisp
+kiln modus-rfb 5999              # glass's RFB server, on modus, on 127.0.0.1:5999
 ```
 
-It is **not** the desktop and cannot be yet: modus has CLOS, file and block I/O,
-and loads pure-CL source (cram's four files load, and its inflate gunzips a real
-gzip file byte-exactly), but it has no threads and no sockets — and RFB needs
-both. Having it in the image makes running it a command rather than a build,
-which is the point: this is the Lisp the project is ultimately for.
+modus now has native threads and sockets, so the `:glass` system — packages,
+record, framebuffer, clipboard, perf, socket, rfb, zrle, over cram — loads and
+serves. `kiln modus-rfb` is that: glass's own server, with its per-client reader
+**and** sender threads on modus's threads. The port is an argument and has no
+default, it is published to loopback only, and 5900–5920 is refused because that
+is where the SBCL desktop lives.
+
+It is still **not** the desktop. That is `mcclim-glass`, which needs McCLIM,
+`sb-concurrency` and `glass/term`, none of which modus has — so a viewer sees a
+framebuffer, not a window manager.
+
+**The binary is baked into the image.** The SBCL side reloads changed systems
+over the core on every start; modus is a static ELF with its compiler inside it
+and nothing reloads it, so editing the modus checkout changes nothing until
+`kiln build`. (`MODUS_BIN` inside the container points the entry point at a
+hand-built one.)
 
 ## A native window
 

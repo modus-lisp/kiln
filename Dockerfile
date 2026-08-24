@@ -147,10 +147,17 @@ RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
 # rather than a build.  It is a static binary with no runtime dependency on
 # SBCL — SBCL only cross-builds it, here, once.
 #
-# It does NOT run the desktop and is not meant to: modus has CLOS but no threads
-# and no sockets yet, and the desktop needs both.  What it can do today is load
-# and run pure-CL source (verified: cram's four files load, and its inflate
-# gunzips a real gzip file byte-exactly).
+# It does NOT run the desktop and is not meant to: the desktop is mcclim-glass,
+# and modus has no McCLIM.  What it CAN do, as of this build, is run glass's RFB
+# SERVER — modus grew native threads and sb-bsd-sockets, so the :glass system
+# loads and `kiln modus-rfb PORT' serves a framebuffer to a real VNC client with
+# glass's per-client reader and sender threads on modus's threads.
+#
+# BUILT ONCE, HERE, AND NEVER RELOADED.  The SBCL side loads changed systems
+# over the core on every start, so editing a checkout is live; modus is a static
+# ELF with its own compiler baked in, so editing the modus checkout changes
+# nothing until this layer is rebuilt.  That is what `kiln build' is for, and
+# MODUS_BIN in the entry point is the escape hatch for a hand-built one.
 # MODUS_CLI_OUT is not optional: the build's default output path is the RELATIVE
 # name "modus", so with WORKDIR /kiln it would land in /kiln and the test below
 # would fail on a path that does not exist.  Name it outright.
@@ -159,7 +166,7 @@ RUN MODUS_CLI_OUT="$MODUS_ROOT/modus/modus" \
  && test -x "$MODUS_ROOT/modus/modus" \
  && chmod a+rx "$MODUS_ROOT/modus/modus"
 
-COPY boot/entrypoint.sh boot/config.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/session.lisp boot/
+COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/modus-rfb.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
 # THE USER EVERYTHING RUNS AS.  Not a flag on one subcommand -- the fences are

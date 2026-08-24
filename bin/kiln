@@ -18,6 +18,8 @@
 #   kiln shell            a bash prompt inside the running desktop
 #   kiln repl             an SBCL repl with the whole world already loaded
 #   kiln eval '(form)'    evaluate a form in the RUNNING desktop, live
+#   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
+#   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln lock             refresh repos.lock from the org's live refs
 #   kiln clean            remove the container and the image
@@ -1120,8 +1122,9 @@ kiln modus [--work=DIR] [-- args…] — modus's own hosted Lisp, in the image.
 
   --work=DIR   the one host directory it can see (default: none at all)
 
-  NOT the desktop: modus has CLOS but no threads and no sockets yet, so it
-  cannot serve RFB.  It loads and runs pure-CL source today.
+  NOT the desktop: that is mcclim-glass, and modus has no McCLIM.  For glass's
+  RFB server on modus — which now loads, threads and listens — see
+  `kiln modus-rfb PORT'.
 USAGE
         return 0 ;;
       *) break ;;
@@ -1140,6 +1143,76 @@ USAGE
   fi
   "$ENGINE" run --rm -it ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "${FENCE_ARGS[@]}" \
     ${mounts[@]+"${mounts[@]}"} "$IMAGE" modus "$@"
+}
+
+cmd_modus_rfb() {
+  # glass's RFB server, running on MODUS instead of on SBCL, in the image.
+  #
+  # THE PORT IS AN ARGUMENT AND HAS NO DEFAULT, and that is the whole posture of
+  # this command: a server that listens is a thing you ASK for, on a number you
+  # name.  It is published to the host's LOOPBACK only — the same PUBLISH_ON the
+  # rest of this script uses, so KILN_EXPOSE is the one deliberate widening and
+  # it is the same one deliberate widening everywhere else.
+  #
+  # 5900-5920 is where a real desktop lives on a developer's box, so this REFUSES
+  # that range rather than fighting `kiln run' for a port.
+  local port="" work="" size=""
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      --work) work=${val:?--work=DIR} ;;
+      --size) size=${val:?--size=WxH} ;;
+      --)     shift; break ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln modus-rfb PORT [--size=WxH] [--work=DIR] — glass's RFB server, on modus.
+
+  PORT         required, no default, published on 127.0.0.1 only.
+               5900-5920 is refused: that is where the SBCL desktop lives.
+  --size=WxH   framebuffer size (default 1024x768)
+  --work=DIR   the one host directory it can see (default: none at all)
+
+  This is the :glass system — packages, record, framebuffer, clipboard, perf,
+  socket, rfb, zrle, over cram — loaded by modus's own compiler at start, with
+  glass's per-client reader AND sender threads on modus's threads.  It is NOT
+  the desktop (mcclim-glass needs McCLIM; modus has none), so what a viewer
+  sees is a framebuffer, not a window manager.
+
+  THE BINARY IS BAKED INTO THE IMAGE.  Editing the modus checkout changes
+  nothing until `kiln build' — the SBCL side reloads changed systems over the
+  core on every start, and modus, being a static ELF with its compiler inside
+  it, does not.
+USAGE
+        return 0 ;;
+      *) [[ -z $port ]] && { port=$arg; shift; continue; }; break ;;
+    esac
+    shift
+  done
+  [[ -n $port ]] || die "kiln modus-rfb: needs a PORT (try --help)"
+  [[ $port =~ ^[0-9]+$ ]] || die "kiln modus-rfb: PORT must be a number"
+  (( port >= 1 && port <= 65535 )) || die "kiln modus-rfb: PORT out of range"
+  (( port >= 5900 && port <= 5920 )) &&
+    die "kiln modus-rfb: $port is inside 5900-5920, where the desktop lives — pick another"
+  local -a env=()
+  if [[ -n $size ]]; then
+    [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || die "--size wants WxH, e.g. 1280x800"
+    env=(-e "MODUS_RFB_W=${BASH_REMATCH[1]}" -e "MODUS_RFB_H=${BASH_REMATCH[2]}")
+  fi
+  ensure_engine_up
+  set_dns_args
+  set_fence_args
+  local -a mounts=()
+  if [[ -n $work ]]; then
+    [[ -d $work ]] || die "no such directory: $work"
+    work=$(cd -- "$work" && pwd)
+    mounts=(-v "$work:/work" -w /work)
+    note "workspace  $work"
+  fi
+  note "vnc://127.0.0.1:$port  (glass on modus; Ctrl-C to stop)"
+  "$ENGINE" run --rm -it ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "${FENCE_ARGS[@]}" \
+    ${env[@]+"${env[@]}"} ${mounts[@]+"${mounts[@]}"} \
+    -p "${PUBLISH_ON}${port}:${port}" "$IMAGE" modus-rfb "$port"
 }
 
 cmd_lock() {
@@ -1204,6 +1277,7 @@ case "${1:-}" in
   eval)  shift; cmd_eval "$@" ;;
   test)  shift; cmd_test ;;
   modus) shift; cmd_modus "$@" ;;
+  modus-rfb) shift; cmd_modus_rfb "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

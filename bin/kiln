@@ -234,6 +234,7 @@ cmd_run() {
     ${KILN_VNC:+-p "$PUBLISH_ON$VNC_PORT:$VNC_PORT"} \
     ${KILN_VNC:+-e KILN_VNC="$KILN_VNC"} \
     ${KILN_VNC:+-e GLASS_BIND=0.0.0.0} \
+    ${KILN_RESUME:+-e KILN_RESUME="$KILN_RESUME"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.
@@ -268,6 +269,11 @@ cmd_address() {
   # Only the screen is published.  glass binds the session audio and the control
   # socket to loopback inside the container, so they are reached from in there —
   # `kiln eval` does exactly that.
+  # WHICH SESSION.  The name is minted inside the image, so it is read back out of the
+  # log rather than known here -- the same reason `kiln local --detach' waits for it.
+  local sess
+  sess=$("$ENGINE" logs "$NAME" 2>&1 | grep -m1 -E "^@@ session " | sed 's/^@@ session //' || true)
+  [[ -n ${sess:-} ]] && note "session  $sess"
   note "browser  http://localhost:$GW_PORT/"
   if [[ -n ${KILN_VNC:-} ]]; then
     note "VNC      vnc://127.0.0.1:$VNC_PORT  (exposed by request)"
@@ -1104,7 +1110,15 @@ usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'
 
 case "${1:-}" in
   build) shift; cmd_build "$@" ;;
-  run)   shift; cmd_run "$@" ;;
+  run)   shift
+         # --resume here rather than inside cmd_run: it is an ENVIRONMENT for the
+         # container, not an engine flag, and everything else cmd_run takes is passed
+         # through to the engine verbatim.
+         case "${1:-}" in
+           --resume)   KILN_RESUME=1; export KILN_RESUME; shift ;;
+           --resume=*) KILN_RESUME=${1#*=}; export KILN_RESUME; shift ;;
+         esac
+         cmd_run "$@" ;;
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;
   view)  shift; cmd_view ;;

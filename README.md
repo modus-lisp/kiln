@@ -273,6 +273,67 @@ loopback socket to ourselves, which is deliberate: RFB is the seam between them,
 and collapsing it would mean rewriting the gateway around glass's internals for
 no gain today.
 
+## Sessions
+
+A desktop is a **session**, and a session is an identity. One nsec per session, minted
+when it starts, and the session's **name is that key read back as words**:
+
+```sh
+bin/kiln run
+  kiln: session  grant-large-decrease (new)
+  kiln:          npub1vkh6fe9hrdl47jsjje3escj3fn58alj38armm7nhagvkxryl4wxsregnjj
+```
+
+Three BIP-39 words, derived from the pubkey — so the name is not a label attached to
+an identity, it is a short reading *of* one. It can be said down a phone, typed without
+spelling, and checked against the npub rather than merely associated with it. It is
+also what the desktop writes in its lower-left corner and what an RFB client shows in
+its title bar, so a screen says which session it is without being asked.
+
+**New is the default.** `--resume` is how you ask for an old identity — same nsec, so
+links already issued still verify and enrolled devices stay enrolled:
+
+```sh
+bin/kiln sessions                       # what there is, running or resumable
+bin/kiln run --resume                   # the only idle one; lists them if there is a choice
+bin/kiln run --resume=grant-large-decrease
+bin/kiln local --detach --vnc-socket --nostr --resume
+```
+
+Bare `--resume` refuses to guess when more than one session is idle, because the wrong
+guess is a desktop wearing somebody else's identity. A name that resolves to nothing is
+treated as a typo, not as an instruction to invent a session called that.
+
+**There is no host key.** That is the point rather than an omission. A key per host
+presumes two launches on one machine mean something to each other, and they do not —
+they are two desktops sharing a kernel. It also produced a real failure: two processes
+holding one identity, both answering the same offer, and a phone getting whichever
+replied first. What *can* be shared is a session: several seats watching one session
+share its npub, which is the relationship worth being able to prove.
+
+Running one session twice cannot be prevented from here — a second process can always
+be started — so it is noticed instead. Each session directory holds a lock naming the
+pid that took it, and a launch that finds a live pid there says so loudly rather than
+quietly becoming the second voice.
+
+### What is an identity here
+
+| | what it identifies | where it lives |
+|---|---|---|
+| host | the machine | `~/.kiln/host_ed25519` (SSH host key) |
+| **session** | **this desktop** | `~/.kiln/sessions/<name>/nsec` |
+| seat | a place at the session | glass's seat key store |
+| client | who is sitting there | the enrolment store + allowlist |
+
+Two sessions on one host share **nothing**: no key in common, nothing published or
+subscribed with a value in common. Signalling is NIP-59, whose outer event is signed by
+an ephemeral key, so a relay sees a wrap addressed to a session npub and a wrap
+addressed to a client npub — both as *recipients*, never as signers.
+
+That unlinkability is at the key layer only. Two sessions on one host still connect to
+relays from one IP at one time, which correlates them without any shared key; closing
+that is an egress question (Tor), not an identity one.
+
 ## Reaching it from away
 
 `http://localhost:8765` works because the port is on the host's loopback and

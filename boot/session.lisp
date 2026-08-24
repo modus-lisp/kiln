@@ -86,29 +86,62 @@
                                                                   :radix 16))))
                                       pk)))))
 
+(defun %hostname ()
+  (or (ignore-errors (sb-unix:unix-gethostname)) "?"))
+
+(defun %split-space (s)
+  (let ((out '()) (start 0))
+    (loop for i from 0 to (length s)
+          do (when (or (= i (length s)) (char= (char s i) #\Space))
+               (when (> i start) (push (subseq s start i) out))
+               (setf start (1+ i))))
+    (nreverse out)))
+
+(defun %session-holder (dir)
+  "Who holds DIR's lock: NIL (nobody), a PID, or :ELSEWHERE.
+
+   A PID ONLY MEANS SOMETHING IN ITS OWN NAMESPACE.  The container writes its pid 1
+   here, and on the host pid 1 is launchd — alive, unrelated, and the wrong answer in
+   the dangerous direction.  So the lock records the hostname that took it, and a lock
+   from somewhere else is reported as :ELSEWHERE rather than guessed at.
+
+   EPERM counts as ALIVE.  A process we may not signal is still a process; treating the
+   refusal as absence is how a running session gets declared resumable."
+  (let* ((held (%session-slurp (format nil "~a/lock" dir)))
+         (parts (and held (%split-space held)))
+         (pid (and parts (ignore-errors (parse-integer (first parts) :junk-allowed t))))
+         (host (and parts (second parts))))
+    (cond ((null pid) nil)
+          ;; No hostname in the lock: written by an older kiln, so the pid's namespace is
+          ;; unknown.  Unknown is not "free" — say so rather than trusting a number that
+          ;; may belong to somebody else's process table.
+          ((null host) :elsewhere)
+          ((not (string= host (%hostname))) :elsewhere)
+          ((handler-case (progn (sb-posix:kill pid 0) t)
+             (sb-posix:syscall-error (e)
+               ;; ESRCH is "no such process"; anything else (EPERM) means it is there.
+               (/= (sb-posix:syscall-errno e) sb-posix:esrch))
+             (error () nil))
+           pid)
+          (t nil))))
+
 (defun %session-lock (dir)
-  "Take DIR's lock, or report who has it.  Returns T if taken, or the pid holding it.
+  "Take DIR's lock, or report who has it.  Returns T if taken, else the holder.
 
    Advisory and racy by construction — two launches in the same millisecond can both
    win.  It is here to catch the case that actually happens (a second launch, minutes
    later, of a session already running) and not to be a mutex."
-  (let* ((path (format nil "~a/lock" dir))
-         (held (%session-slurp path))
-         (pid (and held (ignore-errors (parse-integer held :junk-allowed t)))))
-    (if (and pid (ignore-errors (sb-posix:kill pid 0) t))
-        pid
+  (let ((held (%session-holder dir)))
+    (if held
+        held
         (progn (ignore-errors
-                (with-open-file (o path :direction :output :if-exists :supersede
-                                        :if-does-not-exist :create)
-                  (format o "~d~%" (sb-posix:getpid))))
+                (with-open-file (o (format nil "~a/lock" dir) :direction :output
+                                                              :if-exists :supersede
+                                                              :if-does-not-exist :create)
+                  (format o "~d ~a~%" (sb-posix:getpid) (%hostname))))
                t))))
 
-(defun %session-live-pid (dir)
-  "The live pid holding DIR's lock, or NIL.  A session with one is RUNNING; a session
-   without one is resumable."
-  (let* ((held (%session-slurp (format nil "~a/lock" dir)))
-         (pid (and held (ignore-errors (parse-integer held :junk-allowed t)))))
-    (and pid (ignore-errors (sb-posix:kill pid 0) t) pid)))
+(defun %session-live-pid (dir) (%session-holder dir))
 
 (defun kiln-session-list ()
   "Every session on this machine, newest first: (NAME NPUB LIVE-PID SECONDS-OLD).
@@ -139,10 +172,14 @@
         (progn
           (format stream "~&@@ sessions:~%")
           (dolist (s all)
-            (destructuring-bind (name npub live &rest _) s
+            (destructuring-bind (name npub held &rest _) s
               (declare (ignore _))
-              (format stream "@@   ~24a ~:[resumable~;RUNNING (pid ~:*~d)~]~@[  ~a~]~%"
-                      name live npub)))))
+              (format stream "@@   ~24a ~12a~@[  ~a~]~%"
+                      name
+                      (cond ((null held) "resumable")
+                            ((eq held :elsewhere) "held (elsewhere)")
+                            (t (format nil "RUNNING (~d)" held)))
+                      npub)))))
     (finish-output stream)
     all))
 

@@ -172,7 +172,7 @@
     ;; THE SESSION'S OWN IDENTITY.  Not the host's, and there is nothing to fall back
     ;; to: no NOSTR_SEC, no /etc/kiln/nostr-sec.  A fallback is how one host key ends up
     ;; signing for four desktops again on the machine nobody re-read the config on.
-    (let ((sec (let ((f (format nil "~a/session.lisp" (kiln-env "KILN_HOME" "/kiln"))))
+    (let ((sec (let ((f (format nil "~a/boot/session.lisp" (kiln-env "KILN_HOME" "/kiln"))))
                  (when (probe-file f)
                    (handler-case
                        (progn

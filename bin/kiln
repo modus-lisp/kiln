@@ -321,11 +321,19 @@ ensure_local_core() {
 }
 
 cmd_local() {
+  # THE SAME .config THE CONTAINER READS, through the same reader (boot/config.sh).
+  # ~/.kiln is the box's state, not a session's, so a setting recorded there means the
+  # same thing whether the desktop runs in a container or on this machine.  The
+  # environment still wins, so a flag typed now is never overridden by a file written
+  # weeks ago.
+  # shellcheck source=boot/config.sh
+  [[ -f $ROOT/boot/config.sh ]] && { KILN_ETC="$KILN_ETC" . "$ROOT/boot/config.sh"; load_config; }
+
   # Every capability is OFF.  A bare `kiln local' is the core and nothing else:
   # SBCL's REPL on stdin and stdout, the whole workspace loaded, not a byte
   # leaving the process.  That is the useful shape of useless — you can reach
   # anything from a REPL, and nothing reaches you.
-  local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id=""
+  local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id="" nostr=""
   local size="" wallpaper="" voice="" ears="" config="" expose="" sshd=""
   local display=${GLASS_DISPLAY:-1}
   # Kept before the parse loop eats them: the header records the command that
@@ -351,6 +359,7 @@ cmd_local() {
       --voice)      voice=${val:?--voice=PATH-to-graph} ;;
       --ears)       ears=${val:?--ears=PATH} ;;
       --gateway)    gateway=${val:-auto} ;;
+      --nostr)      nostr=1 ;;
       --gateway-id) gateway_id=${val:?--gateway-id=ID} ;;
       --config)     config=${val:?--config=FILE} ;;
       --expose)     expose=1 ;;
@@ -435,6 +444,80 @@ cmd_local() {
       printf '      (error (e) (format *error-output* "~&kiln: gateway failed: ~a~%%" e))))\n'
       printf '  :name "kiln-gateway")\n'
       printf '(format t "~&kiln: gateway  http://127.0.0.1:%s/~%%")\n\n' "$gp"
+    fi
+
+    # NOSTR SIGNALLING, exactly the shape of --gateway above: an environment, a thread,
+    # and a line saying what happened.  The differences are what this gateway needs that
+    # the browser one does not -- an identity, and a client to serve.
+    #
+    # It is an RFB CLIENT of this desktop, so it needs a wire to reach it: --vnc or
+    # --vnc-socket.  --view alone is a desktop with no wire at all, which is the whole
+    # point of --view and exactly why nostr cannot ride on it.
+    if [[ -n $nostr ]]; then
+      local sec="$KILN_ETC/nostr-sec"
+      # The admission endpoint FOLLOWS THE SCREEN, the same rule the gateway uses to find
+      # it: a socket screen means the .admit socket beside it, a port means the default
+      # port.  Named once here so both ends cannot drift.
+      local admit_path='nil'
+      if [[ -n $vnc_sock ]]; then
+        if [[ $vnc_sock == auto ]]; then
+          admit_path="(glass:socket-sibling (glass:socket-path \"kiln-$display.rfb\") \"admit\")"
+        else
+          admit_path="(glass:socket-sibling \"$vnc_sock\" \"admit\")"
+        fi
+      fi
+      printf '(let ((sec (ignore-errors\n'
+      printf '             (with-open-file (in "%s" :if-does-not-exist nil)\n' "$sec"
+      printf '               (when in\n'
+      printf '                 (loop for line = (read-line in nil nil) while line\n'
+      printf '                       for tr = (string-trim (list #\\Space #\\Tab #\\Return) line)\n'
+      printf '                       when (plusp (length tr)) return tr))))))\n'
+      printf '  (cond\n'
+      printf '    ((not (and sec (= (length sec) 64)))\n'
+      printf '     (format t "~&kiln: nostr    no 64-hex identity at %s — not starting~%%"))\n' "$sec"
+      printf '    (t\n'
+      printf '     (sb-posix:setenv "NOSTR_SEC" sec 1)\n'
+      # THE SAME KEY to the desktop: it answers admission, and the login tokens are
+      # HMACed with it.  Two identities in one image un-enrols every device.
+      printf '     (sb-posix:setenv "GLASS_NOSTR_SEC" sec 1)\n'
+      if [[ -n $vnc_sock ]]; then
+        local sp=$vnc_sock
+        [[ $sp == auto ]] \
+          && printf '     (sb-posix:setenv "GLASS_HOST" (format nil "unix:~a" (glass:socket-path "kiln-%s.rfb")) 1)\n' "$display" \
+          || printf '     (sb-posix:setenv "GLASS_HOST" "unix:%s" 1)\n' "$sp"
+      else
+        local vp=$vnc; [[ $vp == auto ]] && vp=$((5900 + display))
+        printf '     (sb-posix:setenv "GLASS_HOST" "127.0.0.1" 1)\n'
+        printf '     (sb-posix:setenv "GLASS_PORT" "%s" 1)\n' "$vp"
+      fi
+      # The client, and the picture.  Both are settings whose absence looks like a
+      # broken desktop rather than a missing option -- see boot/one.lisp.
+      printf '     (let ((p (find-if (function probe-file)\n'
+      printf '                       (list "%s/payload.js"\n' "$KILN_ETC"
+      printf '                             "%s/webrtc-data/demo/glass-webrtc/payload.js"))))\n' "$KILN_ROOT"
+      printf '       (when p (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)\n'
+      printf '               (sb-posix:setenv "PAYLOAD_FILE" (namestring p) 1)))\n'
+      printf '     (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
+      printf '       (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
+      # ADMISSION, which the desktop answers and the gateway only asks.  serve-desktop.lisp
+      # does this in the container; `kiln local' builds its own boot file and calls RUN-WM
+      # directly, so without this the gateway comes up perfectly and refuses every offer.
+      #
+      # *BOX-SECRET* is set by hand for the reason its own docstring gives: it is a DEFVAR
+      # read from the environment when :glass/nostr LOADS, and in a saved core that load
+      # happened at build time, where there was no identity to read.
+      printf '     (let ((mk (find-symbol "START-SESSION-NOSTR" :glass))\n'
+      printf '           (sv (find-symbol "*BOX-SECRET*" :glass)))\n'
+      printf '       (when sv (setf (symbol-value sv) sec))\n'
+      printf '       (when (and mk (fboundp mk))\n'
+      printf '         (handler-case (funcall mk :path %s)\n' "$admit_path"
+      printf '           (error (e) (format t "~&kiln: nostr    admission failed: ~a~%%" e)))))\n'
+      printf '     (sb-thread:make-thread\n'
+      printf '       (lambda ()\n'
+      printf '         (handler-case (load "%s/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp")\n' "$KILN_ROOT"
+      printf '           (error (e) (format *error-output* "~&kiln: nostr failed: ~a~%%" e))))\n'
+      printf '       :name "kiln-nostr")\n'
+      printf '     (format t "~&kiln: nostr    signalling on — reaching this box from away~%%"))))\n\n'
     fi
 
     # SSH IS A SERVER, and starting one should never be a side effect of starting a
@@ -523,9 +606,17 @@ cmd_local() {
     fi
   } > "$boot"
 
-  if [[ -z $vnc && -z $vnc_sock && -z $view && -z $control && -z $audio && -z $gateway && -z $sshd ]]; then
+  # nostr is an RFB CLIENT of this desktop, so it needs a wire to reach it.  --view is
+  # a desktop with NO wire, which is its whole point -- so it cannot carry nostr, and
+  # saying so here beats a gateway that starts and then cannot find a screen.
+  if [[ -n $nostr && -z $vnc && -z $vnc_sock ]]; then
+    die "--nostr needs a wire to the screen: add --vnc-socket (or --vnc). --view has none by design."
+  fi
+
+  if [[ -z $vnc && -z $vnc_sock && -z $view && -z $control && -z $audio && -z $gateway && -z $nostr && -z $sshd ]]; then
     note "nothing enabled — the image and a REPL on stdin/stdout"
-    note "ask for something:  --view  --vnc  --vnc-socket  --control  --audio  --gateway"
+    note "ask for something:  --view  --vnc  --vnc-socket  --control  --audio"
+    note "                    --gateway  --nostr"
     note "                    --apps=terminal  --size=WxH  --wallpaper=P  --voice=P"
     exec_local "" "$display" "$addr" "" ""
   fi
@@ -560,6 +651,14 @@ kiln local [flags] — run the desktop on this machine, no container.
   --voice=PATH         text-to-speech voice graph (chord)
   --ears=PATH          speech recognizer models (stave)
   --gateway[=PORT]     the browser gateway (an HTTP server)
+  --nostr              signalling over nostr relays — for reaching this box when it
+                       is NOT the machine you are sitting at.  Needs a wire to the
+                       screen (--vnc-socket or --vnc) because the gateway is an RFB
+                       client of it, and an identity in ~/.kiln/nostr-sec.
+                       Two cautions, both real: `kiln local' has none of the
+                       container's isolation, and the identity is shared with the
+                       container — two boxes answering as one npub, and the phone
+                       gets whichever replies first.
   --gateway-id=ID      gateway identity
   --display=N          display number (ports derive from it)
   --expose             bind 0.0.0.0 instead of loopback

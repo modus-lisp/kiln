@@ -159,7 +159,7 @@ RUN MODUS_CLI_OUT="$MODUS_ROOT/modus/modus" \
  && test -x "$MODUS_ROOT/modus/modus" \
  && chmod a+rx "$MODUS_ROOT/modus/modus"
 
-COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
+COPY boot/entrypoint.sh boot/config.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
 # THE USER EVERYTHING RUNS AS.  Not a flag on one subcommand -- the fences are

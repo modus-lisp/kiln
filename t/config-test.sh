@@ -6,19 +6,20 @@
 # was decoration.  A box whose config plainly said KILN_NOSTR=y simply did not do it,
 # which reads as a broken feature rather than an unread file.
 #
-# The function under test is lifted OUT of entrypoint.sh rather than copied into here:
-# a copy would keep passing after the original changed.
+# It sources the REAL boot/config.sh -- the same file the image and bin/kiln use.  It
+# used to lift the function out of entrypoint.sh with awk, which worked but tested a
+# text extraction as much as the code; giving the reader its own file made both callers
+# and this test point at one thing.
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-ENTRY="$HERE/../boot/entrypoint.sh"
+LIB="$HERE/../boot/config.sh"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 fails=0
 ok()   { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n     want [%s] got [%s]\n' "$1" "$2" "$3"; fails=$((fails+1)); }
 
-# the real load_config, from the real file
-awk '/^load_config\(\) \{/,/^\}/' "$ENTRY" > "$WORK/lib.sh"
-[ -s "$WORK/lib.sh" ] || { echo "  FAIL could not extract load_config from $ENTRY"; exit 1; }
+[ -f "$LIB" ] || { echo "  FAIL no $LIB"; exit 1; }
+cp "$LIB" "$WORK/lib.sh"
 
 mkdir -p "$WORK/etc"
 cat > "$WORK/etc/config" <<'CFG'

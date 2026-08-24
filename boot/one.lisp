@@ -169,36 +169,33 @@
 
 (defvar *nostr-thread*
   (when *nostr-wanted*
-    ;; A SESSION'S OWN IDENTITY, not the host's.  boot/session.lisp mints one per launch
-    ;; and names it after its own pubkey; KILN_SESSION=<name> resumes an existing one,
-    ;; keeping the npub so links already issued still verify.
-    ;;
-    ;; NOSTR_SEC in the environment still wins, and /etc/kiln/nostr-sec is still read if
-    ;; it is there: a box already running on a host key keeps working, and moves when
-    ;; somebody moves it rather than the day this lands.
-    (let ((sec (or (kiln-env "NOSTR_SEC" nil)
-                   (let ((f (format nil "~a/session.lisp" (kiln-env "KILN_HOME" "/kiln"))))
-                     (when (probe-file f)
-                       (handler-case
-                           (progn (load f)
-                                  (multiple-value-bind (name secret npub fresh)
-                                      (funcall (read-from-string "kiln-session"))
-                                    (setf *session-name* name *session-npub* npub)
-                                    ;; ...and the desktop wears it.  GLASS:*DESKTOP-NAME*
-                                    ;; is what an RFB client shows in its title bar and
-                                    ;; what the WM writes in the corner of the screen, so
-                                    ;; the name on the glass IS the session's identity
-                                    ;; rather than a label chosen beside it.
-                                    (let ((dn (find-symbol "*DESKTOP-NAME*" "GLASS")))
-                                      (when (and dn (boundp dn)) (setf (symbol-value dn) name)))
-                                    (format *error-output* "~&@@ session ~a — ~:[resumed~;new~]~@[, ~a~]~%"
-                                            name fresh npub)
-                                    (finish-output *error-output*)
-                                    secret))
-                         (error (e)
-                           (format *error-output* "~&@@ session identity failed (~a) — falling back~%" e)
-                           nil))))
-                   (kiln-file-line (format nil "~a/nostr-sec" *etc*)))))
+    ;; THE SESSION'S OWN IDENTITY.  Not the host's, and there is nothing to fall back
+    ;; to: no NOSTR_SEC, no /etc/kiln/nostr-sec.  A fallback is how one host key ends up
+    ;; signing for four desktops again on the machine nobody re-read the config on.
+    (let ((sec (let ((f (format nil "~a/session.lisp" (kiln-env "KILN_HOME" "/kiln"))))
+                 (when (probe-file f)
+                   (handler-case
+                       (progn
+                         (load f)
+                         (multiple-value-bind (name secret npub fresh)
+                             (funcall (read-from-string "kiln-session")
+                                      :resume (let ((r (kiln-env "KILN_RESUME" nil)))
+                                                (cond ((null r) nil)
+                                                      ((string= r "1") t)
+                                                      (t r))))
+                           (setf *session-name* name *session-npub* npub)
+                           ;; ...and the desktop wears it: GLASS:*DESKTOP-NAME* is the RFB
+                           ;; title and what the WM writes in the corner, so the name on
+                           ;; the glass IS the identity rather than a label beside it.
+                           (let ((dn (find-symbol "*DESKTOP-NAME*" "GLASS")))
+                             (when (and dn (boundp dn)) (setf (symbol-value dn) name)))
+                           (format *error-output* "~&@@ session ~a — ~:[resumed~;new~]~@[~%@@   ~a~]~%"
+                                   name fresh npub)
+                           (finish-output *error-output*)
+                           secret))
+                     (error (e)
+                       (format *error-output* "~&@@ session identity failed: ~a~%" e)
+                       nil))))))
       (cond
         ((not (probe-file *nostr-gateway-file*))
          (format *error-output* "~&@@ nostr: no gateway at ~a — not starting~%"
@@ -208,9 +205,10 @@
          ;; Say what to do rather than what went wrong.  A gateway with no identity
          ;; cannot sign, cannot be found, and cannot mint a login code, so there is
          ;; nothing useful to start in a degraded mode.
-         (format *error-output* "~&@@ nostr: no identity — put 64 hex in ~a/nostr-sec~%~
-                                   @@   openssl rand -hex 32 > ~:*~a/nostr-sec~%~
-                                   @@   Not starting.~%" *etc*)
+         (format *error-output* "~&@@ nostr: this session has no identity, and one could not be~%~
+                                   @@   minted (boot/session.lisp, ~a/sessions).  Not starting:~%~
+                                   @@   a gateway with no key cannot sign, cannot be found, and~%~
+                                   @@   cannot mint a login code.~%" *etc*)
          nil)
         (t
          (sb-posix:setenv "NOSTR_SEC" sec 1)

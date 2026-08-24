@@ -19,11 +19,16 @@
 ;;;; makes a good directory: finding a session by name and finding it by identity are
 ;;;; the same lookup.
 ;;;;
-;;;; A NEW SESSION EACH TIME, unless one is named.  KILN_SESSION=<name> resumes: same
-;;;; nsec, same npub, so a link issued before a restart still verifies and enrolled
-;;;; devices stay enrolled.  Without it, a fresh identity — which a Nostr client takes
-;;;; in its stride, and which is much the lesser evil next to two live desktops claiming
-;;;; to be the same one.
+;;;; A NEW SESSION EACH TIME.  That is the default and not a fallback: `--resume' is how
+;;;; you ask for an old identity, by name or — when only one is idle — by itself.  The
+;;;; resumed session keeps its nsec and npub, so a link issued before the restart still
+;;;; verifies and enrolled devices stay enrolled.  Otherwise a fresh identity, which a
+;;;; Nostr client takes in its stride and which is much the lesser evil next to two live
+;;;; desktops claiming to be the same one.
+;;;;
+;;;; AND NOTHING ELSE IS AN IDENTITY.  There is no host key to fall back to, and that is
+;;;; deliberate: a fallback is how one host key ends up signing for four desktops again,
+;;;; quietly, on the one machine where nobody re-read the configuration.
 ;;;;
 ;;;; THE LIABILITY IS RUNNING ONE SESSION TWICE, and it cannot be prevented from here —
 ;;;; a second process can always be started.  What it can do is notice: the session
@@ -98,24 +103,88 @@
                   (format o "~d~%" (sb-posix:getpid))))
                t))))
 
-(defun kiln-session (&key name)
+(defun %session-live-pid (dir)
+  "The live pid holding DIR's lock, or NIL.  A session with one is RUNNING; a session
+   without one is resumable."
+  (let* ((held (%session-slurp (format nil "~a/lock" dir)))
+         (pid (and held (ignore-errors (parse-integer held :junk-allowed t)))))
+    (and pid (ignore-errors (sb-posix:kill pid 0) t) pid)))
+
+(defun kiln-session-list ()
+  "Every session on this machine, newest first: (NAME NPUB LIVE-PID SECONDS-OLD).
+
+   `newest' is the nsec's write time, which is when the session was MINTED and not when
+   it last ran — a session is its identity, and that is the moment the identity began."
+  (let ((root (%session-dir-root)))
+    (sort
+     (loop for dir in (ignore-errors
+                       (directory (merge-pathnames "*/" (format nil "~a/" root))))
+           for name = (car (last (pathname-directory dir)))
+           for nsec = (format nil "~ansec" (namestring dir))
+           for secret = (%session-slurp nsec)
+           when (%session-hex-p secret)
+             collect (list name
+                           (let ((enc (find-symbol "NPUB-ENCODE" "CL-NOSTR.BECH32"))
+                                 (pk (%session-pubkey secret)))
+                             (and enc (fboundp enc) pk (ignore-errors (funcall enc pk))))
+                           (%session-live-pid (string-right-trim "/" (namestring dir)))
+                           (or (ignore-errors (file-write-date nsec)) 0)))
+     #'> :key #'fourth)))
+
+(defun kiln-session-report (&optional (stream *error-output*))
+  "Print the sessions, for somebody choosing one."
+  (let ((all (kiln-session-list)))
+    (if (null all)
+        (format stream "~&@@ no sessions yet — start one without --resume~%")
+        (progn
+          (format stream "~&@@ sessions:~%")
+          (dolist (s all)
+            (destructuring-bind (name npub live &rest _) s
+              (declare (ignore _))
+              (format stream "@@   ~24a ~:[resumable~;RUNNING (pid ~:*~d)~]~@[  ~a~]~%"
+                      name live npub)))))
+    (finish-output stream)
+    all))
+
+(defun kiln-session (&key name resume)
   "Find or make a session.  Returns (values NAME SECRET NPUB FRESH-P).
 
-   NAME (or KILN_SESSION) resumes an existing session; without one this mints a new
-   identity and names it after its own public key.  Writes the secret 0600 and takes the
-   directory's lock, complaining if somebody live is already holding it."
+   NEW IS THE DEFAULT.  RESUME is how you say otherwise: a name resumes that session, T
+   resumes the only resumable one there is.  With T and a choice to make, this prints
+   the sessions and refuses rather than picking for you — the wrong guess here is a
+   desktop wearing somebody else's identity.
+
+   Writes the secret 0600 and takes the directory's lock, saying so if a live pid holds
+   it already."
   (let* ((root (%session-dir-root))
          (name (or name
-                   (let ((e (sb-ext:posix-getenv "KILN_SESSION")))
-                     (and e (plusp (length e)) e))))
+                   (when (stringp resume) resume)
+                   (let ((e (sb-ext:posix-getenv "KILN_RESUME")))
+                     (and e (plusp (length e)) (not (string= e "1")) e))))
          (fresh nil)
          secret)
-    ;; A named session that exists is a resume; a named one that does not is a new
-    ;; session that was told what to be called, which is the only case where the name
-    ;; and the key are allowed to disagree.
+    ;; --resume with nothing to point at: resume the only one, or show the list.
+    (when (and (null name) (or (eq resume t)
+                               (equal (sb-ext:posix-getenv "KILN_RESUME") "1")))
+      (let ((free (remove-if #'third (kiln-session-list))))
+        (cond ((= 1 (length free)) (setf name (first (first free))))
+              ((null free)
+               (format *error-output* "~&@@ nothing to resume — no session here is idle.~%")
+               (kiln-session-report)
+               (sb-ext:exit :code 1))
+              (t
+               (format *error-output* "~&@@ which one?  --resume=<name>~%")
+               (kiln-session-report)
+               (sb-ext:exit :code 1)))))
     (when name
       (setf secret (%session-slurp (format nil "~a/~a/nsec" root name)))
-      (unless (%session-hex-p secret) (setf secret nil)))
+      (unless (%session-hex-p secret) (setf secret nil))
+      ;; A name that resolves to nothing is a typo, not an instruction to invent a
+      ;; session with that name: resuming is asking for a PARTICULAR identity.
+      (when (and (null secret) (or resume (sb-ext:posix-getenv "KILN_RESUME")))
+        (format *error-output* "~&@@ no session called ~a.~%" name)
+        (kiln-session-report)
+        (sb-ext:exit :code 1)))
     (unless secret
       (setf secret (%session-mint-secret) fresh t)
       (setf name (or name (%session-name-for secret)
@@ -138,7 +207,7 @@
                   "~&@@ session ~a is ALREADY RUNNING as pid ~d.~%~
                      @@   Two processes on one identity both answer the same offer, and~%~
                      @@   whoever asks gets whichever replies first.  Stop that one, or~%~
-                     @@   start without KILN_SESSION to get a session of your own.~%"
+                     @@   start without --resume to get a session of your own.~%"
                   name held)
           (finish-output *error-output*)))
       (values name secret

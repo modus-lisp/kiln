@@ -351,6 +351,8 @@ cmd_local() {
       --vnc)        vnc=${val:-auto} ;;
       --vnc-socket) vnc_sock=${val:-auto} ;;
       --view)       view=1 ;;
+      --detach|-d)  DETACH=1 ;;
+      --resume)     KILN_RESUME=${val:-1} ;;
       --control)    control=${val:-auto} ;;
       --audio)      audio=${val:-auto} ;;
       --apps)       apps=${val:?--apps=terminal,...} ;;
@@ -394,6 +396,19 @@ cmd_local() {
 
     [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock || -n $view ]] &&
       printf '(setf glass:*desktop-name* "modus-lisp :: glass desktop :%s")\n\n' "$display"
+
+    # EVERY SESSION HAS AN IDENTITY, whether or not anything is listening on it.  That is
+    # what the desktop wears in its corner and what an RFB client shows in its title bar,
+    # so a screen says which session it is without being asked -- and if nostr is turned
+    # on later, the key it signs with is the one this session already had.
+    printf '(load "%s/boot/session.lisp")\n' "$ROOT"
+    printf '(defvar *kiln-session-name* nil)\n'
+    printf '(defvar *kiln-session-sec* nil)\n'
+    printf '(multiple-value-bind (name sec npub fresh) (kiln-session)\n'
+    printf '  (setf *kiln-session-name* name *kiln-session-sec* sec)\n'
+    printf '  (setf glass:*desktop-name* name)\n'
+    printf '  (format t "~&kiln: session  ~a (~:[resumed~;new~])~%%" name fresh)\n'
+    printf '  (when npub (format t "kiln:          ~a~%%" npub)))\n\n'
 
     if [[ -n $control ]]; then
       if [[ $control == auto ]]; then
@@ -454,10 +469,9 @@ cmd_local() {
     # --vnc-socket.  --view alone is a desktop with no wire at all, which is the whole
     # point of --view and exactly why nostr cannot ride on it.
     if [[ -n $nostr ]]; then
-      local sec="$KILN_ETC/nostr-sec"
       # The admission endpoint FOLLOWS THE SCREEN, the same rule the gateway uses to find
       # it: a socket screen means the .admit socket beside it, a port means the default
-      # port.  Named once here so both ends cannot drift.
+      # port.  Derived once here so the two ends cannot drift.
       local admit_path='nil'
       if [[ -n $vnc_sock ]]; then
         if [[ $vnc_sock == auto ]]; then
@@ -466,58 +480,47 @@ cmd_local() {
           admit_path="(glass:socket-sibling \"$vnc_sock\" \"admit\")"
         fi
       fi
-      printf '(let ((sec (ignore-errors\n'
-      printf '             (with-open-file (in "%s" :if-does-not-exist nil)\n' "$sec"
-      printf '               (when in\n'
-      printf '                 (loop for line = (read-line in nil nil) while line\n'
-      printf '                       for tr = (string-trim (list #\\Space #\\Tab #\\Return) line)\n'
-      printf '                       when (plusp (length tr)) return tr))))))\n'
-      printf '  (cond\n'
-      printf '    ((not (and sec (= (length sec) 64)))\n'
-      printf '     (format t "~&kiln: nostr    no 64-hex identity at %s — not starting~%%"))\n' "$sec"
-      printf '    (t\n'
-      printf '     (sb-posix:setenv "NOSTR_SEC" sec 1)\n'
-      # THE SAME KEY to the desktop: it answers admission, and the login tokens are
-      # HMACed with it.  Two identities in one image un-enrols every device.
-      printf '     (sb-posix:setenv "GLASS_NOSTR_SEC" sec 1)\n'
+      # The identity is the SESSION's, minted above.  There is no host key to fall back
+      # to and that is deliberate: a fallback is how one key ends up signing for four
+      # desktops again on the machine nobody re-read the configuration on.
+      printf '(cond\n'
+      printf '  ((not (and *kiln-session-sec* (= (length *kiln-session-sec*) 64)))\n'
+      printf '   (format t "~&kiln: nostr    this session has no identity — not starting~%%"))\n'
+      printf '  (t\n'
+      printf '   (sb-posix:setenv "NOSTR_SEC" *kiln-session-sec* 1)\n'
+      printf '   (sb-posix:setenv "GLASS_NOSTR_SEC" *kiln-session-sec* 1)\n'
       if [[ -n $vnc_sock ]]; then
         local sp=$vnc_sock
         [[ $sp == auto ]] \
-          && printf '     (sb-posix:setenv "GLASS_HOST" (format nil "unix:~a" (glass:socket-path "kiln-%s.rfb")) 1)\n' "$display" \
-          || printf '     (sb-posix:setenv "GLASS_HOST" "unix:%s" 1)\n' "$sp"
+          && printf '   (sb-posix:setenv "GLASS_HOST" (format nil "unix:~a" (glass:socket-path "kiln-%s.rfb")) 1)\n' "$display" \
+          || printf '   (sb-posix:setenv "GLASS_HOST" "unix:%s" 1)\n' "$sp"
       else
         local vp=$vnc; [[ $vp == auto ]] && vp=$((5900 + display))
-        printf '     (sb-posix:setenv "GLASS_HOST" "127.0.0.1" 1)\n'
-        printf '     (sb-posix:setenv "GLASS_PORT" "%s" 1)\n' "$vp"
+        printf '   (sb-posix:setenv "GLASS_HOST" "127.0.0.1" 1)\n'
+        printf '   (sb-posix:setenv "GLASS_PORT" "%s" 1)\n' "$vp"
       fi
-      # The client, and the picture.  Both are settings whose absence looks like a
-      # broken desktop rather than a missing option -- see boot/one.lisp.
-      printf '     (let ((p (find-if (function probe-file)\n'
-      printf '                       (list "%s/payload.js"\n' "$KILN_ETC"
-      printf '                             "%s/webrtc-data/demo/glass-webrtc/payload.js"))))\n' "$KILN_ROOT"
-      printf '       (when p (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)\n'
-      printf '               (sb-posix:setenv "PAYLOAD_FILE" (namestring p) 1)))\n'
-      printf '     (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
-      printf '       (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
-      # ADMISSION, which the desktop answers and the gateway only asks.  serve-desktop.lisp
-      # does this in the container; `kiln local' builds its own boot file and calls RUN-WM
-      # directly, so without this the gateway comes up perfectly and refuses every offer.
-      #
-      # *BOX-SECRET* is set by hand for the reason its own docstring gives: it is a DEFVAR
-      # read from the environment when :glass/nostr LOADS, and in a saved core that load
-      # happened at build time, where there was no identity to read.
-      printf '     (let ((mk (find-symbol "START-SESSION-NOSTR" :glass))\n'
-      printf '           (sv (find-symbol "*BOX-SECRET*" :glass)))\n'
-      printf '       (when sv (setf (symbol-value sv) sec))\n'
-      printf '       (when (and mk (fboundp mk))\n'
-      printf '         (handler-case (funcall mk :path %s)\n' "$admit_path"
-      printf '           (error (e) (format t "~&kiln: nostr    admission failed: ~a~%%" e)))))\n'
-      printf '     (sb-thread:make-thread\n'
-      printf '       (lambda ()\n'
-      printf '         (handler-case (load "%s/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp")\n' "$KILN_ROOT"
-      printf '           (error (e) (format *error-output* "~&kiln: nostr failed: ~a~%%" e))))\n'
-      printf '       :name "kiln-nostr")\n'
-      printf '     (format t "~&kiln: nostr    signalling on — reaching this box from away~%%"))))\n\n'
+      printf '   (let ((p (find-if (function probe-file)\n'
+      printf '                     (list "%s/payload.js"\n' "$KILN_ETC"
+      printf '                           "%s/webrtc-data/demo/glass-webrtc/payload.js"))))\n' "$KILN_ROOT"
+      printf '     (when p (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)\n'
+      printf '             (sb-posix:setenv "PAYLOAD_FILE" (namestring p) 1)))\n'
+      printf '   (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
+      printf '     (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
+      # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
+      # this in the container; here the boot file calls RUN-WM directly, so without it the
+      # gateway starts perfectly and refuses every offer.
+      printf '   (let ((mk (find-symbol "START-SESSION-NOSTR" :glass))\n'
+      printf '         (sv (find-symbol "*BOX-SECRET*" :glass)))\n'
+      printf '     (when sv (setf (symbol-value sv) *kiln-session-sec*))\n'
+      printf '     (when (and mk (fboundp mk))\n'
+      printf '       (handler-case (funcall mk :path %s)\n' "$admit_path"
+      printf '         (error (e) (format t "~&kiln: nostr    admission failed: ~a~%%" e)))))\n'
+      printf '   (sb-thread:make-thread\n'
+      printf '     (lambda ()\n'
+      printf '       (handler-case (load "%s/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp")\n' "$KILN_ROOT"
+      printf '         (error (e) (format *error-output* "~&kiln: nostr failed: ~a~%%" e))))\n'
+      printf '     :name "kiln-nostr")\n'
+      printf '   (format t "~&kiln: nostr    signalling on — reaching this session from away~%%")))\n\n'
     fi
 
     # SSH IS A SERVER, and starting one should never be a side effect of starting a
@@ -651,6 +654,13 @@ kiln local [flags] — run the desktop on this machine, no container.
   --voice=PATH         text-to-speech voice graph (chord)
   --ears=PATH          speech recognizer models (stave)
   --gateway[=PORT]     the browser gateway (an HTTP server)
+  --detach, -d         run it in the background and give the terminal back.  The
+                       session's name is printed once it has picked one; the log is
+                       $KILN_STATE/session-N.log.
+  --resume[=NAME]      resume a session instead of starting a new one — same nsec, so
+                       links already issued still verify and enrolled devices stay
+                       enrolled.  Bare --resume takes the only idle session there is,
+                       and lists them rather than guessing when there is a choice.
   --nostr              signalling over nostr relays — for reaching this box when it
                        is NOT the machine you are sitting at.  Needs a wire to the
                        screen (--vnc-socket or --vnc) because the gateway is an RFB
@@ -670,11 +680,46 @@ USAGE
 
 exec_local() {
   local boot=$1 display=$2 addr=$3 gw=$4 gwid=$5
-  MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
-  GLASS_DISPLAY=$display GLASS_BIND="$addr" \
-  ${gwid:+GW_ID=$gwid} ${KILN_SSHD:+KILN_SSHD=$KILN_SSHD} \
-  exec sbcl --core "$LOCAL_CORE" --control-stack-size 256 \
-       --dynamic-space-size "${KILN_HEAP:-4096}" ${boot:+--load "$boot"}
+  local -a envv=(MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC"
+                 GLASS_DISPLAY="$display" GLASS_BIND="$addr")
+  [[ -n $gwid ]] && envv+=(GW_ID="$gwid")
+  [[ -n ${KILN_SSHD:-} ]] && envv+=(KILN_SSHD="$KILN_SSHD")
+  [[ -n ${KILN_RESUME:-} ]] && envv+=(KILN_RESUME="$KILN_RESUME")
+  local -a cmd=(sbcl --core "$LOCAL_CORE" --control-stack-size 256
+                --dynamic-space-size "${KILN_HEAP:-4096}")
+  [[ -n $boot ]] && cmd+=(--load "$boot")
+
+  # DETACHED, because a desktop is not a command you are waiting on.  `kiln run' has
+  # always been detached — the engine does it — and `kiln local' blocked the terminal
+  # that started it, which is a difference between the two paths and not between the
+  # two desktops.
+  if [[ -n ${DETACH:-} ]]; then
+    local log="$KILN_STATE/session-$display.log"
+    : > "$log"
+    nohup env "${envv[@]}" "${cmd[@]}" >>"$log" 2>&1 &
+    local pid=$!
+    note "detached — pid $pid, log $log"
+    # THE NAME IS DECIDED IN LISP, not here: the session mints its key and reads its own
+    # name off it, so the only way to report it is to wait for it to say so.  A few
+    # seconds, then give up and point at the log rather than hanging on a boot that
+    # failed.
+    local i
+    for i in $(seq 1 60); do
+      # Either spelling: one.lisp (the container boot) says "@@ session", the boot file
+      # generated here says "kiln: session".  Matching only one meant a session that had
+      # already named itself was reported as still starting.
+      if grep -qE "^(@@|kiln:) session " "$log" 2>/dev/null; then
+        grep -m1 -E "^(@@|kiln:) session " "$log" | sed 's/^@@ /kiln: /'
+        grep -m1 -E "npub1[a-z0-9]+" "$log" 2>/dev/null | sed -E 's/^[@k].*(npub1[a-z0-9]+).*/kiln:          \1/'
+        return 0
+      fi
+      kill -0 "$pid" 2>/dev/null || { note "it exited — see $log"; tail -5 "$log" >&2; return 1; }
+      sleep 0.5
+    done
+    note "still starting — watch $log"
+    return 0
+  fi
+  exec env "${envv[@]}" "${cmd[@]}"
 }
 
 # ---- a folder you can move ---------------------------------------------------
@@ -966,6 +1011,23 @@ cmd_eval() {
       timeout 10 cat <&3' _ "$1"
 }
 
+# The sessions on this machine, and which of them are running.  A session IS its
+# identity, so this is also the answer to "which npub is that desktop".
+cmd_sessions() {
+  host_prereqs
+  # Reading the list needs cl-nostr (to turn each nsec into an npub), which is in the
+  # core.  Building one just to list sessions would be absurd, so this asks for the core
+  # that exists and says so plainly when there is not one yet.
+  local core="${KILN_STATE}/modus.core"
+  [[ -f $core ]] || die "no core yet — run kiln local once (it builds one), or kiln local --rebuild"
+  local LOCAL_CORE=$core
+  MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
+  sbcl --core "$core" --noinform --non-interactive --disable-debugger \
+       --eval "(load \"$ROOT/boot/session.lisp\")" \
+       --eval '(progn (funcall (read-from-string "kiln-session-report") *standard-output*) (sb-ext:exit))' \
+    2>/dev/null | sed 's/^@@ //'
+}
+
 cmd_test() { ensure_engine_up; set_dns_args; "$ENGINE" run --rm ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} "$IMAGE" test; }
 
 cmd_modus() {
@@ -1046,6 +1108,7 @@ case "${1:-}" in
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;
   view)  shift; cmd_view ;;
+  sessions) shift; cmd_sessions ;;
   config) shift; cmd_config ;;
   local)  shift; cmd_local "$@" ;;
   bundle) shift; cmd_bundle "$@" ;;

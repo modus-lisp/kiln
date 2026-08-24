@@ -164,9 +164,40 @@
 ;;; ever issued and every device already enrolled silently stops verifying.
 (defvar *nostr-wanted* (kiln-flag "KILN_NOSTR"))
 
+(defvar *session-name* nil)
+(defvar *session-npub* nil)
+
 (defvar *nostr-thread*
   (when *nostr-wanted*
+    ;; A SESSION'S OWN IDENTITY, not the host's.  boot/session.lisp mints one per launch
+    ;; and names it after its own pubkey; KILN_SESSION=<name> resumes an existing one,
+    ;; keeping the npub so links already issued still verify.
+    ;;
+    ;; NOSTR_SEC in the environment still wins, and /etc/kiln/nostr-sec is still read if
+    ;; it is there: a box already running on a host key keeps working, and moves when
+    ;; somebody moves it rather than the day this lands.
     (let ((sec (or (kiln-env "NOSTR_SEC" nil)
+                   (let ((f (format nil "~a/session.lisp" (kiln-env "KILN_HOME" "/kiln"))))
+                     (when (probe-file f)
+                       (handler-case
+                           (progn (load f)
+                                  (multiple-value-bind (name secret npub fresh)
+                                      (funcall (read-from-string "kiln-session"))
+                                    (setf *session-name* name *session-npub* npub)
+                                    ;; ...and the desktop wears it.  GLASS:*DESKTOP-NAME*
+                                    ;; is what an RFB client shows in its title bar and
+                                    ;; what the WM writes in the corner of the screen, so
+                                    ;; the name on the glass IS the session's identity
+                                    ;; rather than a label chosen beside it.
+                                    (let ((dn (find-symbol "*DESKTOP-NAME*" "GLASS")))
+                                      (when (and dn (boundp dn)) (setf (symbol-value dn) name)))
+                                    (format *error-output* "~&@@ session ~a — ~:[resumed~;new~]~@[, ~a~]~%"
+                                            name fresh npub)
+                                    (finish-output *error-output*)
+                                    secret))
+                         (error (e)
+                           (format *error-output* "~&@@ session identity failed (~a) — falling back~%" e)
+                           nil))))
                    (kiln-file-line (format nil "~a/nostr-sec" *etc*)))))
       (cond
         ((not (probe-file *nostr-gateway-file*))

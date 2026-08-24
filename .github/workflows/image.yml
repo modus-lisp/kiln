@@ -30,16 +30,23 @@ jobs:
 
       - name: The desktop starts and serves RFB
         run: |
-          docker run -d --name kiln -p 5901:5901 modus-lisp/kiln desktop
-          # Poll rather than sleep: the core loads fast, but "fast" is not "instant".
+          # GLASS_BIND, and it is not optional: glass binds 127.0.0.1 by default, which
+          # is right for a desktop and wrong for a PUBLISHED port -- that arrives on the
+          # container's own interface and cannot be delivered to a loopback socket.
+          docker run -d --name kiln -p 5901:5901 -e GLASS_BIND=0.0.0.0 modus-lisp/kiln desktop
+          # AND IT READS THE BANNER rather than merely connecting.  docker-proxy accepts
+          # before it has anywhere to forward to, so `exec 3<>/dev/tcp' -- what this used
+          # to do -- succeeds against a container with nothing listening at all.  A check
+          # that cannot fail is worse than no check.  An RFB server announces itself
+          # first, so the banner is the proof.
           for i in $(seq 1 60); do
-            if bash -c 'exec 3<>/dev/tcp/127.0.0.1/5901' 2>/dev/null; then
-              echo "RFB is listening on 5901"; ok=1; break
+            if [ "$(timeout 3 bash -c 'head -c 3 < /dev/tcp/127.0.0.1/5901' 2>/dev/null)" = RFB ]; then
+              echo "RFB banner read from 5901"; ok=1; break
             fi
             sleep 1
           done
           docker logs kiln
-          [ "${ok:-}" = 1 ] || { echo "::error::desktop never opened 5901"; exit 1; }
+          [ "${ok:-}" = 1 ] || { echo "::error::no RFB banner on 5901"; exit 1; }
 
       - name: Every repo is pinned to the commit repos.lock names
         run: |

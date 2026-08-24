@@ -1,0 +1,41 @@
+# The fast gate.  image.yml builds the whole world and proves the desktop draws; it
+# takes the better part of an hour, so it cannot be the only thing standing between a
+# typo and a broken box.
+#
+# This checks what kiln decides BEFORE anything starts — which config it read, which
+# ports it derived, which flags it believed, whether the client it is about to serve
+# can actually run in a browser.  None of it needs a container, a display or a
+# network, and every one of these has shipped broken at least once.
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Debian's sbcl is old but these tests use nothing new: reading forms, an
+      # environment variable and a file.  The point is to stay seconds, not minutes.
+      - name: Install SBCL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+
+      - name: Unit tests
+        run: t/run-tests.sh
+
+      # entrypoint.sh is #!/bin/sh and runs under dash inside the image, where a
+      # bashism is a runtime failure nobody sees until a container will not start.
+      # run-tests.sh checks it parses; this checks it parses under the real shell.
+      - name: entrypoint.sh is dash-clean
+        run: |
+          sudo apt-get install -y -qq dash
+          dash -n boot/entrypoint.sh && echo "entrypoint.sh parses under dash"

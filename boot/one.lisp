@@ -54,8 +54,14 @@
      (when in
        (loop for line = (read-line in nil nil)
              while line
-             thereis (and (search "import" line)
-                          (or (search "from './" line) (search "from \"./" line))
+             for trimmed = (string-left-trim '(#\Space #\Tab) line)
+             ;; The line must BE an import, not mention one.  A bundle inlines its
+             ;; dependencies but can still carry the word in a comment or a string --
+             ;; "used to import from './novnc'" -- and warning about those would teach
+             ;; whoever reads the log to ignore the warning that matters.
+             thereis (and (or (eql 0 (search "import" trimmed))
+                              (eql 0 (search "export" trimmed)))
+                          (or (search "from './" trimmed) (search "from \"./" trimmed))
                           t))))))
 
 (defun kiln-file-line (path)

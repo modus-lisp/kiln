@@ -238,6 +238,14 @@
                                                       :if-does-not-exist :create)
           (format o "~a~%" secret))
         (ignore-errors (sb-posix:chmod (format nil "~a/nsec" dir) #o600)))
+      ;; RELEASE IT ON THE WAY OUT.  Nothing did, so every session that ended left its
+      ;; lock behind — self-healing, because the pid check sees a dead process, but only
+      ;; on the same host: a container's leftover lock reads as "held elsewhere" forever.
+      ;; An exit hook covers every ordinary way out, including a window being closed.  A
+      ;; kill -9 still leaves one, which is what the pid check is for.
+      (push (let ((f (format nil "~a/lock" dir)))
+              (lambda () (ignore-errors (delete-file f))))
+            sb-ext:*exit-hooks*)
       (let ((held (%session-lock dir)))
         (unless (eq held t)
           (format *error-output*

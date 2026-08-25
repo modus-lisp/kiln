@@ -582,7 +582,15 @@ cmd_local() {
       printf '  (sb-thread:make-thread (lambda () (clim-glass:run-wm-loop p)) :name "kiln-wm")\n'
       printf '  (format t "~&kiln: window   one image, no wire~%%")\n'
       printf '  (finish-output)\n'
-      printf '  (glass-sdl:view :seat (clim-glass:port-seat p)))\n'
+      # CLOSING THE WINDOW ENDS THE SESSION.  VIEW returns when the window closes, and
+      # without this the image would sit there with a compositor thread still running and
+      # a REPL on stdin — a desktop nobody can see, still holding its session lock.  The
+      # window IS the desktop in this mode, so closing it is not "detach", it is "stop".
+      printf '  (unwind-protect (glass-sdl:view :seat (clim-glass:port-seat p))\n'
+      printf '    (format t "~&kiln: window closed — stopping ~a~%%" *kiln-session-name*)\n'
+      printf '    (finish-output)\n'
+      printf '    ;; EXIT runs the exit hooks, which is what puts the session lock back.\n'
+      printf '    (sb-ext:exit :code 0)))\n'
     elif [[ -n $vnc || -n $vnc_sock ]]; then
       local w=1280 h=800
       [[ -n $size ]] && { w=${size%%x*}; h=${size##*x}; }

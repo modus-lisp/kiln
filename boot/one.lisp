@@ -162,7 +162,38 @@
 ;;; admission now — the allowlist, the enrolment store, the login tokens — and the
 ;;; tokens are HMACed with this key.  Two identities in one image means every login link
 ;;; ever issued and every device already enrolled silently stops verifying.
+(defun kiln-identity-p (s)
+  "Does S name a person rather than merely say yes?  An npub, 64 hex, or a NIP-05.
+
+   KILN_NOSTR carries both: `y' from the .config means \"signalling on, allowlist from
+   the config\", and an identity means \"on, for THEM\" — which is the whole of what
+   --nostr=<npub> has to say."
+  (and (stringp s) (plusp (length s))
+       (or (find #\@ s)
+           (and (>= (length s) 4) (string-equal (subseq s 0 4) "npub"))
+           (and (= (length s) 64) (every (lambda (c) (digit-char-p c 16)) s)))))
+
 (defvar *nostr-wanted* (kiln-flag "KILN_NOSTR"))
+
+;;; WHO IT IS FOR, when --nostr named somebody.  Two variables and not one, because they
+;;; are two different questions: GLASS_NOSTR_ALLOW is who MAY connect (the ACL), and
+;;; GLASS_LINK_TO is who gets told the desktop is up.  They are the same person here,
+;;; and they are not the same idea — an allowlist can hold people nobody is messaging.
+(let ((who (kiln-env "KILN_NOSTR" "")))
+  (when (kiln-identity-p who)
+    (sb-posix:setenv "GLASS_NOSTR_ALLOW" who 1)
+    (sb-posix:setenv "GLASS_LINK_TO" who 1)
+    ;; ...AND WHERE THE LINK POINTS.  GLASS:*LOGIN-URL-BASE* is a DEFVAR read from the
+    ;; environment when :glass/nostr loads, which in a saved core is image-BUILD time —
+    ;; so it is NIL in every container started from one, and a link with nowhere to go
+    ;; is refused rather than sent.  Setting the variable (not just the environment) is
+    ;; what actually reaches a loaded core.  Same shape as *BOX-SECRET*, same fix.
+    (unless (kiln-env "GLASS_LOGIN_URL_BASE" nil)
+      (sb-posix:setenv "GLASS_LOGIN_URL_BASE"
+                       (format nil "https://~a.nsite.lol/"
+                               (kiln-env "NSITE_NPUB"
+                                         "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc"))
+                       1))))
 
 (defvar *session-name* nil)
 (defvar *session-npub* nil)
@@ -189,6 +220,12 @@
                            ;; the glass IS the identity rather than a label beside it.
                            (let ((dn (find-symbol "*DESKTOP-NAME*" "GLASS")))
                              (when (and dn (boundp dn)) (setf (symbol-value dn) name)))
+                           ;; The core froze this at build time; the environment is only
+                           ;; read on load, so set the variable itself.
+                           (let ((lb (find-symbol "*LOGIN-URL-BASE*" "GLASS"))
+                                 (v (kiln-env "GLASS_LOGIN_URL_BASE" nil)))
+                             (when (and lb (boundp lb) v (null (symbol-value lb)))
+                               (setf (symbol-value lb) v)))
                            (format *error-output* "~&@@ session ~a — ~:[resumed~;new~]~@[~%@@   ~a~]~%"
                                    name fresh npub)
                            (finish-output *error-output*)

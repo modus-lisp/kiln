@@ -235,6 +235,7 @@ cmd_run() {
     ${KILN_VNC:+-e KILN_VNC="$KILN_VNC"} \
     ${KILN_VNC:+-e GLASS_BIND=0.0.0.0} \
     ${KILN_RESUME:+-e KILN_RESUME="$KILN_RESUME"} \
+    ${KILN_NOSTR:+-e KILN_NOSTR="$KILN_NOSTR"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.
@@ -367,7 +368,7 @@ cmd_local() {
       --voice)      voice=${val:?--voice=PATH-to-graph} ;;
       --ears)       ears=${val:?--ears=PATH} ;;
       --gateway)    gateway=${val:-auto} ;;
-      --nostr)      nostr=1 ;;
+      --nostr)      nostr=${val:-1} ;;
       --gateway-id) gateway_id=${val:?--gateway-id=ID} ;;
       --config)     config=${val:?--config=FILE} ;;
       --expose)     expose=1 ;;
@@ -485,6 +486,24 @@ cmd_local() {
         else
           admit_path="(glass:socket-sibling \"$vnc_sock\" \"admit\")"
         fi
+      fi
+      # WHO IT IS FOR.  --nostr=<npub|hex|name@domain> names one identity, and it answers
+      # two questions that happen to have the same answer: who may connect, and who gets
+      # told the desktop is up.  Bare --nostr leaves the allowlist to the .config and
+      # sends nobody anything.
+      if [[ $nostr != 1 ]]; then
+        printf '(progn (sb-posix:setenv "GLASS_NOSTR_ALLOW" "%s" 1)\n' "$nostr"
+        printf '       (sb-posix:setenv "GLASS_LINK_TO" "%s" 1)\n' "$nostr"
+        # ...and where the link points.  GLASS:*LOGIN-URL-BASE* is read from the
+        # environment when :glass/nostr LOADS, which for a saved core was build time --
+        # so the variable is set directly, not just the variable's source.
+        printf '       (unless glass:*login-url-base*\n'
+        printf '         (setf glass:*login-url-base*\n'
+        printf '               (or (sb-ext:posix-getenv "GLASS_LOGIN_URL_BASE")\n'
+        printf '                   (format nil "https://~a.nsite.lol/"\n'
+        printf '                           (or (sb-ext:posix-getenv "NSITE_NPUB")\n'
+        printf '                               "%s")))))\n' "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc"
+        printf ')\n'
       fi
       # The identity is the SESSION's, minted above.  There is no host key to fall back
       # to and that is deliberate: a fallback is how one key ends up signing for four
@@ -675,14 +694,19 @@ kiln local [flags] — run the desktop on this machine, no container.
                        links already issued still verify and enrolled devices stay
                        enrolled.  Bare --resume takes the only idle session there is,
                        and lists them rather than guessing when there is a choice.
-  --nostr              signalling over nostr relays — for reaching this box when it
-                       is NOT the machine you are sitting at.  Needs a wire to the
-                       screen (--vnc-socket or --vnc) because the gateway is an RFB
-                       client of it, and an identity in ~/.kiln/nostr-sec.
-                       Two cautions, both real: `kiln local' has none of the
-                       container's isolation, and the identity is shared with the
-                       container — two boxes answering as one npub, and the phone
-                       gets whichever replies first.
+  --nostr[=WHO]        signalling over nostr relays — for reaching this session when it
+                       is NOT the machine you are sitting at.  WHO is an npub, 64-hex,
+                       or a NIP-05 name@domain: it becomes the allowlist AND gets a
+                       login link DM'd to it when the session comes up, so one command
+                       is the whole of "start a desktop and let me in from my phone".
+                       Bare --nostr leaves the allowlist to the .config and messages
+                       nobody.
+
+                       Needs a wire to the screen (--vnc-socket or --vnc), because the
+                       gateway is an RFB client of it.  Two cautions, both real: `kiln
+                       local' has none of the container's isolation, and a session is
+                       an identity — two of them on one npub is the thing --resume
+                       exists to avoid.
   --gateway-id=ID      gateway identity
   --display=N          display number (ports derive from it)
   --expose             bind 0.0.0.0 instead of loopback
@@ -1122,10 +1146,18 @@ case "${1:-}" in
          # --resume here rather than inside cmd_run: it is an ENVIRONMENT for the
          # container, not an engine flag, and everything else cmd_run takes is passed
          # through to the engine verbatim.
-         case "${1:-}" in
-           --resume)   KILN_RESUME=1; export KILN_RESUME; shift ;;
-           --resume=*) KILN_RESUME=${1#*=}; export KILN_RESUME; shift ;;
-         esac
+         while [[ $# -gt 0 ]]; do
+           case "$1" in
+             --resume)   KILN_RESUME=1; export KILN_RESUME; shift ;;
+             --resume=*) KILN_RESUME=${1#*=}; export KILN_RESUME; shift ;;
+             # An identity, or bare for "on, allowlist from the .config".  It reaches
+             # one.lisp as KILN_NOSTR, which is the same variable the config sets — so
+             # the flag and the file say the same thing in the same place.
+             --nostr)    KILN_NOSTR=1; export KILN_NOSTR; shift ;;
+             --nostr=*)  KILN_NOSTR=${1#*=}; export KILN_NOSTR; shift ;;
+             *) break ;;
+           esac
+         done
          cmd_run "$@" ;;
   vnc)   shift; cmd_vnc ;;
   web)   shift; cmd_web ;;

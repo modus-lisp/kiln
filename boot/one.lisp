@@ -345,4 +345,41 @@
                 :name "kiln-sshd"))
       (error (e) (format *error-output* "~&@@ control plane failed to load: ~a~%" e)))))
 
+;;; ---- generation 6 -----------------------------------------------------------------
+;;; A desktop that runs for hours dies in a container a desktop running for minutes fits
+;;; in, and this is why.  SBCL promotes a surviving object one generation per GC
+;;; (NUMBER-OF-GCS-BEFORE-PROMOTION is 1 the whole way up), so anything outliving a few
+;;; collections reaches the oldest generation — and nothing collects the oldest generation
+;;; except a FULL gc, which nothing here ever asked for.  Garbage that gets to gen 6
+;;; therefore stays there for the life of the process.
+;;;
+;;; Measured rather than assumed: an idle session ten minutes old held 372 MB live, and one
+;;; (GC :FULL T) took it to 131.  With a client connected that accumulation ran near 100 MB
+;;; a minute, and at 36 minutes the kernel killed the process — anon-rss 4077128 kB against
+;;; a 4 GiB limit, status 137.  Not a leak in the sense of a reference nobody dropped:
+;;; ordinary garbage, in the one generation that is only ever swept on request.
+;;;
+;;; So ask, on a timer.  A full GC over ~150 MB of live data is a sub-second pause, which is
+;;; what the session still being there in the morning costs.  It stays quiet when there is
+;;; nothing to say — a line only when it reclaimed enough to have been worth the pause — so
+;;; the log carries the trend rather than the heartbeat.
+(let ((secs (or (ignore-errors (parse-integer (kiln-env "KILN_GC_SECONDS" "300"))) 300)))
+  (when (plusp secs)
+    (sb-thread:make-thread
+     (lambda ()
+       (loop
+         (sleep secs)
+         (handler-case
+             (let ((before (sb-kernel:dynamic-usage)))
+               (sb-ext:gc :full t)
+               (let ((freed (- before (sb-kernel:dynamic-usage))))
+                 (when (> freed (* 64 1024 1024))
+                   (format *error-output* "~&[gc] full — reclaimed ~a MB, ~a MB live~%"
+                           (round freed 1048576) (round (sb-kernel:dynamic-usage) 1048576))
+                   (finish-output *error-output*))))
+           ;; Housekeeping must never be the thing that takes the desktop down; if a GC
+           ;; signals, the next tick simply tries again.
+           (error () nil))))
+     :name "kiln-gc")))
+
 (load *desktop-file*)

@@ -50,16 +50,24 @@ KILN_MEM=${KILN_MEM:-4G}
 # limit) all sit on top of it.  Crossing the line does not signal anything in Lisp: the
 # kernel kills the process, and the log simply stops mid-sentence.  Which is what it did.
 #
-# A gigabyte of headroom, derived so raising KILN_MEM raises the heap with it instead of
-# leaving it behind.  KILN_HEAP still wins if somebody has a number in mind.
+# A gigabyte of headroom was the first answer and it was not enough: 3072 in a 4 GiB box
+# still died, because gencgc does not hand freed pages back — RSS is the high-water mark of
+# what was ever touched, not what is live.  A heap allowed to touch 3 GiB eventually does,
+# and then the runtime and the tmpfs no longer fit beside it.  (Measured: killed at
+# anon-rss 4077128 kB, status 137, with 131 MB actually live.)
+#
+# So the heap gets at most HALF the container.  Even fully touched it leaves as much again
+# for the core, the stacks, the tmpfs and the encoders — the ceiling stops being reachable
+# rather than being merely further away.  SBCL scales its GC thresholds off this number too
+# (nursery = heap/12, per-generation = heap/100), so a smaller heap also collects more
+# often and touches less in the first place.  KILN_HEAP still wins if somebody has a number
+# in mind.
 if [[ -z ${KILN_HEAP:-} ]]; then
   _mem_mb=${KILN_MEM%[gG]}
   if [[ $_mem_mb != "$KILN_MEM" ]]; then _mem_mb=$(( _mem_mb * 1024 ));
   else _mem_mb=${KILN_MEM%[mM]}; fi
   if [[ $_mem_mb =~ ^[0-9]+$ ]]; then
-    if   (( _mem_mb > 1536 )); then KILN_HEAP=$(( _mem_mb - 1024 ))
-    elif (( _mem_mb >= 512 )); then KILN_HEAP=$(( _mem_mb / 2 ))
-    fi
+    if (( _mem_mb >= 512 )); then KILN_HEAP=$(( _mem_mb / 2 )); fi
     # Below 512M the default is left alone: that is not a small desktop, it is a
     # misconfiguration, and silently halving it would hide which one it is.
   fi
@@ -252,6 +260,7 @@ cmd_run() {
     ${KILN_MOUNT_BOOT:+-v "$ROOT/boot:/kiln/boot"} \
     ${KILN_DEV_CACHE:+--tmpfs /home/kiln/.cache} \
     -e KILN_SSH_PORT="$SSH_PORT" \
+    ${KILN_GC_SECONDS:+-e KILN_GC_SECONDS="$KILN_GC_SECONDS"} \
     ${KILN_VNC:+-p "$PUBLISH_ON$VNC_PORT:$VNC_PORT"} \
     ${KILN_VNC:+-e KILN_VNC="$KILN_VNC"} \
     ${KILN_VNC:+-e GLASS_BIND=0.0.0.0} \

@@ -64,18 +64,64 @@
         (error "session: could not read 32 bytes of entropy"))
       (string-downcase (format nil "~{~2,'0x~}" (coerce b 'list))))))
 
+(defun %fn (package name)
+  "The function called NAME in PACKAGE, or NIL if either is absent.
+
+   The NIL-returning FIND-SYMBOL everything here wanted.  The real one signals when the PACKAGE is
+   missing, which turns every optional-system probe in this file into a landmine: the guard reads
+   like `and it is there', and what it does when it is not there is abort the boot with a
+   PACKAGE-DOES-NOT-EXIST out of whatever line happened to look first."
+  (let ((pkg (find-package package)))
+    (when pkg
+      (let ((sym (find-symbol name pkg)))
+        (and sym (fboundp sym) sym)))))
+
+(defun %session-require-nostr ()
+  "Die with something readable if this image has no cl-nostr.
+
+   A session IS a nostr identity — the name, the npub, the login link and the allowlist are all
+   derived from one key — so an image that cannot do the arithmetic cannot start a session, and
+   pretending otherwise would hand out a desktop nobody can reach.
+
+   This exists because FIND-SYMBOL on a package that does not exist SIGNALS rather than returning
+   NIL, so the guard one line down used to blow up as a PACKAGE-DOES-NOT-EXIST backtrace out of
+   the middle of the boot — true, and useless.  The cause is always the same and is never the
+   session's fault: a core dumped before cl-nostr joined the build."
+  (unless (find-package "CL-NOSTR.KEYS")
+    (format *error-output*
+            "~&@@ this image has no cl-nostr, so it cannot mint a session identity.~%~
+               @@~%~
+               @@   A session is a nostr key: its name, its npub, the login link and~%~
+               @@   the allowlist all come out of one secret.  Without cl-nostr there~%~
+               @@   is no identity to start, so kiln stops here rather than serving a~%~
+               @@   desktop that nobody could be told about or allowed into.~%~
+               @@~%~
+               @@   The core predates cl-nostr joining boot/build.lisp.  Rebuild it:~%~
+               @@       kiln local --rebuild~%")
+    (finish-output *error-output*)
+    (sb-ext:exit :code 1)))
+
 (defun %session-pubkey (secret)
-  (let ((f (find-symbol "PUBLIC-KEY-OF-SECRET" "CL-NOSTR.KEYS")))
-    (and f (fboundp f) (funcall f secret))))
+  (%session-require-nostr)
+  (let ((f (%fn "CL-NOSTR.KEYS" "PUBLIC-KEY-OF-SECRET")))
+    (and f (funcall f secret))))
+
+(defun %session-npub (secret)
+  "SECRET's npub, or NIL if it cannot be encoded.  One helper for both callers, and it looks the
+   package up with FIND-PACKAGE first for the reason in %SESSION-REQUIRE-NOSTR: FIND-SYMBOL on a
+   package that is not there signals."
+  (let ((enc (%fn "CL-NOSTR.BECH32" "NPUB-ENCODE"))
+        (pk (%session-pubkey secret)))
+    (and enc pk (ignore-errors (funcall enc pk)))))
 
 (defun %session-name-for (secret)
   "The BIP-39 name of the session whose key is SECRET, or NIL if this image cannot say.
 
    Derived, never stored: the name and the identity are the same fact written two ways,
    so there is nothing to keep in step and nothing to disagree."
-  (let ((wn (find-symbol "WORD-NAME" "GLASS"))
+  (let ((wn (%fn "GLASS" "WORD-NAME"))
         (pk (%session-pubkey secret)))
-    (when (and wn (fboundp wn) pk)
+    (when (and wn pk)
       (funcall wn :words 3 :bytes (if (stringp pk)
                                       ;; hex -> bytes
                                       (let ((v (make-array (floor (length pk) 2)
@@ -157,9 +203,7 @@
            for secret = (%session-slurp nsec)
            when (%session-hex-p secret)
              collect (list name
-                           (let ((enc (find-symbol "NPUB-ENCODE" "CL-NOSTR.BECH32"))
-                                 (pk (%session-pubkey secret)))
-                             (and enc (fboundp enc) pk (ignore-errors (funcall enc pk))))
+                           (%session-npub secret)
                            (%session-live-pid (string-right-trim "/" (namestring dir)))
                            (or (ignore-errors (file-write-date nsec)) 0)))
      #'> :key #'fourth)))
@@ -224,10 +268,20 @@
         (sb-ext:exit :code 1)))
     (unless secret
       (setf secret (%session-mint-secret) fresh t)
+      ;; The IDENTITY is non-negotiable (%SESSION-REQUIRE-NOSTR refuses an image that cannot mint
+      ;; one), but the NAME is a label on it: BIP-39 words are nicer to say down a phone than an
+      ;; npub, and GLASS:WORD-NAME is what turns the key into them.  That function is not in every
+      ;; build — it is absent from this one — so a session names itself after its pid when it
+      ;; cannot read its own key aloud.  Degrading here is right where refusing was not: the key
+      ;; still exists, the npub is still printed, and everything that authenticates still works.
+      ;; It says so, once, rather than looking like it chose the pid on purpose.
       (setf name (or name (%session-name-for secret)
-                     ;; No cl-nostr in this image: still a session, just one that cannot
-                     ;; read its own name.  The key is what matters; the words are for us.
-                     (format nil "session-~d" (sb-posix:getpid)))))
+                     (progn
+                       (format *error-output*
+                               "~&@@ no GLASS:WORD-NAME in this image — naming this session after~%~
+                                  @@   its pid.  The identity is unaffected; only the label is.~%")
+                       (finish-output *error-output*)
+                       (format nil "session-~d" (sb-posix:getpid))))))
     (let ((dir (format nil "~a/~a" root name)))
       (ensure-directories-exist (format nil "~a/" dir))
       (ignore-errors (sb-posix:chmod root #o700))
@@ -256,7 +310,5 @@
                   name held)
           (finish-output *error-output*)))
       (values name secret
-              (let ((enc (find-symbol "NPUB-ENCODE" "CL-NOSTR.BECH32"))
-                    (pk (%session-pubkey secret)))
-                (and enc (fboundp enc) pk (ignore-errors (funcall enc pk))))
+              (%session-npub secret)
               fresh))))

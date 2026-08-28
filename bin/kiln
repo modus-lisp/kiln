@@ -355,12 +355,27 @@ host_prereqs() {
 # it, because ASDF still loads changed systems over the top on the next start.
 # `kiln local --rebuild' is the button for when you want it re-dumped anyway.
 ensure_local_core() {
-  local core="$KILN_ETC/modus.core"
-  if [[ -f $core && -z ${KILN_REBUILD:-} ]]; then LOCAL_CORE=$core; return; fi
+  local core="$KILN_ETC/modus.core" stamp="$KILN_ETC/modus.core.stamp"
+  # THE CORE IS WHAT build.lisp LOADED, so its identity is build.lisp's content.  When the system
+  # list there changes -- a new required system, say cl-nostr -- a core built against the old list is
+  # stale even though it is present, and the old "rebuild only if missing" test missed exactly that:
+  # it let a cl-nostr-less core outlive the build.lisp that had added cl-nostr, and every nostr
+  # session died in find-symbol on a package the core never had.  So invalidate on build.lisp's
+  # CONTENT.  A hash, not an mtime -- a git checkout rewrites mtimes and would rebuild for nothing.
+  local want
+  want=$(sha256sum "$ROOT/boot/build.lisp" 2>/dev/null | cut -d' ' -f1)
+  if [[ -f $core && -z ${KILN_REBUILD:-} && -f $stamp && $(cat "$stamp" 2>/dev/null) == "$want" ]]; then
+    LOCAL_CORE=$core; return
+  fi
   mkdir -p "$KILN_ETC"
-  note "building a core for this machine (once; McCLIM takes a few minutes)"
+  if [[ -f $core && -z ${KILN_REBUILD:-} ]]; then
+    note "core is stale (build recipe changed) — rebuilding"
+  else
+    note "building a core for this machine (McCLIM takes a few minutes)"
+  fi
   KILN_SOURCE_TREE="$KILN_ROOT" KILN_CORE="$core" \
     sbcl --dynamic-space-size 4096 --script "$ROOT/boot/build.lisp" || die "core build failed"
+  printf '%s\n' "$want" > "$stamp"   # stamp it so the next start knows this core matches this recipe
   LOCAL_CORE=$core
 }
 

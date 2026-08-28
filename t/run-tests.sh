@@ -57,6 +57,13 @@ else
   printf '  skip no sbcl on PATH\n'
 fi
 
+group "ops (the image, described to whoever is inside it)"
+if command -v sbcl >/dev/null; then
+  sbcl --script "$HERE/ops-test.lisp" || rc=1
+else
+  printf '  skip no sbcl on PATH\n'
+fi
+
 printf '\n'
 [ "$rc" = 0 ] && printf '\033[32mall green\033[0m\n' || printf '\033[31mFAILURES\033[0m\n'
 exit $rc

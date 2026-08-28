@@ -37,13 +37,6 @@
 
 (in-package :cl-user)
 
-;; The wordlist sits beside this file and is loaded from beside it, so session.lisp works wherever
-;; it is loaded from (a boot file names it by absolute path, and a bundle moves the pair together).
-(eval-when (:load-toplevel :execute)
-  (unless (boundp '*kiln-wordlist*)
-    (let ((here (or *load-truename* *default-pathname-defaults*)))
-      (ignore-errors (load (merge-pathnames "wordlist.lisp" here))))))
-
 (defun %session-dir-root ()
   (or (sb-ext:posix-getenv "KILN_SESSIONS")
       (format nil "~a/sessions" (or (sb-ext:posix-getenv "KILN_ETC") "/etc/kiln"))))
@@ -126,25 +119,6 @@
     (dotimes (i (length v) v)
       (setf (aref v i) (parse-integer hex :start (* 2 i) :end (+ 2 (* 2 i)) :radix 16)))))
 
-(defun %word-name (bytes &key (words 3))
-  "WORDS words read off the front of BYTES: eleven bits each, indexed into the BIP-39 list.
-
-   Kiln's own, because GLASS:WORD-NAME — which this asked for first and still prefers — is not in
-   every build, and a session that cannot say its name falls back to its pid.  Same arithmetic
-   either way: 11 bits is one word, so three words are the first 33 bits of the key, and the name
-   is checkable against the npub by anyone with the standard list."
-  (let ((list (and (boundp '*kiln-wordlist*) (symbol-value '*kiln-wordlist*))))
-    (when (and list (>= (* 8 (length bytes)) (* 11 words)))
-      (let ((bits 0) (n 0) (out '()))
-        (loop for b across bytes
-              while (< (length out) words)
-              do (setf bits (logior (ash bits 8) b))
-                 (incf n 8)
-                 (loop while (and (>= n 11) (< (length out) words))
-                       do (decf n 11)
-                          (push (aref list (ldb (byte 11 n) bits)) out)))
-        (format nil "~{~a~^-~}" (nreverse out))))))
-
 (defun %session-name-for (secret)
   "The BIP-39 name of the session whose key is SECRET, or NIL if this image cannot say.
 
@@ -153,11 +127,11 @@
   (let* ((pk (%session-pubkey secret))
          (bytes (and pk (if (stringp pk) (%hex->bytes pk) pk)))
          (wn (%fn "GLASS" "WORD-NAME")))
-    (when bytes
-      ;; glass's if this build has it — it is the one other tools would agree with — and kiln's
-      ;; own otherwise, rather than no name at all.
-      (or (and wn (ignore-errors (funcall wn :words 3 :bytes bytes)))
-          (%word-name bytes :words 3)))))
+    ;; GLASS:WORD-NAME is the one, and kiln does not carry a second copy of the BIP-39 list to
+    ;; disagree with it: two lists in two repos is how the name a person reads off a phone stops
+    ;; matching the name the box says.  Absent, a session is named after its pid and says so.
+    (when (and wn bytes)
+      (ignore-errors (funcall wn :words 3 :bytes bytes)))))
 
 (defun %hostname ()
   (or (ignore-errors (sb-unix:unix-gethostname)) "?"))

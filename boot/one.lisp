@@ -33,6 +33,8 @@
 
 (defvar *nostr-gateway-system* "glass-webrtc/nostr")
 (defvar *etc* (kiln-env "KILN_ETC" "/etc/kiln"))
+(defvar *ops-file*
+  (format nil "~a/kiln/boot/ops.lisp" *root*))
 
 (defun kiln-flag-default (name default)
   "KILN-FLAG, but for a setting whose default is ON.  Absent means DEFAULT; a value

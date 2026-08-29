@@ -43,8 +43,11 @@ jobs:
       - name: The image has the boot files its entrypoint reads
         run: |
           need=$(grep -ohE '(boot/|\$KILN_HOME/boot/|dirname[^)]*\)/)[a-z-]+\.(sh|lisp)' \
-                   boot/entrypoint.sh boot/one.lisp | sed -E 's#.*/##' | sort -u)
-          have=$(docker run --rm --entrypoint /bin/sh modus-lisp/kiln -c 'ls /kiln/boot/')
+                   boot/entrypoint.sh boot/one.lisp | sed -E 's#.*/##' | sort -u | tr '\n' ' ')
+          # tr on BOTH, because ls and grep separate with newlines while the case pattern
+          # below matches on SPACES.  Without it nothing ever matches and every file reads
+          # as missing — which is how this gate failed its first run against a correct image.
+          have=$(docker run --rm --entrypoint /bin/sh modus-lisp/kiln -c 'ls /kiln/boot/' | tr '\n' ' ')
           fail=0
           for f in $need; do
             case " $have " in *" $f "*) ;;

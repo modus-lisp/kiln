@@ -23,7 +23,7 @@
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
-#   kiln models           voices and recognizers: what is here, and fetch more
+#   kiln speech           voices and recognizers: what is here, and fetch more
 #   kiln lock             refresh repos.lock from the org's live refs
 #   kiln clean            remove the container and the image
 #
@@ -401,10 +401,10 @@ kiln: --voice=$v — no such voice.
   --voice=en_US-lessac-medium finds en_US-lessac-medium.graph there.
   A path with a / or a .graph/.onnx suffix is taken as given.
 
-  Pull one:   kiln models fetch voice            (default: en_US-lessac-medium, ~63 MB)
-              kiln models fetch voice=en_US-ljspeech-medium
+  Pull one:   kiln speech fetch voice            (default: en_US-lessac-medium, ~63 MB)
+              kiln speech fetch voice=en_US-ljspeech-medium
   See what is here and what is offered:
-              kiln models
+              kiln speech
 
 EOF
   die "no voice at $v"
@@ -427,7 +427,7 @@ kiln: --ears=$e exists but is not a complete recognizer.
   encoder, a decoder and a joiner, plus tokens.txt.  An interrupted fetch looks
   exactly like this.
 
-  Finish it:  kiln models fetch ears
+  Finish it:  kiln speech fetch ears
 
 EOF
     die "incomplete recognizer at $e"
@@ -439,21 +439,23 @@ kiln: --ears=$e — no such directory.
   directory.  stave ships no weights: the encoder alone is 262 MB, past what
   GitHub accepts, and trained float32 does not compress.
 
-  Pull one:   kiln models fetch ears            (zipformer-en-2023-06-26, ~300 MB, a few minutes)
+  Pull one:   kiln speech fetch ears            (zipformer-en-2023-06-26, ~300 MB, a few minutes)
   See what is here:
-              kiln models
+              kiln speech
 
 EOF
   die "no recognizer at $e"
 }
 
-# `kiln models' -- what is installed, what is on offer, and how to get it.  Both fetchers
+# `kiln speech' -- what is installed, what is on offer, and how to get it.  SPEECH and
+# not MODELS because operandi's models are the ones it thinks with; a voice and a
+# recognizer are two specific things and deserve the specific word.  Both fetchers
 # are Lisp (weft's TLS, mill's ONNX reader; no huggingface-cli, no Python), so this runs
 # them from the core rather than reimplementing a download in bash.
-cmd_models() {
+cmd_speech() {
   host_prereqs
   local sub=${1:-list} which="" name=""
-  [[ $sub == fetch ]] && { which=${2:?usage: kiln models fetch voice|ears|all [=NAME]}; }
+  [[ $sub == fetch ]] && { which=${2:?usage: kiln speech fetch voice|ears|all [=NAME]}; }
   case $which in *=*) name=${which#*=}; which=${which%%=*} ;; esac
 
   if [[ $sub == list ]]; then
@@ -468,7 +470,7 @@ cmd_models() {
         printf '    %-34s %s\n' "$(basename "${f%.*}")" \
                "$(du -ch "${f%.*}".* 2>/dev/null | tail -1 | cut -f1)"
       done | sort -u
-    else printf '    (none — kiln models fetch voice)\n'; fi
+    else printf '    (none — kiln speech fetch voice)\n'; fi
     printf '\n  ears     %s\n' "$sd"
     if [[ -d $sd ]] && [[ -n $(ls -A "$sd" 2>/dev/null) ]]; then
       local d
@@ -477,7 +479,7 @@ cmd_models() {
         printf '    %-34s %s graphs\n' "$(basename "$d")" \
                "$(find "$d" -name '*.graph' 2>/dev/null | wc -l | tr -d ' ')"
       done
-    else printf '    (none — kiln models fetch ears)\n'; fi
+    else printf '    (none — kiln speech fetch ears)\n'; fi
     printf '\n  on offer (licence is the thing that decides what you may do with the result):\n'
     ensure_local_core
     # The catalogues live in chord/fetch and stave/fetch, which the core does not preload --
@@ -495,18 +497,18 @@ cmd_models() {
           (format t "~&  voices (chord):~%")   (catalogue :chord/fetch "chord:available-voices")
           (format t "~&  recognizers (stave):~%") (catalogue :stave/fetch "stave:available-models"))
         (sb-ext:quit))' 2>&1 | grep -v "^;" | sed 's/^/  /'
-    printf '\n  kiln models fetch voice[=NAME] | ears | all\n\n'
+    printf '\n  kiln speech fetch voice[=NAME] | ears | all\n\n'
     return 0
   fi
 
-  [[ $sub == fetch ]] || die "models: unknown subcommand $sub (list, fetch)"
+  [[ $sub == fetch ]] || die "speech: unknown subcommand $sub (list, fetch)"
   ensure_local_core
 
   # A fetch is minutes and hundreds of megabytes, so it says what it is about to do first
   # and the size is named rather than discovered halfway through.
   case $which in
     voice|ears|all) ;;
-    *) die "models fetch: want voice, ears or all (got $which)" ;;
+    *) die "speech fetch: want voice, ears or all (got $which)" ;;
   esac
 
   if [[ $which == voice || $which == all ]]; then
@@ -536,7 +538,7 @@ cmd_models() {
                (format t "~&kiln/models: recognizer at ~a~%" d))
              (sb-ext:quit))' || die "recognizer fetch failed"
   fi
-  note "done — kiln models"
+  note "done — kiln speech"
 }
 
 # ---- flags, in a file ---------------------------------------------------------------
@@ -670,14 +672,14 @@ cmd_desktop() {
 
   # SAID OUT LOUD, both halves.  What is on, and what is off together with the one command
   # that would turn it on -- an absent capability should never be a mystery you go looking
-  # for, which is the whole reason `kiln models' prints what it prints.
+  # for, which is the whole reason `kiln speech' prints what it prints.
   note "desktop  a window here, a terminal in it"
   note "speaker  on"
   note "mic      auto — taken when something first listens, given back when nothing is"
   if [[ -n $voice ]]; then note "voice    $voice"
-  else note "voice    none installed — kiln models fetch voice"; fi
+  else note "voice    none installed — kiln speech fetch voice"; fi
   if [[ -n $ears ]]; then note "ears     $(basename "$ears")"
-  else note "ears     none installed — kiln models fetch ears"; fi
+  else note "ears     none installed — kiln speech fetch ears"; fi
 
   # Detached, because a desktop is not a command you are waiting on -- the same reasoning
   # `kiln local' already applies, made the default for the command whose whole point is that
@@ -1702,7 +1704,15 @@ case "${1:-}" in
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
-  models) shift; cmd_models "$@" ;;
+  speech) shift; cmd_speech "$@" ;;
+  # MODELS MEANT LLM WEIGHTS BEFORE IT MEANT THESE.  operandi is a ReAct agent loop driving
+  # llama.cpp or OpenRouter, and "the models" there are the ones it thinks with — a word this
+  # command borrowed for a voice and a recognizer, which are two specific things with a
+  # specific name.  Redirected rather than silently renamed: `kiln models' was a real command
+  # yesterday, and the useful answer to typing it is where its contents went.
+  models) shift
+    die "models is now: kiln speech    (voices and recognizers — chord and stave).
+     The word is left for operandi's, which are a different kind of model entirely." ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

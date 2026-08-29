@@ -127,13 +127,20 @@ jobs:
             [ -n "$sock" ] && [ -S "$sock" ] && break
             sleep 2
           done
+          # AS ANNOTATIONS, not only as log lines.  ::error:: and ::notice:: are visible in
+          # `gh run view' and in the web summary without downloading the log archive — which
+          # is the difference between reading a failure and pushing again to guess at it.
+          # The archive endpoint has been timing out from here all evening; a diagnosis you
+          # cannot retrieve is not a diagnosis.
           echo "--- session log ---"
           grep -vE '^;' "$log" 2>/dev/null | tail -25 || echo "(no log at $log)"
-          echo "--- control socket ---"
-          echo "path from log: ${sock:-<none>}"
-          ls -l "$sock" 2>/dev/null || echo "(no socket)"
-          pgrep -fl modus.core || echo "(no desktop process)"
-          [ -n "$sock" ] && [ -S "$sock" ] || { echo "::error::the desktop never opened its control socket"; exit 1; }
+          if [ -n "$sock" ] && [ -S "$sock" ]; then
+            echo "::notice::control socket at $sock"
+          else
+            echo "::error::no control socket. log tail: $(grep -vE '^;' "$log" 2>/dev/null | tail -4 | tr '\n' ' | ')"
+            echo "::error::processes: $(pgrep -fl modus.core | tr '\n' ' ' || echo none)"
+            exit 1
+          fi
 
           # ASK THE RUNNING DESKTOP, rather than grepping its log: a log line says something
           # was printed, and this says the thing is there and answering.
@@ -148,8 +155,8 @@ jobs:
           case "$out" in
             *"SURFACES 0"*) echo "::error::no windows — --apps=terminal did not open one"; exit 1 ;;
             *"NAME NIL"*)   echo "::error::the session has no name"; exit 1 ;;
-            *MENU*)         echo "the desktop answered" ;;
-            *)              echo "::error::no answer from the control socket"; exit 1 ;;
+            *MENU*)         echo "::notice::the desktop answered: $(echo "$out" | tr '\n' ' ')" ;;
+            *)              echo "::error::control socket gave no answer: $(echo "$out" | tr '\n' ' ' | cut -c1-300)"; exit 1 ;;
           esac
 
       - name: ...and stops cleanly

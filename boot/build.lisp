@@ -110,7 +110,8 @@
     (:glass/hearing      . "ear (stave; needs GLASS_EARS at runtime)")
     (:glass/dictation    . "dictation (speech -> keystrokes)")
     (:loom/glass         . "web browser")
-    (:warren             . "file browser")))
+    (:warren             . "file browser")
+      (:spool/app          . "podcasts (spool)")))
 
 (defvar *missing* '())
 
@@ -131,8 +132,14 @@
           do (handler-case (asdf:load-system sys)
                (error (e)
                  (push (list sys what (princ-to-string e)) *missing*))))
-    ;; The type-and-say window registers itself; absent without :glass/speech.
-    (ignore-errors (asdf:load-system :mcclim-glass/speak))))
+    ;; The two model-backed WINDOWS.  These are separate systems from :glass/speech and
+    ;; :glass/hearing, which are the engines — loading the ear does not load the app that
+    ;; puts a Listen window on the menu, and the menu entry silently vanishes when its
+    ;; package is absent.  That is exactly how Listen went missing after Speak was added
+    ;; here and its sibling was not.
+    (dolist (sys '(:mcclim-glass/speak :mcclim-glass/listen))
+      (handler-case (asdf:load-system sys)
+        (error (e) (push (list sys "menu window" (princ-to-string e)) *missing*))))))
 
 (note "required systems loaded")
 (if *missing*

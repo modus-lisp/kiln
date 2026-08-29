@@ -447,9 +447,10 @@ EOF
   die "no recognizer at $e"
 }
 
-# `kiln speech' -- what is installed, what is on offer, and how to get it.  SPEECH and
-# not MODELS because operandi's models are the ones it thinks with; a voice and a
-# recognizer are two specific things and deserve the specific word.  Both fetchers
+# `kiln speech' -- what is installed, what is on offer, and how to get it.  SPEECH and not
+# MODELS because a voice and a recognizer are two specific things and the specific word says
+# which; "models" says almost nothing now, and operandi's are a different kind again.  Both
+# fetchers
 # are Lisp (weft's TLS, mill's ONNX reader; no huggingface-cli, no Python), so this runs
 # them from the core rather than reimplementing a download in bash.
 cmd_speech() {
@@ -1705,14 +1706,6 @@ case "${1:-}" in
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   speech) shift; cmd_speech "$@" ;;
-  # MODELS MEANT LLM WEIGHTS BEFORE IT MEANT THESE.  operandi is a ReAct agent loop driving
-  # llama.cpp or OpenRouter, and "the models" there are the ones it thinks with — a word this
-  # command borrowed for a voice and a recognizer, which are two specific things with a
-  # specific name.  Redirected rather than silently renamed: `kiln models' was a real command
-  # yesterday, and the useful answer to typing it is where its contents went.
-  models) shift
-    die "models is now: kiln speech    (voices and recognizers — chord and stave).
-     The word is left for operandi's, which are a different kind of model entirely." ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

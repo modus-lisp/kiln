@@ -140,6 +140,45 @@
       (note "optional NOT built: ~a (~a)" (first m) (second m)))
     (note "every optional system built too"))
 
+;;; ---- housekeeping, in the CORE so every path gets it ------------------------------
+;;; SBCL promotes a surviving object one generation per GC (NUMBER-OF-GCS-BEFORE-PROMOTION
+;;; is 1 the whole way up), so anything outliving a few collections reaches the oldest
+;;; generation — which nothing collects except a FULL gc.  Garbage that gets there stays
+;;; for the life of the process.  Measured on a container session: 372 MB live at ten
+;;; minutes, 131 after one (GC :FULL T), climbing near 100 MB a minute under a client until
+;;; the kernel killed it at 36 minutes (anon-rss 4077128 kB, status 137).
+;;;
+;;; This lived in one.lisp first, which fixed the container and nothing else: `kiln local'
+;;; generates its own boot file and never loads one.lisp, so the welded desktop — the one
+;;; with no container limit and therefore the longest uptime — still had the leak.  A core
+;;; init hook is the one place BOTH paths pass through, along with `repl' and `modus'.
+;;;
+;;; Threads do not survive a dump, so this registers the intent and the hook makes the
+;;; thread at startup.  Quiet unless it reclaimed enough to have been worth the pause, so
+;;; the log carries the trend rather than the heartbeat.
+(push (lambda ()
+        (let ((secs (or (ignore-errors
+                          (parse-integer (or (sb-ext:posix-getenv "KILN_GC_SECONDS") "300")))
+                        300)))
+          (when (plusp secs)
+            (sb-thread:make-thread
+             (lambda ()
+               (loop
+                 (sleep secs)
+                 (handler-case
+                     (let ((before (sb-kernel:dynamic-usage)))
+                       (sb-ext:gc :full t)
+                       (let ((freed (- before (sb-kernel:dynamic-usage))))
+                         (when (> freed (* 64 1024 1024))
+                           (format *error-output* "~&[gc] full — reclaimed ~a MB, ~a MB live~%"
+                                   (round freed 1048576)
+                                   (round (sb-kernel:dynamic-usage) 1048576))
+                           (finish-output *error-output*))))
+                   ;; Housekeeping must never be the thing that takes the desktop down.
+                   (error () nil))))
+             :name "kiln-gc"))))
+      sb-ext:*init-hooks*)
+
 ;;; save-lisp-and-die refuses to run with other threads alive, and a stray
 ;;; loader thread would turn a good build into a confusing failure.
 (let ((others (remove sb-thread:*current-thread* (sb-thread:list-all-threads))))

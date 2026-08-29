@@ -802,7 +802,16 @@ cmd_local() {
       printf '(handler-bind ((warning (function muffle-warning)))\n'
       printf '  (let ((*standard-output* (make-broadcast-stream)))\n'
       printf '    (asdf:load-system :glass-sdl)))\n\n'
-      printf '(let ((p (clim-glass:make-wm-session :width %s :height %s' "$w" "$h"
+      # THE DENSITY IS ASKED BEFORE THE SESSION IS MADE, not after the window opens.  A
+      # viewer only learns its display's scale when it has a window, and by then the apps
+      # below have already been spawned at whatever ppem they were handed -- a terminal
+      # booted at 1x with sharp chrome around small text.  DISPLAY-SCALE measures with a
+      # 1x1 hidden window and throws it away, so the session is built knowing.  An
+      # ordinary display answers 1 and nothing changes.
+      printf '(let* ((scale (glass-sdl:display-scale))\n'
+      printf '       (p (clim-glass:make-wm-session :width (round (* %s scale))\n' "$w"
+      printf '                                      :height (round (* %s scale))\n' "$h"
+      printf '                                      :scale scale'
       [[ -n $wallpaper ]] && printf ' :background "%s" :background-mode :cover' "$wallpaper"
       printf ')))\n'
       printf '  (clim-glass:start-wm-session p (list'

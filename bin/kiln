@@ -622,7 +622,16 @@ cmd_desktop() {
   host_prereqs
   [[ -f $ROOT/boot/config.sh ]] && { KILN_ETC="$KILN_ETC" . "$ROOT/boot/config.sh"; load_config; }
 
-  local -a args=(--view --apps=terminal)
+  # A LIVE LINK, always.  Not a debugging extra: a desktop you can only observe by screenshot
+  # is one where every question about its state has to be answered by rebuilding the situation
+  # somewhere else and hoping it is the same situation.  That is slow and it is unreliable —
+  # a reconstruction that behaves differently from the real thing looks exactly like a
+  # reconstruction that behaves the same.
+  #
+  # A 0600 socket file in the runtime directory, which is the same posture `kiln local
+  # --control' has always had; the difference is that the command whose point is "the works"
+  # now includes it, rather than leaving it to be remembered.
+  local -a args=(--view --apps=terminal --control)
   local voice="" ears="" vd sd
   vd=$(chord_voice_dir); sd=$(stave_model_dir)
 
@@ -1443,9 +1452,37 @@ cmd_repl()  { running || die "not running (kiln run)"; "$ENGINE" exec -ti "$NAME
 # eval socket).  Loopback inside a container is not loopback outside it, so
 # publishing 4009 would expose nothing and forward nowhere.  bash's /dev/tcp
 # does the talking, which saves installing a netcat just for this.
+# The control socket a LOCAL session opened, if it has one.
+#
+# READ OUT OF THE SESSION'S OWN LOG rather than recomputed.  The path comes from
+# GLASS:SOCKET-PATH and the runtime directory it picks is glass's business, not this script's
+# — guessing it here means two places that must agree about something only one of them
+# decides, and the first version of this guessed $TMPDIR while glass had chosen ~/.glass/run.
+# The session says where it put it; believe the session.
+local_control_socket() {
+  local log="$KILN_STATE/session-$DISPLAY_N.log" p=""
+  [[ -f $log ]] && p=$(sed -n 's/^kiln: control  *//p' "$log" | tail -1)
+  [[ -n $p ]] && { echo "$p"; return; }
+  # Nothing said, so fall back to where glass puts things by default.  Only reached for a
+  # session started without --control, where the answer is that there is no socket.
+  echo "${XDG_RUNTIME_DIR:-$HOME/.glass/run}/kiln-${DISPLAY_N}.control"
+}
+
 cmd_eval() {
   [[ $# -gt 0 ]] || die "eval needs a form, e.g. kiln eval '(glass:perf-report)'"
-  running || die "not running (kiln run)"
+
+  # A LOCAL SESSION FIRST, because `kiln desktop' is now the common way to have one and it is
+  # not a container.  This used to go straight to the engine and report "not running" for a
+  # desktop that was plainly on the screen — true about a container, and the wrong answer to
+  # the question, which was about a desktop.
+  local sock; sock=$(local_control_socket)
+  if [[ -S $sock ]]; then
+    command -v nc >/dev/null 2>&1 || die "eval over a socket needs nc"
+    printf '%s\n' "$1" | nc -U "$sock" 2>/dev/null
+    return
+  fi
+
+  running || die "no desktop to talk to — none running locally (kiln desktop) and no container (kiln run)"
   "$ENGINE" exec "$NAME" bash -c '
       exec 3<>/dev/tcp/127.0.0.1/'"$CTRL_PORT"' || exit 1
       printf "%s\n" "$1" >&3

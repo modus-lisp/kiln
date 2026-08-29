@@ -166,7 +166,19 @@ RUN MODUS_CLI_OUT="$MODUS_ROOT/modus/modus" \
  && test -x "$MODUS_ROOT/modus/modus" \
  && chmod a+rx "$MODUS_ROOT/modus/modus"
 
-COPY boot/entrypoint.sh boot/lock.lisp boot/sshd.lisp boot/config.lisp boot/one.lisp boot/modus-rfb.lisp boot/
+# THE WHOLE OF boot/, not a list of the files somebody remembered.
+#
+# This was a hand-maintained list and it drifted twice: boot/config.sh arrived with the
+# .config reader and was never added, so the entrypoint died on its first line —
+# `cannot open /kiln/boot/config.sh' — for every `kiln test' and every `kiln run' since;
+# and boot/session.lisp arrived with session identity and was never added either, which
+# is why a container reported "no identity".  Both are files the RUNTIME needs and
+# neither is visible from here as anything but a name in a string.
+#
+# The list bought nothing.  It sits after every expensive step, so the layer it
+# invalidates is the cheap one at the end, and the directory is a dozen small files.
+# What it cost was a class of failure that only shows up when the image runs.
+COPY boot/ boot/
 RUN chmod +x boot/entrypoint.sh boot/seed.sh
 
 # THE USER EVERYTHING RUNS AS.  Not a flag on one subcommand -- the fences are

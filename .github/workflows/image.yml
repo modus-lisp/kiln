@@ -29,6 +29,31 @@ jobs:
         # saves.
         run: docker build --progress=plain -t modus-lisp/kiln .
 
+      # BEFORE ANYTHING RUNS THE DESKTOP, check that the image contains what its own
+      # entrypoint reads.  The COPY that populates boot/ was a hand-written list of
+      # filenames for a while, and it drifted twice — config.sh and session.lisp were
+      # both added to the tree and never to the image, and each failure looked like
+      # something else: the entrypoint dying on its first line, and a container that
+      # reported "no identity".
+      #
+      # The list is gone, but the class is worth a gate rather than a promise, and this
+      # one is a second of work: ask the SOURCE what the runtime opens, and ask the
+      # IMAGE whether it is there.  It fails with the missing name, which is the whole
+      # difference from a self-test that fails with a shell error about line 44.
+      - name: The image has the boot files its entrypoint reads
+        run: |
+          need=$(grep -ohE '(boot/|\$KILN_HOME/boot/|dirname[^)]*\)/)[a-z-]+\.(sh|lisp)' \
+                   boot/entrypoint.sh boot/one.lisp | sed -E 's#.*/##' | sort -u)
+          have=$(docker run --rm --entrypoint /bin/sh modus-lisp/kiln -c 'ls /kiln/boot/')
+          fail=0
+          for f in $need; do
+            case " $have " in *" $f "*) ;;
+              *) echo "::error::boot/$f is read at runtime and is not in the image"; fail=1 ;;
+            esac
+          done
+          [ "$fail" = 0 ] && echo "every boot file the runtime reads is present"
+          exit $fail
+
       - name: glass RFB self-test
         run: docker run --rm modus-lisp/kiln test
 

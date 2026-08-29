@@ -631,7 +631,10 @@ cmd_desktop() {
   # A 0600 socket file in the runtime directory, which is the same posture `kiln local
   # --control' has always had; the difference is that the command whose point is "the works"
   # now includes it, rather than leaving it to be remembered.
-  local -a args=(--view --apps=terminal --control)
+  # THE WORKS MEANS THE WORKS, so both devices are asked for by name here.  `kiln local' stays
+  # a kit where a microphone is something you request; this is the command that requests it,
+  # and it says so on every start rather than acquiring one quietly.
+  local -a args=(--view --apps=terminal --control --speaker=on --mic=auto)
   local voice="" ears="" vd sd
   vd=$(chord_voice_dir); sd=$(stave_model_dir)
 
@@ -669,6 +672,8 @@ cmd_desktop() {
   # that would turn it on -- an absent capability should never be a mystery you go looking
   # for, which is the whole reason `kiln models' prints what it prints.
   note "desktop  a window here, a terminal in it"
+  note "speaker  on"
+  note "mic      auto — taken when something first listens, given back when nothing is"
   if [[ -n $voice ]]; then note "voice    $voice"
   else note "voice    none installed — kiln models fetch voice"; fi
   if [[ -n $ears ]]; then note "ears     $(basename "$ears")"
@@ -704,6 +709,7 @@ cmd_local() {
   # leaving the process.  That is the useful shape of useless — you can reach
   # anything from a REPL, and nothing reaches you.
   local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id="" nostr=""
+  local mic="off" speaker="off"
   local size="" wallpaper="" voice="" ears="" config="" expose="" sshd=""
   local display=${GLASS_DISPLAY:-1}
   # Kept before the parse loop eats them: the header records the command that
@@ -753,6 +759,12 @@ cmd_local() {
       --vnc)        vnc=${val:-auto} ;;
       --vnc-socket) vnc_sock=${val:-auto} ;;
       --view)       view=1 ;;
+      --mic)        mic=${val:-auto}
+                    case $mic in off|on|auto) : ;;
+                      *) die "--mic wants off, on or auto (got $mic)" ;; esac ;;
+      --speaker)    speaker=${val:-on}
+                    case $speaker in off|on) : ;;
+                      *) die "--speaker wants off or on (got $speaker)" ;; esac ;;
       --detach|-d)  DETACH=1 ;;
       --resume)     KILN_RESUME=${val:-1} ;;
       --control)    control=${val:-auto} ;;
@@ -1017,7 +1029,9 @@ cmd_local() {
       # without this the image would sit there with a compositor thread still running and
       # a REPL on stdin — a desktop nobody can see, still holding its session lock.  The
       # window IS the desktop in this mode, so closing it is not "detach", it is "stop".
-      printf '  (unwind-protect (glass-sdl:view :seat (clim-glass:port-seat p))\n'
+      printf '  (unwind-protect (glass-sdl:view :seat (clim-glass:port-seat p)\n'
+      printf '                                  :mic :%s :audio %s)\n' \
+             "$mic" "$([[ $speaker == on ]] && echo t || echo nil)"
       printf '    (format t "~&kiln: window closed — stopping ~a~%%" *kiln-session-name*)\n'
       printf '    (finish-output)\n'
       printf '    ;; EXIT runs the exit hooks, which is what puts the session lock back.\n'

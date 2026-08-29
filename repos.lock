@@ -17,10 +17,11 @@ cram            master  0d071a21db7589fcf0c20d232adde642b0e6153a
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
 folio           master  863aedfb4c00b15fc4e713cf9dc0ef90e3cac5c5
 gesso           master  a810351445075911e0e7f32ac1f25dc38de8d341
-glass           master  9d9ae821a677e3526e0c563a5fbf3b83f1a84ecd
+glass           master  644e423b180d18db7ee7c3de596f7e0aa323c0f6
+glass-sdl       master  4bb15e1729e5e0c86b888dcb768ce7d151e39f86
 loom            master  19a4d8a29d04b28fd2c77aec1db7f5306a2afbe6
 mill            master  e7bb175386f7718405a4c42a464c1d443934eea1
-modus           main    b60624a2a030809fde4cec0037008a22804c76bf
+modus           main    ea12243633e0d825b3a419d67b59ff270b5d24d7
 natrium         master  974ce77bd10d58f5c9ae45ac036fb8bff2812133
 operandi        main    491471b568c8b4a1e78f8807bd33f4703df88c53
 pagetree        master  89d19e19f0b08dd58e5ac1cefff337f1ae9ab520
@@ -37,7 +38,7 @@ stencil         master  80d0096fd75ac493b35f1c68928224bd5c570300
 warp            master  5c22158aabf5f4b506fd48c48c659f440ce8fd9e
 warren          master  d8986c59f1afa08b85a5cb6c53686408131eb5c7
 webp-pure       master  cce404517e0bc59e49a492467741a698a73551a6
-webrtc-data     main    f5886ed7c756b852b589cb8981224b71325d6f64
+webrtc-data     main    6ed9310ed33f8360981351098c53e581af286f6f
 webrtc-media    master  df0f3e2b218f9d19b3a0d4e210d0ec7b37d08d45
 weft            master  7210e6ab3a152168f6cd0df74a48de7411605fec
 zstd-pure       master  b49ca668263f66da96f5afe784f6a3f6e9fb8c4e

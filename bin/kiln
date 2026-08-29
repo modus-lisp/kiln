@@ -8,6 +8,7 @@
 #   kiln run              start the desktop, print the VNC address
 #   kiln web              open the browser client (the default surface)
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
+#   kiln desktop          the works, here: a window, a terminal, voice and ears
 #   kiln local            run on THIS machine, no container (no isolation either)
 #   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
 #   kiln view             a NATIVE window onto the desktop (glass-sdl)
@@ -21,6 +22,7 @@
 #   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
 #   kiln test             glass's RFB self-test, in a throwaway container
+#   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln models           voices and recognizers: what is here, and fetch more
 #   kiln lock             refresh repos.lock from the org's live refs
 #   kiln clean            remove the container and the image
@@ -537,6 +539,148 @@ cmd_models() {
   note "done — kiln models"
 }
 
+# ---- flags, in a file ---------------------------------------------------------------
+#
+# The command lines here got long, and a long command line lives in shell history rather
+# than in a file: it stops being read, stops being edited, and starts being pasted.  That is
+# how a flag nobody understands survives for months.
+#
+# A profile is LITERALLY THE FLAGS, one per line, with comments.  Not a new configuration
+# language with its own mapping onto the flags -- that mapping is the part that rots, and
+# the part that makes you check the source to find out what a setting does.  If you can type
+# it you can save it, and what you read in the file is what you would have typed.
+#
+# It EXPANDS IN PLACE, so ordering keeps working the way ordering already works: flags after
+# --profile override what it contained, and a second --profile inside a profile composes.
+# The existing ~/.kiln/config is untouched and still does its own job -- that file carries
+# ENVIRONMENT (GLASS_VOICE and friends, read by the image), this one carries ARGUMENTS (read
+# by kiln).  Two things, deliberately not merged: one is a standing preference for any
+# session, the other is one way of starting one.
+
+profile_path() {
+  # A path if it looks like one, otherwise a name under the profile directory.
+  case $1 in
+    */*|*.flags) echo "$1" ;;
+    *) echo "$KILN_STATE/profiles/$1.flags" ;;
+  esac
+}
+
+expand_profiles() {
+  # Echoes the argument list with every --profile=X replaced by that file's flags.
+  local -a out=()
+  local a f line
+  for a in "$@"; do
+    case $a in
+      --profile=*)
+        f=$(profile_path "${a#*=}")
+        [[ -f $f ]] || die "no such profile: ${a#*=} (looked in $f)"
+        while IFS= read -r line || [[ -n $line ]]; do
+          line=${line%%#*}                                   # trailing comments
+          line=${line#"${line%%[![:space:]]*}"}              # trim both ends
+          line=${line%"${line##*[![:space:]]}"}
+          [[ -z $line ]] && continue
+          out+=("$line")
+        done < "$f"
+        ;;
+      *) out+=("$a") ;;
+    esac
+  done
+  printf '%s\n' ${out[@]+"${out[@]}"}
+}
+
+cmd_profiles() {
+  local dir="$KILN_STATE/profiles"
+  printf '\n  profiles  %s\n' "$dir"
+  if [[ -d $dir ]] && compgen -G "$dir/*.flags" >/dev/null 2>&1; then
+    local f
+    for f in "$dir"/*.flags; do
+      printf '    %-20s %s\n' "$(basename "${f%.flags}")" \
+             "$(grep -v '^[[:space:]]*#' "$f" | grep -v '^[[:space:]]*$' | tr '\n' ' ' | cut -c1-70)"
+    done
+  else
+    printf '    (none — kiln local ... --save-profile=NAME)\n'
+  fi
+  printf '\n  kiln local --profile=NAME   |   kiln desktop --profile=NAME\n\n'
+}
+
+# ---- the whole desktop, in one word ------------------------------------------------
+#
+# `kiln local' is deliberately a kit: nothing is enabled unless you name it, because a
+# capability that arrives because a file happened to be on the disk is a capability nobody
+# chose.  That is right, and it is also why starting the desktop I actually want had grown
+# into a line with six flags in it -- long enough to keep in shell history rather than type,
+# which means it stops being edited and starts being cargo.
+#
+# So: one word that means "the works, here".  The opt-in has not gone anywhere -- it has
+# moved from six flags to the name of the command, which is a thing you can still choose not
+# to type.  What it turns on it SAYS, every time, because a desktop that quietly acquired an
+# ear is exactly what --voice and --ears were kept explicit to avoid.
+#
+# Everything after `kiln desktop' is passed through to `kiln local', so --resume, --size and
+# the rest still work and still win: this composes with the kit rather than replacing it.
+cmd_desktop() {
+  host_prereqs
+  [[ -f $ROOT/boot/config.sh ]] && { KILN_ETC="$KILN_ETC" . "$ROOT/boot/config.sh"; load_config; }
+
+  local -a args=(--view --apps=terminal)
+  local voice="" ears="" vd sd
+  vd=$(chord_voice_dir); sd=$(stave_model_dir)
+
+  # A voice, if one is installed.  The chord default first, then whatever else is there --
+  # a single installed voice is not ambiguous and asking which would be pedantic.
+  if [[ -n ${GLASS_VOICE:-} ]]; then
+    voice=$GLASS_VOICE
+  elif [[ -f "$vd/en_US-lessac-medium.graph" ]]; then
+    voice=en_US-lessac-medium
+  else
+    local f
+    for f in "$vd"/*.graph "$vd"/*.onnx; do
+      [[ -f $f ]] || continue
+      voice=$(basename "${f%.*}"); break
+    done
+  fi
+
+  # An ear, likewise: the first complete recognizer under stave's model directory.
+  if [[ -n ${GLASS_EARS:-} ]]; then
+    ears=$GLASS_EARS
+  elif [[ -d $sd ]]; then
+    local d
+    for d in "$sd"/*/; do
+      [[ -d $d ]] || continue
+      if (( $(find "$d" -name '*.graph' 2>/dev/null | wc -l) >= 3 )) && [[ -f $d/tokens.txt ]]; then
+        ears=${d%/}; break
+      fi
+    done
+  fi
+
+  [[ -n $voice ]] && args+=("--voice=$voice")
+  [[ -n $ears  ]] && args+=("--ears=$ears")
+
+  # SAID OUT LOUD, both halves.  What is on, and what is off together with the one command
+  # that would turn it on -- an absent capability should never be a mystery you go looking
+  # for, which is the whole reason `kiln models' prints what it prints.
+  note "desktop  a window here, a terminal in it"
+  if [[ -n $voice ]]; then note "voice    $voice"
+  else note "voice    none installed — kiln models fetch voice"; fi
+  if [[ -n $ears ]]; then note "ears     $(basename "$ears")"
+  else note "ears     none installed — kiln models fetch ears"; fi
+
+  # Detached, because a desktop is not a command you are waiting on -- the same reasoning
+  # `kiln local' already applies, made the default for the command whose whole point is that
+  # you asked for a desktop and not for a REPL.  --no-detach if you want the REPL too.
+  local detach=1 a
+  for a in "$@"; do [[ $a == --no-detach ]] && detach=""; done
+  [[ -n $detach ]] && args+=(--detach)
+
+  # ${arr[@]+...} because `set -u' treats an empty array's expansion as unbound on the bash
+  # that ships with macOS -- so the no-extra-flags case, which is the whole point of this
+  # command, was the one that failed.
+  local -a passthru=()
+  for a in "$@"; do [[ $a == --no-detach ]] || passthru+=("$a"); done
+
+  cmd_local "${args[@]}" ${passthru[@]+"${passthru[@]}"}
+}
+
 cmd_local() {
   # THE SAME .config THE CONTAINER READS, through the same reader (boot/config.sh).
   # ~/.kiln is the box's state, not a session's, so a setting recorded there means the
@@ -556,6 +700,38 @@ cmd_local() {
   # Kept before the parse loop eats them: the header records the command that
   # produced the file, which is the only reason a generated file is readable.
   local invocation="kiln local${*:+ $*}"
+
+  # PROFILES FIRST, so everything below — including --help and the die-on-unknown-option —
+  # sees the flags a profile contained exactly as if they had been typed.
+  local -a expanded=()
+  if [[ "$*" == *--profile=* ]]; then
+    while IFS= read -r line; do expanded+=("$line"); done < <(expand_profiles "$@")
+    set -- ${expanded[@]+"${expanded[@]}"}
+  fi
+
+  # ...and --save-profile writes down what this invocation was, minus itself, so the epic
+  # command line you just got right becomes the short one you type next time.  Recorded
+  # AFTER expansion, so saving a run that used a profile saves the flags rather than a
+  # reference to a file that may change under it.
+  local save="" keep=() a
+  for a in "$@"; do
+    case $a in
+      --save-profile=*) save=${a#*=} ;;
+      *) keep+=("$a") ;;
+    esac
+  done
+  if [[ -n $save ]]; then
+    set -- ${keep[@]+"${keep[@]}"}
+    local pf; pf=$(profile_path "$save")
+    mkdir -p "$(dirname "$pf")"
+    {
+      printf '# %s — written by kiln local --save-profile\n' "$(basename "${pf%.flags}")"
+      printf '# These are flags, one per line: what you would have typed.\n#\n'
+      printf '#   kiln local --profile=%s\n\n' "$(basename "${pf%.flags}")"
+      printf '%s\n' ${keep[@]+"${keep[@]}"}
+    } > "$pf"
+    note "profile  saved $pf"
+  fi
 
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -582,6 +758,8 @@ cmd_local() {
       --gateway-id) gateway_id=${val:?--gateway-id=ID} ;;
       --config)     config=${val:?--config=FILE} ;;
       --expose)     expose=1 ;;
+      --profile)    : ;;                       # already expanded above
+      --save-profile) : ;;                     # already handled above
       -h|--help)    local_usage; return 0 ;;
       *) die "local: unknown option $arg (try: kiln local --help)" ;;
     esac
@@ -1471,6 +1649,8 @@ case "${1:-}" in
   test)  shift; cmd_test ;;
   modus) shift; cmd_modus "$@" ;;
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
+  desktop) shift; cmd_desktop "$@" ;;
+  profiles) shift; cmd_profiles ;;
   models) shift; cmd_models "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;

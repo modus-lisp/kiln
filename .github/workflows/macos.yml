@@ -116,15 +116,24 @@ jobs:
         working-directory: modus-lisp/kiln
         run: |
           # --mic=off and no --speaker: a runner has no devices, and asking for them would
-          # test the runner rather than kiln.  Everything else is the ordinary path.
+          # test the runner rather than kiln.  SDL_VIDEODRIVER=dummy is set for the job.
           ./bin/kiln local --view --control --mic=off --size=800x600 --apps=terminal --detach
+
+          log="$KILN_STATE/session-1.log"
+          # SAY WHAT IT SAW, whatever happens.  A CI step that fails without showing the log
+          # is a step you debug by pushing again, and each push here is four minutes.
           for i in $(seq 1 60); do
-            [ -S "$KILN_STATE/../dot-kiln/kiln-1.control" ] && break
-            sock=$(sed -n 's/^kiln: control  *//p' "$KILN_STATE/session-1.log" 2>/dev/null | tail -1)
+            sock=$(sed -n 's/^kiln: control  *//p' "$log" 2>/dev/null | tail -1)
             [ -n "$sock" ] && [ -S "$sock" ] && break
             sleep 2
           done
-          sed -n '1,40p' "$KILN_STATE/session-1.log" | grep -vE '^;' | tail -12
+          echo "--- session log ---"
+          grep -vE '^;' "$log" 2>/dev/null | tail -25 || echo "(no log at $log)"
+          echo "--- control socket ---"
+          echo "path from log: ${sock:-<none>}"
+          ls -l "$sock" 2>/dev/null || echo "(no socket)"
+          pgrep -fl modus.core || echo "(no desktop process)"
+          [ -n "$sock" ] && [ -S "$sock" ] || { echo "::error::the desktop never opened its control socket"; exit 1; }
 
           # ASK THE RUNNING DESKTOP, rather than grepping its log: a log line says something
           # was printed, and this says the thing is there and answering.
@@ -133,13 +142,14 @@ jobs:
                                                           (clim-glass:find-glass-port)))
                                        :menu (length (clim-glass::wm-default-menu))
                                        :scale (clim-glass:seat-scale
-                                               (clim-glass:port-seat (clim-glass:find-glass-port))))')
+                                               (clim-glass:port-seat (clim-glass:find-glass-port))))' 2>&1)
+          echo "--- what it answered ---"
           echo "$out"
           case "$out" in
-            *SURFACES\ 0*) echo "::error::no windows — --apps=terminal did not open one"; exit 1 ;;
-            *NAME\ NIL*)   echo "::error::the session has no name"; exit 1 ;;
-            *MENU*)        echo "desktop answered: $out" ;;
-            *)             echo "::error::no answer from the control socket"; exit 1 ;;
+            *"SURFACES 0"*) echo "::error::no windows — --apps=terminal did not open one"; exit 1 ;;
+            *"NAME NIL"*)   echo "::error::the session has no name"; exit 1 ;;
+            *MENU*)         echo "the desktop answered" ;;
+            *)              echo "::error::no answer from the control socket"; exit 1 ;;
           esac
 
       - name: ...and stops cleanly

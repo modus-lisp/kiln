@@ -137,7 +137,7 @@
     ;; puts a Listen window on the menu, and the menu entry silently vanishes when its
     ;; package is absent.  That is exactly how Listen went missing after Speak was added
     ;; here and its sibling was not.
-    (dolist (sys '(:mcclim-glass/speak :mcclim-glass/listen))
+    (dolist (sys '(:mcclim-glass/speak :mcclim-glass/listen :mcclim-glass/mixer))
       (handler-case (asdf:load-system sys)
         (error (e) (push (list sys "menu window" (princ-to-string e)) *missing*))))))
 

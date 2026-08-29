@@ -4,11 +4,13 @@
 # Speaks to whichever container engine is present: Apple's `container` (the
 # default on Apple silicon), docker, or podman.  Force one with KILN_ENGINE.
 #
-#   kiln build            build the image (first run: coffee)
+
 #   kiln run              start the desktop, print the VNC address
 #   kiln web              open the browser client (the default surface)
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
 #   kiln desktop          the works, here: a window, a terminal, voice and ears
+#   kiln build [DIR]      set THIS machine up: fetch the workspace, dump a core
+#   kiln container        build the container image instead (first run: coffee)
 #   kiln local            run on THIS machine, no container (no isolation either)
 #   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
 #   kiln view             a NATIVE window onto the desktop (glass-sdl)
@@ -140,7 +142,7 @@ ensure_engine_up() {
 # ASK whether one is configured — `container system kernel` only has `set`.  So
 # this is reactive: run the command, and if it failed for exactly that reason,
 # install the kernel once and try again.  One download per machine, and the
-# difference between `kiln build` working and `kiln build` sending you to a
+# difference between `kiln container` working and `kiln container` sending you to a
 # manual page.
 with_kernel() {
   local log rc
@@ -226,7 +228,7 @@ exists()  { ensure_engine_up; "$ENGINE" ls --all 2>/dev/null | awk 'NR>1 {print 
 
 # ------------------------------------------------------------------ actions
 
-cmd_build() {
+cmd_container() {
   ensure_engine_up
   note "building $IMAGE with $ENGINE (this compiles McCLIM once; expect several minutes)"
   set_dns_args
@@ -344,8 +346,8 @@ host_prereqs() {
   The desktop needs McCLIM, which comes from Quicklisp.  Install it from
   https://beta.quicklisp.org/quicklisp.lisp, or use kiln run."
   [[ -d $KILN_ROOT/glass ]] || die "no checkouts at $KILN_ROOT.
-  kiln local reads the sibling repos in place; point KILN_ROOT at them, or
-  unpack a bundle and run its own launcher."
+  kiln local reads the sibling repos in place.  Fetch them:  kiln setup
+  (or point KILN_ROOT at an existing workspace, or unpack a bundle.)"
 }
 
 # The core is what makes a start instant rather than a minute of McCLIM. Built
@@ -540,6 +542,63 @@ cmd_speech() {
              (sb-ext:quit))' || die "recognizer fetch failed"
   fi
   note "done — kiln speech"
+}
+
+# ---- set this machine up ------------------------------------------------------------
+#
+# BUILD MEANS THIS MACHINE, and CONTAINER means the image.  It was the other way round, and
+# the name misled the person who wrote it: `kiln build' produced an image, which is not what
+# build means anywhere else, and the container was the thing that had no name of its own.
+#
+# The steps are the same either way — seed five repos as tarballs, let cairn (a git client in
+# Common Lisp) clone the other 33, then dump a core with the whole world in it.  Same
+# repos.lock, same pinning, same boot/build.lisp.  The only question is where they land, and
+# that is exactly what the two names now say.
+#
+#     kiln build      -> this machine   then  kiln local --view
+#     kiln container  -> an image       then  kiln vnc
+#
+# `kiln local' needed all three of those things and had no way to ask for any of them: it
+# read the sibling repos in place, and nothing put them there.  The error said "point
+# KILN_ROOT at them, or unpack a bundle" — and a bundle comes from `kiln bundle', which needs
+# the workspace you do not have.  Circular on the one machine it mattered on: a fresh one.
+#
+# Idempotent in both halves, because the reason to run it twice is that something went wrong
+# in one of them: a workspace already there is left alone, and the core is rebuilt only when
+# it is missing or KILN_REBUILD asks.
+cmd_build() {
+  command -v sbcl >/dev/null || die "no sbcl on PATH.
+  This runs on this machine's Lisp: cairn to clone, SBCL to build the core.
+  brew install sbcl, or use kiln container instead."
+  [[ -f $HOME/quicklisp/setup.lisp ]] || die "no Quicklisp at ~/quicklisp.
+  The desktop needs McCLIM, which comes from Quicklisp.  Install it from
+  https://beta.quicklisp.org/quicklisp.lisp, or use kiln container instead."
+
+  local dest=${1:-$KILN_ROOT} seed
+  seed=${KILN_SEED:-$KILN_STATE/seed}
+
+  if [[ -d $dest/glass ]]; then
+    note "workspace $dest (already here)"
+  else
+    mkdir -p "$dest" "$seed"
+    note "workspace $dest"
+    # The seed closure first: cairn cannot clone itself into existence, so five repos arrive
+    # as tarballs and Lisp takes over from there.
+    MODUS_ROOT="$dest" KILN_SEED="$seed" KILN_LOCK="$ROOT/repos.lock" \
+      sh "$ROOT/boot/seed.sh" || die "seeding failed"
+    MODUS_ROOT="$dest" KILN_SEED="$seed" KILN_LOCK="$ROOT/repos.lock" \
+      sbcl --dynamic-space-size 4096 --script "$ROOT/boot/clone-org.lisp" || die "clone failed"
+    # kiln itself belongs beside its siblings, and on a fresh machine the checkout somebody
+    # ran this FROM is usually already there.  Say so rather than moving anything.
+    [[ -d $dest/kiln ]] || note "kiln     this checkout is at $ROOT — the siblings expect it beside them"
+  fi
+
+  # ...and the core, which is the other half of what `kiln container' does inside the image.
+  # ENSURE_LOCAL_CORE is the same one `kiln local' would reach for; calling it here means a
+  # first start is instant instead of a surprise minute of McCLIM.
+  KILN_ROOT="$dest" ensure_local_core
+  note "core      $KILN_ETC/modus.core"
+  note "done      kiln local --view"
 }
 
 # ---- flags, in a file ---------------------------------------------------------------
@@ -1452,7 +1511,7 @@ cmd_status() {
   ensure_engine_up
   printf 'engine     %s\n' "$ENGINE"
   printf 'image      %s%s\n' "$IMAGE" \
-    "$(image_built && echo '  (built)' || echo '  (not built — run: kiln build)')"
+    "$(image_built && echo '  (built)' || echo '  (not built — run: kiln container)')"
   printf 'container  %s  %s\n' "$NAME" "$(running && echo running || { exists && echo stopped || echo absent; })"
   printf 'display    :%s  vnc %s  audio %s  control %s\n' "$DISPLAY_N" "$VNC_PORT" "$AUDIO_PORT" "$CTRL_PORT"
 }
@@ -1605,7 +1664,7 @@ kiln modus-rfb PORT [--size=WxH] [--work=DIR] — glass's RFB server, on modus.
   sees is a framebuffer, not a window manager.
 
   THE BINARY IS BAKED INTO THE IMAGE.  Editing the modus checkout changes
-  nothing until `kiln build' — the SBCL side reloads changed systems over the
+  nothing until `kiln container' — the SBCL side reloads changed systems over the
   core on every start, and modus, being a static ELF with its compiler inside
   it, does not.
 USAGE
@@ -1669,7 +1728,7 @@ cmd_clean() {
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }
 
 case "${1:-}" in
-  build) shift; cmd_build "$@" ;;
+  container) shift; cmd_container "$@" ;;
   run)   shift
          # --resume here rather than inside cmd_run: it is an ENVIRONMENT for the
          # container, not an engine flag, and everything else cmd_run takes is passed
@@ -1705,6 +1764,7 @@ case "${1:-}" in
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
+  build) shift; cmd_build "$@" ;;
   speech) shift; cmd_speech "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;

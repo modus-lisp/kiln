@@ -49,7 +49,7 @@ net_help() {
   echo "seed:       container system stop && container system start" >&2
   echo "seed:" >&2
   echo "seed:   If routing works and only names fail, it is DNS after all:" >&2
-  echo "seed:       KILN_DNS=1.1.1.1 bin/kiln build" >&2
+  echo "seed:       KILN_DNS=1.1.1.1 bin/kiln container" >&2
 }
 
 for repo in $SEED; do

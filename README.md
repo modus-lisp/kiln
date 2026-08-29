@@ -9,9 +9,20 @@ a single command. It runs on SBCL, in Docker, podman, or Apple's `container`,
 and it puts a real OPEN LOOK desktop on your screen over VNC.
 
 ```sh
-bin/kiln build      # once
-bin/kiln vnc        # desktop on vnc://127.0.0.1:5901
+bin/kiln build         # once — sets THIS machine up
+bin/kiln local --view  # the desktop, in a window here
 ```
+
+Or in a container, which is what the image is for:
+
+```sh
+bin/kiln container     # once (first run compiles McCLIM — get a coffee)
+bin/kiln vnc           # desktop on vnc://127.0.0.1:5901
+```
+
+Both do the same three things — seed five repos as tarballs, let cairn clone the
+other 33, dump a core with the whole world in it. The only difference is where
+they land.
 
 **If the build dies at `seed.sh` with "Could not resolve host".** On macOS this is
 almost never DNS. Apple's container service loses outbound networking for its
@@ -29,7 +40,7 @@ stop/start` does not fix it and neither does passing `--dns`:
 container system stop && container system start
 ```
 
-Then `bin/kiln build` again; the cached layers make the retry cheap.
+Then `bin/kiln container` again; the cached layers make the retry cheap.
 
 A kiln is where you fire what you've shaped — the step that turns worked clay
 into something that holds its form. The workspace is the clay; this is the
@@ -92,7 +103,8 @@ rate limit.
 
 | | |
 |---|---|
-| `kiln build` | build the image (first run compiles McCLIM — get a coffee) |
+| `kiln build` | set this machine up: the workspace, and a core to run it from |
+| `kiln container` | build the image instead (first run compiles McCLIM — get a coffee) |
 | `kiln run` | start the desktop, print its address |
 | `kiln vnc` | start it if needed, then open a VNC client |
 | `kiln stop` | stop and remove the container |
@@ -138,7 +150,7 @@ framebuffer, not a window manager.
 **The binary is baked into the image.** The SBCL side reloads changed systems
 over the core on every start; modus is a static ELF with its compiler inside it
 and nothing reloads it, so editing the modus checkout changes nothing until
-`kiln build`. (`MODUS_BIN` inside the container points the entry point at a
+`kiln container`. (`MODUS_BIN` inside the container points the entry point at a
 hand-built one.)
 
 ## A native window

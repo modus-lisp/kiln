@@ -143,7 +143,7 @@ case "$cmd" in
     #
     # STALENESS: the binary this runs is built ONCE, in the Dockerfile, from the
     # modus checkout as it stood at image build time.  Editing modus afterwards
-    # changes nothing here until the image is rebuilt (`kiln build'), because —
+    # changes nothing here until the image is rebuilt (`kiln container'), because —
     # unlike the SBCL side, where ASDF loads changed systems over the core on
     # every start — modus is a static ELF with its own compiler baked in and
     # nothing reloads it.  MODUS_BIN overrides the path for a hand-built one.

@@ -93,9 +93,32 @@
         (if (string= head commit)
             (say "  + ~a ~a (~a)~%" name (short-sha commit) branch)
             (progn (cairn:checkout repo commit)
+                   ;; ...AND MAKE THE METADATA SAY SO.  CHECKOUT moves the working tree and
+                   ;; leaves the branch ref where it was, so a pinned repo had the right
+                   ;; FILES and a .git that named a different commit — `git rev-parse HEAD'
+                   ;; answered with the tip, and `git status' showed every change since the
+                   ;; pin as a local deletion.  The files were never wrong; the repository
+                   ;; was lying about which commit they were.
+                   ;;
+                   ;; The branch ref rather than a detached HEAD, because the lock names a
+                   ;; branch as well as a commit: this workspace IS on that branch, at that
+                   ;; commit, and a later `git pull' should mean what it looks like it means.
+                   (%write-branch-ref dir branch commit)
                    (say "  + ~a ~a (~a, pinned back from ~a)~%"
                         name (short-sha commit) branch (short-sha head)))))
       t)))
+
+(defun %write-branch-ref (dir branch commit)
+  "Point DIR's BRANCH at COMMIT, so git agrees with the files cairn just checked out.
+
+   Written directly because that is what a ref IS — forty hex digits and a newline in
+   .git/refs/heads/<branch>.  Loose refs win over packed ones, so this is also the whole of
+   what has to change."
+  (let ((path (format nil "~a/.git/refs/heads/~a" dir branch)))
+    (ensure-directories-exist path)
+    (with-open-file (out path :direction :output :if-exists :supersede
+                              :if-does-not-exist :create)
+      (format out "~a~%" commit))))
 
 (defun clone-with-retry (name branch commit)
   "One retry: a TLS handshake or a socket can lose a race under parallelism."

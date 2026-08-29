@@ -117,7 +117,13 @@ jobs:
         run: |
           # --mic=off and no --speaker: a runner has no devices, and asking for them would
           # test the runner rather than kiln.  SDL_VIDEODRIVER=dummy is set for the job.
-          ./bin/kiln local --view --control --mic=off --size=800x600 --apps=terminal --detach
+          #
+          # NO --apps=terminal EITHER, and for the same reason: a terminal is a shell on a
+          # pty, and a pty on a CI runner is the runner's business.  It opened no window here
+          # and the desktop was otherwise perfectly healthy — which would have made this step
+          # a permanent red light about somebody else's sandbox.  The window path is worth
+          # testing, so it is tested below with a window that needs no pty.
+          ./bin/kiln local --view --control --mic=off --size=800x600 --detach
 
           log="$KILN_STATE/session-1.log"
           # SAY WHAT IT SAW, whatever happens.  A CI step that fails without showing the log
@@ -153,10 +159,29 @@ jobs:
           echo "--- what it answered ---"
           echo "$out"
           case "$out" in
-            *"SURFACES 0"*) echo "::error::no windows — --apps=terminal did not open one"; exit 1 ;;
-            *"NAME NIL"*)   echo "::error::the session has no name"; exit 1 ;;
-            *MENU*)         echo "::notice::the desktop answered: $(echo "$out" | tr '\n' ' ')" ;;
-            *)              echo "::error::control socket gave no answer: $(echo "$out" | tr '\n' ' ' | cut -c1-300)"; exit 1 ;;
+            *"NAME NIL"*) echo "::error::the session has no name"; exit 1 ;;
+            *MENU*)       echo "::notice::the desktop answered: $(echo "$out" | tr '\n' ' ')" ;;
+            *)            echo "::error::control socket gave no answer: $(echo "$out" | tr '\n' ' ' | cut -c1-300)"; exit 1 ;;
+          esac
+
+      - name: ...and opens a window when asked
+        working-directory: modus-lisp/kiln
+        run: |
+          # Files, because warren is a glass SURFACE app: it draws into a framebuffer the WM
+          # gives it and needs no pty, no shell and no device.  That exercises the part worth
+          # exercising — spawn, compositor, the root menu's own entry — on a machine that has
+          # none of the things a terminal wants.
+          before=$(./bin/kiln eval '(length (clim-glass::glass-port-surfaces (clim-glass:find-glass-port)))' 2>&1 | tr -dc '0-9')
+          ./bin/kiln eval '(progn (clim-glass::wm-spawn-spec (clim-glass:find-glass-port)
+                                    (cdr (assoc "Files" (clim-glass::wm-default-menu) :test (function equal))))
+                                  :opened)' >/dev/null 2>&1
+          sleep 5
+          out=$(./bin/kiln eval '(mapcar (function clim-glass:wm-surface-title)
+                                         (clim-glass::glass-port-surfaces (clim-glass:find-glass-port)))' 2>&1)
+          echo "windows now: $out  (was $before)"
+          case "$out" in
+            *Files*) echo "::notice::the WM opened a window: $(echo "$out" | tr '\n' ' ')" ;;
+            *)       echo "::error::asked for Files and got: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"; exit 1 ;;
           esac
 
       - name: ...and stops cleanly

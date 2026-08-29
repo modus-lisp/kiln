@@ -106,6 +106,7 @@
 ;;; desktop).  We try them, report honestly, and carry on.
 (defparameter *optional*
   '((:glass/audio-stream . "session audio")
+      (:glass/mic          . "microphone (in-image; the socket is glass/mic-stream)")
     (:glass/speech       . "voice (chord; needs GLASS_VOICE at runtime)")
     (:glass/hearing      . "ear (stave; needs GLASS_EARS at runtime)")
     (:glass/dictation    . "dictation (speech -> keystrokes)")

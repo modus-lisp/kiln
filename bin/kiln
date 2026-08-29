@@ -21,6 +21,7 @@
 #   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
 #   kiln test             glass's RFB self-test, in a throwaway container
+#   kiln models           voices and recognizers: what is here, and fetch more
 #   kiln lock             refresh repos.lock from the org's live refs
 #   kiln clean            remove the container and the image
 #
@@ -359,6 +360,183 @@ ensure_local_core() {
   LOCAL_CORE=$core
 }
 
+# ---- models -------------------------------------------------------------------------
+# A voice and an ear are FILES, and both are big enough that nobody has them by accident:
+# a Piper voice is ~60 MB, stave's encoder 262.  So the failure worth designing for is not
+# a corrupt model, it is an absent one — and the way glass reported that was to come all
+# the way up, draw the app, and put "No voice installed" in a status line you had to open
+# a window to read.  The desktop was already running by the time it could tell you.
+#
+# These check before anything starts, and say the one command that fixes it.  Neither
+# fetches on your behalf: 300 MB is not a thing to do as a side effect of --voice.
+
+chord_voice_dir() { echo "${CHORD_VOICE_DIR:-$HOME/.chord/voices}"; }
+stave_model_dir() { echo "${STAVE_MODEL_DIR:-$HOME/.stave/models}"; }
+
+# A voice is a path, or a bare name resolved against chord's voice directory the same way
+# CHORD:VOICE-PATH resolves it — .graph preferred, .onnx accepted, since either loads.
+resolve_voice() {
+  local v=$1 dir; dir=$(chord_voice_dir)
+  case $v in
+    */*|*.graph|*.onnx) [[ -f $v ]] && { echo "$v"; return 0; }; return 1 ;;
+  esac
+  [[ -f "$dir/$v.graph" ]] && { echo "$dir/$v.graph"; return 0; }
+  [[ -f "$dir/$v.onnx"  ]] && { echo "$dir/$v.onnx";  return 0; }
+  return 1
+}
+
+check_voice() {
+  local v=$1 got
+  if got=$(resolve_voice "$v"); then
+    note "voice    $got"
+    VOICE_RESOLVED=$got
+    return 0
+  fi
+  cat >&2 <<EOF
+kiln: --voice=$v — no such voice.
+
+  Voices live in $(chord_voice_dir) and are named, not pathed:
+  --voice=en_US-lessac-medium finds en_US-lessac-medium.graph there.
+  A path with a / or a .graph/.onnx suffix is taken as given.
+
+  Pull one:   kiln models fetch voice            (default: en_US-lessac-medium, ~63 MB)
+              kiln models fetch voice=en_US-ljspeech-medium
+  See what is here and what is offered:
+              kiln models
+
+EOF
+  die "no voice at $v"
+}
+
+# An ear is a DIRECTORY of stave graphs -- encoder/decoder/joiner plus tokens.txt -- so an
+# empty or half-fetched directory is the interesting failure, not a missing one.
+check_ears() {
+  local e=$1
+  if [[ -d $e ]]; then
+    local n; n=$(find "$e" -name '*.graph' 2>/dev/null | wc -l | tr -d ' ')
+    if (( n >= 3 )) && [[ -f $e/tokens.txt ]]; then
+      note "ears     $e ($n graphs)"
+      return 0
+    fi
+    cat >&2 <<EOF
+kiln: --ears=$e exists but is not a complete recognizer.
+
+  Found $n .graph file(s)$([[ -f $e/tokens.txt ]] || echo " and no tokens.txt").  stave wants an
+  encoder, a decoder and a joiner, plus tokens.txt.  An interrupted fetch looks
+  exactly like this.
+
+  Finish it:  kiln models fetch ears
+
+EOF
+    die "incomplete recognizer at $e"
+  fi
+  cat >&2 <<EOF
+kiln: --ears=$e — no such directory.
+
+  Recognizers live under $(stave_model_dir)/<model>/ and --ears takes that
+  directory.  stave ships no weights: the encoder alone is 262 MB, past what
+  GitHub accepts, and trained float32 does not compress.
+
+  Pull one:   kiln models fetch ears            (zipformer-en-2023-06-26, ~300 MB, a few minutes)
+  See what is here:
+              kiln models
+
+EOF
+  die "no recognizer at $e"
+}
+
+# `kiln models' -- what is installed, what is on offer, and how to get it.  Both fetchers
+# are Lisp (weft's TLS, mill's ONNX reader; no huggingface-cli, no Python), so this runs
+# them from the core rather than reimplementing a download in bash.
+cmd_models() {
+  host_prereqs
+  local sub=${1:-list} which="" name=""
+  [[ $sub == fetch ]] && { which=${2:?usage: kiln models fetch voice|ears|all [=NAME]}; }
+  case $which in *=*) name=${which#*=}; which=${which%%=*} ;; esac
+
+  if [[ $sub == list ]]; then
+    local vd sd; vd=$(chord_voice_dir); sd=$(stave_model_dir)
+    printf '\n  voices   %s\n' "$vd"
+    # NAMES, not files.  A voice on disk is four files (.graph, .bin, and two .json), and
+    # listing them invites you to pass one to --voice, which wants the name.
+    if compgen -G "$vd/*.graph" >/dev/null 2>&1 || compgen -G "$vd/*.onnx" >/dev/null 2>&1; then
+      local f
+      for f in "$vd"/*.graph "$vd"/*.onnx; do
+        [[ -f $f ]] || continue
+        printf '    %-34s %s\n' "$(basename "${f%.*}")" \
+               "$(du -ch "${f%.*}".* 2>/dev/null | tail -1 | cut -f1)"
+      done | sort -u
+    else printf '    (none — kiln models fetch voice)\n'; fi
+    printf '\n  ears     %s\n' "$sd"
+    if [[ -d $sd ]] && [[ -n $(ls -A "$sd" 2>/dev/null) ]]; then
+      local d
+      for d in "$sd"/*/; do
+        [[ -d $d ]] || continue
+        printf '    %-34s %s graphs\n' "$(basename "$d")" \
+               "$(find "$d" -name '*.graph' 2>/dev/null | wc -l | tr -d ' ')"
+      done
+    else printf '    (none — kiln models fetch ears)\n'; fi
+    printf '\n  on offer (licence is the thing that decides what you may do with the result):\n'
+    ensure_local_core
+    # The catalogues live in chord/fetch and stave/fetch, which the core does not preload --
+    # so they are loaded here.  NOT wrapped in ignore-errors: an empty "on offer" list that
+    # means "the call failed" is indistinguishable from one that means "nothing is offered",
+    # and this section exists precisely to tell you what you could have.
+    sbcl --core "$LOCAL_CORE" --noinform --disable-debugger --eval '
+      (handler-bind ((warning (function muffle-warning)))
+        (flet ((catalogue (system fn)
+                 (handler-case
+                     (progn (let ((*standard-output* (make-broadcast-stream)))
+                              (asdf:load-system system))
+                            (funcall (read-from-string fn)))
+                   (error (e) (format t "~&  ~a: unavailable — ~a~%" system e)))))
+          (format t "~&  voices (chord):~%")   (catalogue :chord/fetch "chord:available-voices")
+          (format t "~&  recognizers (stave):~%") (catalogue :stave/fetch "stave:available-models"))
+        (sb-ext:quit))' 2>&1 | grep -v "^;" | sed 's/^/  /'
+    printf '\n  kiln models fetch voice[=NAME] | ears | all\n\n'
+    return 0
+  fi
+
+  [[ $sub == fetch ]] || die "models: unknown subcommand $sub (list, fetch)"
+  ensure_local_core
+
+  # A fetch is minutes and hundreds of megabytes, so it says what it is about to do first
+  # and the size is named rather than discovered halfway through.
+  case $which in
+    voice|ears|all) ;;
+    *) die "models fetch: want voice, ears or all (got $which)" ;;
+  esac
+
+  if [[ $which == voice || $which == all ]]; then
+    note "fetching voice ${name:-(chord default)} -> $(chord_voice_dir)  (~63 MB)"
+    sbcl --core "$LOCAL_CORE" --dynamic-space-size "${KILN_FETCH_HEAP:-8192}" \
+         --noinform --disable-debugger --eval "
+      (progn (asdf:load-system :chord/fetch)
+             (let ((p (funcall (read-from-string \"chord:fetch-voice\")
+                               ${name:+\"$name\"}${name:-(symbol-value (read-from-string \"chord::*default-voice*\"))})))
+               (format t \"~&kiln/models: voice at ~a~%\" p))
+             (sb-ext:quit))" || die "voice fetch failed"
+  fi
+
+  if [[ $which == ears || $which == all ]]; then
+    note "fetching recognizer -> $(stave_model_dir)  (~300 MB, a few minutes; 262 MB of it is the encoder)"
+    # A BIGGER HEAP THAN THE DESKTOP RUNS IN, on purpose.  The download is streamed but the
+    # ONNX -> .graph conversion is not: %EMIT-TENSOR grows one adjustable vector, and
+    # VECTOR-PUSH-EXTEND doubles, so a 262 MB encoder asks for a 256 MB contiguous block
+    # while already holding the old one.  With the default heap that fails at exactly the
+    # last step -- after the whole 262 MB has been fetched, which is the most annoying
+    # possible moment.  This is a one-shot conversion, not a running desktop, so it can
+    # have the room.
+    sbcl --core "$LOCAL_CORE" --dynamic-space-size "${KILN_FETCH_HEAP:-8192}" \
+         --noinform --disable-debugger --eval '
+      (progn (asdf:load-system :stave/fetch)
+             (let ((d (funcall (read-from-string "stave:fetch-model"))))
+               (format t "~&kiln/models: recognizer at ~a~%" d))
+             (sb-ext:quit))' || die "recognizer fetch failed"
+  fi
+  note "done — kiln models"
+}
+
 cmd_local() {
   # THE SAME .config THE CONTAINER READS, through the same reader (boot/config.sh).
   # ~/.kiln is the box's state, not a session's, so a setting recorded there means the
@@ -412,6 +590,12 @@ cmd_local() {
 
   host_prereqs
   ensure_local_core
+
+  # BEFORE the boot file is written and the image starts: a missing model is a typo or an
+  # un-run fetch, and both are cheaper to hear about now than from a status line inside a
+  # desktop that already came up.  CHECK-VOICE resolves a bare name to the file it found.
+  [[ -n $voice ]] && { check_voice "$voice"; voice=$VOICE_RESOLVED; }
+  [[ -n $ears  ]] && check_ears "$ears"
 
   local addr=127.0.0.1; [[ -n $expose ]] && addr=0.0.0.0
   local boot="$KILN_STATE/boot-$display.lisp"
@@ -1278,6 +1462,7 @@ case "${1:-}" in
   test)  shift; cmd_test ;;
   modus) shift; cmd_modus "$@" ;;
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
+  models) shift; cmd_models "$@" ;;
   lock)  shift; cmd_lock ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;

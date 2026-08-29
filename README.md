@@ -13,6 +13,24 @@ bin/kiln build      # once
 bin/kiln vnc        # desktop on vnc://127.0.0.1:5901
 ```
 
+**If the build dies at `seed.sh` with "Could not resolve host".** On macOS this is
+almost never DNS. Apple's container service loses outbound networking for its
+guests — often after a sleep, or alongside a VPN — and every hostname then fails
+after a timeout. Confirm by trying an IP rather than a name:
+
+```sh
+container run --rm debian:trixie-slim sh -c '>/dev/tcp/1.1.1.1/443 && echo up'
+```
+
+If that fails, restart the **service**, not the builder — `container builder
+stop/start` does not fix it and neither does passing `--dns`:
+
+```sh
+container system stop && container system start
+```
+
+Then `bin/kiln build` again; the cached layers make the retry cheap.
+
 A kiln is where you fire what you've shaped — the step that turns worked clay
 into something that holds its form. The workspace is the clay; this is the
 firing.

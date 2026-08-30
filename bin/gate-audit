@@ -1,0 +1,407 @@
+#!/usr/bin/env -S python3 -u
+"""gate-audit — what every repo can prove about itself, on a machine with nothing.
+
+The whole workspace's test suites were written on machines where ~/.sbclrc had already
+loaded quicklisp, and so ASDF, and so ironclad and usocket, and where
+~/quicklisp/local-projects held symlinks to every sibling repo.  None of that is
+declared anywhere.  The suites passed for years without being self-sufficient, and the
+first machine to notice was a GitHub runner.
+
+So this runs each suite the way a runner would: a copy of the repo in an empty
+directory, beside ONLY the siblings its .asd files actually name, with HOME pointed
+somewhere with no .sbclrc in it.  What survives that is what can be wired to CI.
+
+  kiln/bin/gate-audit                 # audit everything
+  kiln/bin/gate-audit weft loom       # or just these
+  kiln/bin/gate-audit --emit weft     # write .github/workflows/gates.yml for what passes
+
+Reads no network.  Writes nothing unless --emit."""
+
+import os, re, glob, shutil, subprocess, sys, tempfile, json
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(ROOT)          # the workspace, one above kiln/
+TIMEOUT = int(os.environ.get("GATE_AUDIT_TIMEOUT", "420"))
+
+
+def repos():
+    return sorted(d for d in os.listdir(ROOT)
+                  if os.path.isdir(os.path.join(ROOT, d, ".git")))
+
+
+def declared(repo):
+    """Every name in every :depends-on of every .asd, read as a BALANCED form.
+
+    Not a line-grep.  A :depends-on that spans lines is normal here, and reading only
+    its first line is how cl-nostr's siblings came out as one name instead of three."""
+    out = set()
+    for asd in glob.glob(os.path.join(ROOT, repo, "*.asd")):
+        try:
+            s = open(asd, errors="ignore").read()
+        except OSError:
+            continue
+        for m in re.finditer(r":depends-on\s*\(", s):
+            i, depth = m.end() - 1, 0
+            for j in range(i, len(s)):
+                if s[j] == "(":
+                    depth += 1
+                elif s[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            body = re.sub(r";[^\n]*", " ", s[i + 1:j])
+            # READER CONDITIONALS ARE NOT DEPENDENCIES.  `#+unix "sb-posix"' is one
+            # dependency guarded by a feature, and a naive scan reads the guard as a
+            # second name — which is how `+unix' ended up in a quicklisp list.
+            body = re.sub(r"#[+-]\s*\(?[A-Za-z0-9._-]*\)?", " ", body)
+            for a, b in re.findall(r'"([^"]+)"|:?([A-Za-z0-9._/+-]+)', body):
+                n = (a or b).strip()
+                if n:
+                    out.add(n)
+    return out
+
+
+def split_deps(repo, known):
+    sibs, third = set(), set()
+    for d in declared(repo):
+        top = d.split("/")[0].lower()
+        if top == repo.lower():
+            continue
+        if top in known:
+            sibs.add(top)
+        elif not top.startswith("sb-") and top not in ("asdf", "uiop"):
+            third.add(top)
+    return sibs, third
+
+
+def closure(repo, known):
+    """Transitive sibling set, and the third-party names of everything in it."""
+    seen, third, stack = set(), set(), [repo]
+    while stack:
+        r = stack.pop()
+        s, t = split_deps(r, known)
+        third |= t
+        for d in s:
+            if d not in seen:
+                seen.add(d)
+                stack.append(d)
+    return sorted(seen), sorted(third)
+
+
+def entry_point(repo):
+    """How this repo says `test me', in the order the workspace prefers.
+
+    Returns (kind, detail) or (None, why-not)."""
+    p = lambda *a: os.path.join(ROOT, repo, *a)
+    if os.path.exists(p("inspect", "run-all.sh")):
+        return ("suite", "inspect/run-all.sh")
+    for asd in glob.glob(p("*.asd")):
+        if "test-op" in open(asd, errors="ignore").read():
+            return ("test-op", os.path.basename(asd))
+    for cand in ("inspect/self-test.lisp", "test/self-test.lisp"):
+        if os.path.exists(p(*cand.split("/"))):
+            return ("load", cand)
+    gates = sorted(glob.glob(p("inspect", "*-gate.lisp")))
+    if gates:
+        return ("gates", ", ".join(os.path.basename(g) for g in gates[:3]))
+
+    # NOTHING DECLARED, so look for something that reads like a test.  This is a guess
+    # and is reported as one: inspect/ in this workspace holds gates and DEMOS side by
+    # side -- cairn's clone.lisp dials a real remote -- so a name that merely lives
+    # there proves nothing.  Names containing test/gate/oracle/check are tried; demo,
+    # bench and probe are not, because those exist to be watched, not to pass.
+    cands = []
+    for d in ("inspect", "test", "tests"):
+        for f in sorted(glob.glob(p(d, "*.lisp"))):
+            b = os.path.basename(f).lower()
+            if any(x in b for x in ("demo", "bench", "shot", "drive")):
+                continue
+            if any(x in b for x in ("test", "gate", "oracle", "check", "verify")):
+                cands.append(os.path.join(d, os.path.basename(f)))
+    if cands:
+        return ("discovered", ";".join(cands))
+    return (None, "nothing named like a test in inspect/, test/ or tests/")
+
+
+def run_isolated(repo, sibs, kind, detail, keep_home=False):
+    """Run the entry point in a scratch directory with only SIBS beside it.
+
+    HOME is redirected to an empty directory unless KEEP_HOME: no ~/.sbclrc means no
+    quicklisp, which is the whole point.  Third-party libraries therefore fail here in
+    exactly the way they fail on a runner, and the report says so rather than the suite
+    silently borrowing them."""
+    work = tempfile.mkdtemp(prefix=f"gate-audit-{repo}-")
+    home = os.path.join(work, "home")
+    try:
+        os.mkdir(home)
+        for r in [repo] + list(sibs):
+            src, dst = os.path.join(ROOT, r), os.path.join(work, r)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, symlinks=True,
+                                ignore=shutil.ignore_patterns(".git"))
+        here = os.path.join(work, repo)
+        env = dict(os.environ)
+        if not keep_home:
+            env["HOME"] = home
+        env["CL_SOURCE_REGISTRY"] = (
+            f'(:source-registry (:tree "{work}/") (:exclude "vendor") (:exclude "deps")'
+            f' :ignore-inherited-configuration)')
+
+        if kind == "suite":
+            cmd = ["sh", "inspect/run-all.sh"]
+            # run-all.sh sets its own registry; the copy is still what it points at.
+            env.pop("CL_SOURCE_REGISTRY")
+        elif kind == "test-op":
+            cmd = ["sbcl", "--dynamic-space-size", "3072", "--non-interactive",
+                   "--eval", "(require :asdf)",
+                   "--eval", f'(asdf:test-system "{repo}")']
+        elif kind == "load":
+            cmd = ["sbcl", "--dynamic-space-size", "3072", "--non-interactive",
+                   "--eval", "(require :asdf)", "--load", detail]
+        elif kind == "discovered":
+            # Try each candidate; the first that exits 0 is the one worth wiring.
+            last = (1, "no candidate ran cleanly")
+            for rel in detail.split(";"):
+                cmd = ["sbcl", "--dynamic-space-size", "3072", "--non-interactive",
+                       "--eval", "(require :asdf)", "--load", rel]
+                try:
+                    q = subprocess.run(cmd, cwd=here, env=env, timeout=TIMEOUT,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                except subprocess.TimeoutExpired:
+                    last = (124, f"{rel}: timed out"); continue
+                if q.returncode == 0:
+                    return 0, f"__ENTRY__{rel}\n" + q.stdout.decode("utf-8", "replace")
+                last = (q.returncode, f"{rel}: " + q.stdout.decode("utf-8", "replace"))
+            return last
+        else:
+            # NOT --script.  It implies --no-sysinit --no-userinit AND does not load
+            # ASDF, so a gate whose first form is (asdf:load-system ...) fails on the
+            # runner rather than on its merits -- which is how reed came back FAIL
+            # while passing 21/0 the moment ASDF was supplied.  Gates get the same
+            # invocation as everything else here.
+            first = detail.split(",")[0].strip()
+            cmd = ["sbcl", "--dynamic-space-size", "3072", "--non-interactive",
+                   "--eval", "(require :asdf)",
+                   "--load", os.path.join("inspect", first)]
+        try:
+            p = subprocess.run(cmd, cwd=here, env=env, timeout=TIMEOUT,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            return p.returncode, p.stdout.decode("utf-8", "replace")
+        except subprocess.TimeoutExpired:
+            return 124, f"timed out after {TIMEOUT}s"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def diagnose(out):
+    """One line saying why, in the vocabulary of the actual failures we hit."""
+    for pat, why in (
+        (r"Package ASDF does not exist", "suite never (require :asdf) — it came from ~/.sbclrc"),
+        (r'Component "([^"]+)" not found', "missing dependency: \\1"),
+        (r"Package ([A-Z0-9._-]+) does not exist", "missing package: \\1"),
+        (r"Symbol \"([^\"]+)\" not found", "missing symbol: \\1"),
+        (r"timed out after", "timed out"),
+        (r"error in FORMAT", "FORMAT directive (CRLF checkout?)"),
+        (r"Invalid pathname", "registry path not absolute"),
+    ):
+        m = re.search(pat, out)
+        if m:
+            return re.sub(r"\\1", m.group(1) if m.groups() else "", why)
+    tail = [l for l in out.strip().split("\n") if l.strip()][-1:]
+    return (tail[0][:70] if tail else "failed").strip()
+
+
+WORKFLOW = '''name: gates
+on: [push, pull_request]
+
+# ONE PLATFORM ON PURPOSE.  This is portable Common Lisp with no FFI and no platform
+# calls, so a second runner would re-prove the same arithmetic on a different kernel.
+# The repos that genuinely differ per platform — glass-sdl for SDL, kiln for the
+# container and a fresh Mac — say so in their own workflows.
+#
+# Generated by kiln/bin/gate-audit, which verified this suite in an empty directory
+# with no ~/.sbclrc before writing the file.
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+{checkout}          submodules: recursive
+{siblings}      - name: Install SBCL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+{quicklisp}      - name: {label}
+{workdir}{env}        run: {cmd}
+'''
+
+SIBLING_STEP = '''
+      # The TRANSITIVE set, read from the balanced :depends-on forms.  When it goes
+      # stale the failure reads "Component X not found", which looks like a broken
+      # build rather than a missing line here.
+      - name: Sibling checkouts
+        run: |
+          for repo in {sibs}; do
+            git clone --depth 1 -q https://github.com/modus-lisp/$repo.git "$repo"
+          done
+'''
+
+QUICKLISP_STEP = '''
+      # QUICKLISP, for the third-party libraries named in the .asd files.  On a
+      # developer machine ~/.sbclrc has loaded these before any gate runs, which is why
+      # the suite passed everywhere except on a machine with nothing.
+      - name: Quicklisp dependencies
+        run: |
+          # RETRIED, because this is the one step that reaches the network and a
+          # transient failure here is indistinguishable from a broken repository.
+          # loom went red on "Connection reset by peer" mid-install and was diagnosed
+          # as having a non-hermetic test suite; it did not, and its suite never ran.
+          # A badge that goes red on somebody else's CDN teaches people to ignore it.
+          for attempt in 1 2 3; do
+            rm -rf ~/quicklisp
+            curl -sSLo /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp || {{ sleep 5; continue; }}
+            sbcl --non-interactive --load /tmp/quicklisp.lisp \\
+                 --eval '(quicklisp-quickstart:install :path "~/quicklisp/")' \\
+                 --eval '(ql-util:without-prompting (ql:add-to-init-file))' && break
+            echo "quicklisp install attempt $attempt failed; retrying"
+            sleep 10
+          done
+          sbcl --non-interactive --eval '(ql:quickload (list {libs}))'
+'''
+
+
+def emit(repo, sibs, third, kind, detail, needs_ql=False):
+    path = os.path.join(ROOT, repo, ".github", "workflows", "gates.yml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if kind == "suite":
+        label, cmd = "Gate suite", "sh inspect/run-all.sh"
+    elif kind == "test-op":
+        label = "Tests"
+        cmd = ("sbcl --non-interactive --eval '(require :asdf)' "
+               f"--eval '(asdf:test-system \"{repo}\")'")
+    elif kind == "load":
+        label = "Self-test"
+        cmd = ("sbcl --dynamic-space-size 3072 --non-interactive "
+               f"--eval '(require :asdf)' --load {detail}")
+    elif kind == "discovered":
+        # The path already carries its directory (test/oracle.lisp, inspect/x-test.lisp);
+        # prefixing inspect/ onto it produced inspect/test/oracle.lisp and a file-not-found
+        # that read like a missing test rather than a mangled path.
+        first = detail.split(";")[0].strip()
+        label = "Tests"
+        # LOAD THE SYSTEM FIRST.  A discovered test was never written to be an entry
+        # point: cabinet's test/oracle.lisp opens with (defpackage #:cabinet/test) and
+        # assumes CABINET is already there, because a person running it had loaded it
+        # moments earlier.  Loading twice is harmless for the ones that do it
+        # themselves.
+        cmd = ("sbcl --dynamic-space-size 3072 --non-interactive "
+               f"--eval '(require :asdf)' --eval '(asdf:load-system \"{repo}\")' "
+               f"--load {first}")
+    else:
+        # NOT --script, for the same reason the runner does not use it: --script implies
+        # --no-userinit, so quicklisp's init file never loads and a library installed in
+        # the step above is invisible.  It also does not load ASDF, which a gate whose
+        # first form is (asdf:load-system ...) needs.  Both bugs look like the repo's
+        # fault and are the harness's.
+        first = detail.split(",")[0].strip()
+        label = "Gate"
+        cmd = ("sbcl --dynamic-space-size 3072 --non-interactive "
+               f"--eval '(require :asdf)' --load inspect/{first}")
+
+    # A repo with siblings is checked out into a subdirectory so they can sit beside it.
+    checkout = f"          path: {repo}\n" if sibs else ""
+    workdir  = f"        working-directory: {repo}\n" if sibs else ""
+    env = ""
+    # A GATE NEEDS THE REGISTRY TOO.  Its first form is (asdf:load-system :self), and
+    # without a root ASDF cannot find the repo's own .asd -- which surfaced as
+    # "Component :REED not found" on four repos and reads exactly like a broken repo.
+    if kind in ("test-op", "load", "gates", "discovered"):
+        env = ("        # ASDF wants an ABSOLUTE registry root; github.workspace is the\n"
+               "        # directory holding this checkout and any siblings.\n"
+               "        env:\n"
+               "          CL_SOURCE_REGISTRY: '(:source-registry (:tree \"${{ github.workspace }}/\")"
+               " (:exclude \"vendor\") (:exclude \"deps\") :inherit-configuration)'\n")
+    text = WORKFLOW.format(
+        checkout=checkout,
+        siblings=SIBLING_STEP.format(sibs=" ".join(sibs)) if sibs else "",
+        quicklisp=(QUICKLISP_STEP.format(libs=" ".join(":" + t for t in third) or ":asdf")
+                   if (third or needs_ql) else ""),
+        label=label, workdir=workdir, env=env, cmd=cmd)
+    open(path, "w").write(text)
+    return path
+
+
+def main(argv):
+    emit_mode = "--emit" in argv
+    # --force writes the workflow even when the local run failed.  Sometimes the right
+    # move is to let the runner be the judge: this machine is not the target, and an
+    # audit that only ever wires what already works can never discover what a clean
+    # machine would have said.  The verdict is still printed, so a forced wiring is
+    # never mistaken for a passing one.
+    force = "--force" in argv
+    argv = [a for a in argv if not a.startswith("--")]
+    known = set(repos())
+    targets = argv or sorted(known)
+    print(f"{'repo':<22} {'entry':<9} {'result':<9} detail")
+    print("-" * 96)
+    summary = {"pass": [], "fail": [], "none": []}
+    for r in targets:
+        if r not in known:
+            print(f"{r:<22} {'-':<9} {'?':<9} not a repo here")
+            continue
+        kind, detail = entry_point(r)
+        if not kind:
+            print(f"{r:<22} {'-':<9} {'no tests':<9} {detail}")
+            summary["none"].append(r)
+            continue
+        sibs, third = closure(r, known)
+        code, out = run_isolated(r, sibs, kind, detail)
+
+        # A SECOND CHANCE, and only for a specific reason.  Failing in a home with no
+        # quicklisp is not the same as being broken: a repo that declares ironclad has
+        # every right to need it, and its workflow installs it.  So when the missing
+        # piece is one this repo actually declares, try again with the real HOME —
+        # where quicklisp lives — and report which of the two answers it is.  Anything
+        # else stays a failure, because nothing should be arriving unnamed.
+        needed_ql = False
+        if code != 0:
+            # A gate that says (load "~/quicklisp/setup.lisp") outright is asking for
+            # quicklisp by name; failing in an empty HOME says nothing about the code.
+            # Same for a missing library the .asd actually declares.  Either way, retry
+            # where quicklisp exists and record that it was needed.
+            hardcoded_ql = "quicklisp/setup.lisp" in out
+            m = re.search(r'Component "([^"]+)" not found|Package ([A-Z0-9._-]+) does not exist', out)
+            missing = ((m.group(1) or m.group(2)) or "").lower() if m else ""
+            if hardcoded_ql or (third and missing.split("/")[0] in third):
+                needed_ql = True
+                code, out = run_isolated(r, sibs, kind, detail, keep_home=True)
+
+        if code == 0:
+            note = " ".join(filter(None, [
+                f"siblings: {' '.join(sibs)}" if sibs else "",
+                f"quicklisp: {' '.join(third)}" if third else ""])) or "self-contained"
+            won = ""
+            if out.startswith("__ENTRY__"):
+                won = out.split("\n", 1)[0][len("__ENTRY__"):]
+                note = f"via {won} (undeclared) " + note
+                # Emit against the candidate that actually ran, not the first guess.
+                kind, detail = "load", won
+            print(f"{r:<22} {kind:<9} {'PASS':<9} {note}")
+            if needed_ql:
+                print(f"{'':<22} {'':<9} {'':<9} (needs quicklisp — clean-home run could not)")
+            summary["pass"].append((r, sibs, third, kind, detail))
+            if emit_mode:
+                print(f"{'':<22} {'':<9} {'':<9} -> {emit(r, sibs, third, kind, detail, needed_ql)}")
+        else:
+            print(f"{r:<22} {kind:<9} {'FAIL':<9} {diagnose(out)}")
+            summary["fail"].append((r, diagnose(out)))
+            if emit_mode and force:
+                print(f"{'':<22} {'':<9} {'':<9} -> {emit(r, sibs, third, kind, detail, True)}"
+                      f"  (forced — let the runner decide)")
+    print("-" * 96)
+    print(f"{len(summary['pass'])} pass, {len(summary['fail'])} fail, "
+          f"{len(summary['none'])} with no test entry point")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -11,14 +11,14 @@ cl-consensus    master  37611d5b5b61d8101f055d6fe68b51f9c086f8d1
 cl-frpc         main    05b6b39d168df99705149e67f7d3db00c2dbf9db
 cl-nostr        master  fcded280e21bdd81d951b225de54cbb12bb52a9d
 cl-tor          master  6b681c73f6de41181b6824d1cdda81dfc18c8561
-cl-transport    master  e9c894dd638c957eb91dbd78f180f8fa79095b52
+cl-transport    master  498680ba59043ec0b50f44bae0953000ca09eb67
 conch           master  55f146dedce7dbfae2942b1caae3e98381ba45bd
 cram            master  0d071a21db7589fcf0c20d232adde642b0e6153a
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
 folio           master  863aedfb4c00b15fc4e713cf9dc0ef90e3cac5c5
 gesso           master  a810351445075911e0e7f32ac1f25dc38de8d341
-glass           master  3ac9844757a047f8458577885ccc2b3cf822b7f7
-glass-sdl       master  d78f065264802d6dbc657fbc90302ce122483ab1
+glass           master  cabf50d6e08aaea8ea6070da6d682db3a89fa27c
+glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61
 loom            master  851e99f2742872728e920172285992655d715a52
 mill            master  e7bb175386f7718405a4c42a464c1d443934eea1
 modus           main    ea12243633e0d825b3a419d67b59ff270b5d24d7

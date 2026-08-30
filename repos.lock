@@ -11,15 +11,15 @@ cl-consensus    master  37611d5b5b61d8101f055d6fe68b51f9c086f8d1
 cl-frpc         main    05b6b39d168df99705149e67f7d3db00c2dbf9db
 cl-nostr        master  fcded280e21bdd81d951b225de54cbb12bb52a9d
 cl-tor          master  6b681c73f6de41181b6824d1cdda81dfc18c8561
-cl-transport    master  80eaf6fd2807b124b50f019013856953b14e86ef
+cl-transport    master  4dc986239d8fdb1fce9501b7890e5d71cac73727
 conch           master  55f146dedce7dbfae2942b1caae3e98381ba45bd
 cram            master  0d071a21db7589fcf0c20d232adde642b0e6153a
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
 folio           master  863aedfb4c00b15fc4e713cf9dc0ef90e3cac5c5
 gesso           master  a810351445075911e0e7f32ac1f25dc38de8d341
-glass           master  644e423b180d18db7ee7c3de596f7e0aa323c0f6
-glass-sdl       master  4bb15e1729e5e0c86b888dcb768ce7d151e39f86
-loom            master  19a4d8a29d04b28fd2c77aec1db7f5306a2afbe6
+glass           master  c43e5594af6f0410b4ca05360c27d9079917407c
+glass-sdl       master  85ef0aa13b0e39b46f6b9f299e7dc543a82e127b
+loom            master  851e99f2742872728e920172285992655d715a52
 mill            master  e7bb175386f7718405a4c42a464c1d443934eea1
 modus           main    ea12243633e0d825b3a419d67b59ff270b5d24d7
 natrium         master  974ce77bd10d58f5c9ae45ac036fb8bff2812133
@@ -32,7 +32,7 @@ seal            master  e8b67160ff7c8317471192488b57a8dea4fcea78
 secp256k1-fast  master  656e5090b8093f019580c34bba2b6d69155f9b9e
 shuttle         master  020eb99bd217646a47cfb055245accb569b1e330
 skep            main    d6838b4cf6328d0de0e9b81382ff5d9a60a38cb1
-spool           master  2e9d0056e7a03c97ffcc37b921439437f7c703b7
+spool           master  c89e0551302992f62c2aa8c5be23b27c57bcf1c5
 stave           master  efcb84a1baeea785511246e9bee0dfcdc5e15db5
 stencil         master  80d0096fd75ac493b35f1c68928224bd5c570300
 warp            master  5c22158aabf5f4b506fd48c48c659f440ce8fd9e
@@ -40,5 +40,5 @@ warren          master  d8986c59f1afa08b85a5cb6c53686408131eb5c7
 webp-pure       master  cce404517e0bc59e49a492467741a698a73551a6
 webrtc-data     main    6ed9310ed33f8360981351098c53e581af286f6f
 webrtc-media    master  df0f3e2b218f9d19b3a0d4e210d0ec7b37d08d45
-weft            master  7210e6ab3a152168f6cd0df74a48de7411605fec
+weft            master  d78c7931cae68e33202e213de5382aad9dea93dd
 zstd-pure       master  b49ca668263f66da96f5afe784f6a3f6e9fb8c4e

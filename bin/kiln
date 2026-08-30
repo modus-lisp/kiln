@@ -890,13 +890,27 @@ cmd_local() {
     # INITIALIZE is called whether or not --policy was given: with no policy document
     # it loads nothing and arms nothing, so an image without one behaves as it always
     # did.  With one, every outbound connection from here on is recorded and judged.
-    printf ';;; The outbound gate — see cl-transport/docs/GATE.md.\n'
+    #
+    # BY NAME, not as a package prefix.  A boot file is READ before any of it runs, so
+    # `(cl-transport.gate:initialize)' in an image that does not have that system is not
+    # a feature that quietly does nothing -- it is a read error, and the desktop never
+    # starts at all.  That is not hypothetical: repos.lock went one commit stale and the
+    # macOS CI built a core from a cl-transport with no gate in it, so every `kiln local'
+    # died at boot with a backtrace about a package.
+    #
+    # The gate is optional by design; an image without it should come up unpoliced and
+    # say nothing, which is what looking the symbol up at run time gets.
+    printf ';;; The outbound gate — see cl-transport/docs/GATE.md.  Optional: an image\n'
+    printf ';;; built without cl-transport comes up unpoliced rather than not at all.\n'
+    printf '(let ((init (let ((p (find-package "CL-TRANSPORT.GATE")))\n'
+    printf '             (and p (find-symbol "INITIALIZE" p)))))\n'
+    printf '  (when (and init (fboundp init))\n'
     if [[ -n $policy ]]; then
-      printf '(cl-transport.gate:initialize :path "%s")\n' "$policy"
-      printf '(format t "~&kiln: policy   %s~%%")\n' "$policy"
+      printf '    (funcall init :path "%s")\n' "$policy"
+      printf '    (format t "~&kiln: policy   %s~%%")))\n' "$policy"
     else
-      printf '(let ((p (cl-transport.gate:initialize)))\n'
-      printf '  (when p (format t "~&kiln: policy   ~a~%%" p)))\n'
+      printf '    (let ((p (funcall init)))\n'
+      printf '      (when p (format t "~&kiln: policy   ~a~%%" p)))))\n'
     fi
     printf '\n'
 

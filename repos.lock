@@ -17,8 +17,8 @@ cram            master  0d071a21db7589fcf0c20d232adde642b0e6153a
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
 folio           master  863aedfb4c00b15fc4e713cf9dc0ef90e3cac5c5
 gesso           master  a810351445075911e0e7f32ac1f25dc38de8d341
-glass           master  c43e5594af6f0410b4ca05360c27d9079917407c
-glass-sdl       master  85ef0aa13b0e39b46f6b9f299e7dc543a82e127b
+glass           master  7dd77956778751a3d4be707468a9df6716a1d948
+glass-sdl       master  ac6cad92f367ae3374e64fd4a7e0a89ee34a8feb
 loom            master  851e99f2742872728e920172285992655d715a52
 mill            master  e7bb175386f7718405a4c42a464c1d443934eea1
 modus           main    ea12243633e0d825b3a419d67b59ff270b5d24d7

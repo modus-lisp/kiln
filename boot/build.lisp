@@ -95,6 +95,12 @@
     ;; glass/nostr earns its place twice over: the DESKTOP answers admission with
     ;; it now, so without it the screen comes up and refuses every offer.
     :webrtc-media/rtc :glass/mic-stream :glass/nostr :cl-nostr
+    ;; The outbound gate.  In the CORE rather than optional for the same reason as
+    ;; the nostr systems above: a policy is applied at boot, and a box whose config
+    ;; names one cannot compile the system that reads it -- the rootfs is read-only.
+    ;; It costs almost nothing (usocket, which is here already) and arms nothing on
+    ;; its own; see cl-transport/docs/GATE.md.
+    :cl-transport
     ;; the control plane: conch's SSH server, and what the config TUI needs to
     ;; resolve a NIP-05 (seal/http + jzon).  These are in the CORE because
     ;; sshd.lisp runs from it -- `sbcl --script' implies --no-userinit, so a

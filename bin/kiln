@@ -772,7 +772,7 @@ cmd_local() {
   # anything from a REPL, and nothing reaches you.
   local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id="" nostr=""
   local mic="off" speaker="off"
-  local size="" wallpaper="" voice="" ears="" config="" expose="" sshd=""
+  local size="" wallpaper="" voice="" ears="" config="" expose="" sshd="" policy=""
   local display=${GLASS_DISPLAY:-1}
   # Kept before the parse loop eats them: the header records the command that
   # produced the file, which is the only reason a generated file is readable.
@@ -839,6 +839,7 @@ cmd_local() {
       --gateway)    gateway=${val:-auto} ;;
       --nostr)      nostr=${val:-1} ;;
       --gateway-id) gateway_id=${val:?--gateway-id=ID} ;;
+      --policy)     policy=${val:?--policy=FILE} ;;
       --config)     config=${val:?--config=FILE} ;;
       --expose)     expose=1 ;;
       --profile)    : ;;                       # already expanded above
@@ -857,6 +858,10 @@ cmd_local() {
   # desktop that already came up.  CHECK-VOICE resolves a bare name to the file it found.
   [[ -n $voice ]] && { check_voice "$voice"; voice=$VOICE_RESOLVED; }
   [[ -n $ears  ]] && check_ears "$ears"
+
+  # A policy named on the command line must exist.  Starting without the gate because
+  # of a typo is the failure somebody who asked for one would least like to have.
+  [[ -n ${policy:-} ]] && { [[ -f $policy ]] || die "no such policy: $policy"; }
 
   local addr=127.0.0.1; [[ -n $expose ]] && addr=0.0.0.0
   local boot="$KILN_STATE/boot-$display.lisp"
@@ -877,6 +882,23 @@ cmd_local() {
     printf ';;;; named on the command line does not appear, so what the image does is\n'
     printf ';;;; the list of things somebody typed.\n\n'
     printf '(in-package :cl-user)\n\n'
+
+    # THE GATE GOES FIRST, before anything in this file can open a connection.  A gate
+    # armed after the session has dialled out is a record with a hole at the front of
+    # it, and the hole is exactly the part nobody watched.
+    #
+    # INITIALIZE is called whether or not --policy was given: with no policy document
+    # it loads nothing and arms nothing, so an image without one behaves as it always
+    # did.  With one, every outbound connection from here on is recorded and judged.
+    printf ';;; The outbound gate — see cl-transport/docs/GATE.md.\n'
+    if [[ -n $policy ]]; then
+      printf '(cl-transport.gate:initialize :path "%s")\n' "$policy"
+      printf '(format t "~&kiln: policy   %s~%%")\n' "$policy"
+    else
+      printf '(let ((p (cl-transport.gate:initialize)))\n'
+      printf '  (when p (format t "~&kiln: policy   ~a~%%" p)))\n'
+    fi
+    printf '\n'
 
     [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock || -n $view ]] &&
       printf '(setf glass:*desktop-name* "modus-lisp :: glass desktop :%s")\n\n' "$display"
@@ -1174,6 +1196,10 @@ kiln local [flags] — run the desktop on this machine, no container.
   --wallpaper=PATH     desktop wallpaper
   --voice=PATH         text-to-speech voice graph (chord)
   --ears=PATH          speech recognizer models (stave)
+  --policy=FILE        outbound connection policy, armed before anything dials out.
+                       Without it, $TRANSPORT_POLICY and ~/.config/transport-policy.conf
+                       are tried, and an image with no policy is not policed at all.
+                       See cl-transport/docs/GATE.md.
   --gateway[=PORT]     the browser gateway (an HTTP server)
   --detach, -d         run it in the background and give the terminal back.  The
                        session's name is printed once it has picked one; the log is

@@ -25,11 +25,13 @@
 
 (defvar *desktop-file*
   (format nil "~a/glass/backend/inspect/serve-desktop.lisp" *root*))
-(defvar *gateway-file*
-  (format nil "~a/webrtc-data/demo/glass-webrtc/gateway.lisp" *root*))
+(defvar *gateway-system* "glass-webrtc"
+  "The gateway is a SYSTEM now, not a file beside webrtc-data.  It used to be loaded
+   by absolute path — and loading it was the same act as starting it, because the file
+   ended in (hunchentoot:start ...) and (loop (sleep 5)).  Now START-GATEWAY does that
+   and loading merely defines.")
 
-(defvar *nostr-gateway-file*
-  (format nil "~a/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp" *root*))
+(defvar *nostr-gateway-system* "glass-webrtc/nostr")
 (defvar *etc* (kiln-env "KILN_ETC" "/etc/kiln"))
 
 (defun kiln-flag-default (name default)
@@ -123,10 +125,11 @@
   (let ((v (kiln-env "KILN_GATEWAY" "0"))) (not (or (string= v "0") (string= v "")))))
 
 (defvar *gateway-thread*
-  (when (and *gateway-wanted* (probe-file *gateway-file*))
+  (when (and *gateway-wanted* (asdf:find-system *gateway-system* nil))
     (sb-thread:make-thread
      (lambda ()
-       (handler-case (load *gateway-file*)
+       (handler-case (progn (asdf:load-system *gateway-system*)
+                              (funcall (read-from-string "webrtc-data::start-gateway")))
          (error (e)
            ;; A desktop without a browser gateway is still a desktop; say so and
            ;; let the main thread carry on rather than taking the image down.
@@ -234,9 +237,9 @@
                        (format *error-output* "~&@@ session identity failed: ~a~%" e)
                        nil))))))
       (cond
-        ((not (probe-file *nostr-gateway-file*))
-         (format *error-output* "~&@@ nostr: no gateway at ~a — not starting~%"
-                 *nostr-gateway-file*)
+        ((not (asdf:find-system *nostr-gateway-system* nil))
+         (format *error-output* "~&@@ nostr: no ~a system — not starting~%"
+                 *nostr-gateway-system*)
          nil)
         ((not (and sec (= (length sec) 64)))
          ;; Say what to do rather than what went wrong.  A gateway with no identity
@@ -288,7 +291,8 @@
          ;; SAY SO HERE.  That check is the whole point: every other part of this failure
          ;; looks healthy, and the phone is the only place the truth shows up.
          (let* ((etc-payload (format nil "~a/payload.js" *etc*))
-                (repo-payload (format nil "~a/webrtc-data/demo/glass-webrtc/payload.js" *root*))
+                (repo-payload (ignore-errors
+                        (namestring (asdf:system-relative-pathname "glass-webrtc" "payload.js"))))
                 (payload (or (kiln-env "PAYLOAD_FILE" nil)
                              (and (probe-file etc-payload) etc-payload)
                              (and (probe-file repo-payload) repo-payload))))
@@ -308,7 +312,8 @@
                         payload)))))
          (sb-thread:make-thread
           (lambda ()
-            (handler-case (load *nostr-gateway-file*)
+            (handler-case (progn (asdf:load-system *nostr-gateway-system*)
+                               (funcall (read-from-string "webrtc-data::start-gateway")))
               (error (e)
                 ;; Same rule as the web gateway: a desktop that cannot be reached from
                 ;; away is still a desktop for whoever is at the screen.

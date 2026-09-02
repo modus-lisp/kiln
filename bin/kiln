@@ -975,7 +975,11 @@ cmd_local() {
       [[ -n $gateway_id ]] && printf '(sb-posix:setenv "GW_ID" "%s" 1)\n' "$gateway_id"
       printf '(sb-thread:make-thread\n'
       printf '  (lambda ()\n'
-      printf '    (handler-case (load "%s/webrtc-data/demo/glass-webrtc/gateway.lisp")\n' "$KILN_ROOT"
+        # A SYSTEM, not a file path.  glass-webrtc is its own repo now, and loading it
+        # no longer starts anything: START-GATEWAY does, and parks the thread the way
+        # loading the script used to.
+        printf '    (handler-case (progn (asdf:load-system "glass-webrtc")\n'
+        printf '                         (funcall (read-from-string "webrtc-data::start-gateway")))\n'
       printf '      (error (e) (format *error-output* "~&kiln: gateway failed: ~a~%%" e))))\n'
       printf '  :name "kiln-gateway")\n'
       printf '(format t "~&kiln: gateway  http://127.0.0.1:%s/~%%")\n\n' "$gp"
@@ -1039,7 +1043,9 @@ cmd_local() {
       fi
       printf '   (let ((p (find-if (function probe-file)\n'
       printf '                     (list "%s/payload.js"\n' "$KILN_ETC"
-      printf '                           "%s/webrtc-data/demo/glass-webrtc/payload.js"))))\n' "$KILN_ROOT"
+        # Asked of the system, not spelled out: glass-webrtc has moved once already,
+        # and a stale path here shows up as a feature quietly not being offered.
+        printf '                           (ignore-errors (namestring (asdf:system-relative-pathname "glass-webrtc" "payload.js")))))))\n'
       printf '     (when p (sb-posix:setenv "PAYLOAD_CHANNEL" "1" 1)\n'
       printf '             (sb-posix:setenv "PAYLOAD_FILE" (namestring p) 1)))\n'
       printf '   (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
@@ -1055,7 +1061,8 @@ cmd_local() {
       printf '         (error (e) (format t "~&kiln: nostr    admission failed: ~a~%%" e)))))\n'
       printf '   (sb-thread:make-thread\n'
       printf '     (lambda ()\n'
-      printf '       (handler-case (load "%s/webrtc-data/demo/glass-webrtc/gateway-nostr.lisp")\n' "$KILN_ROOT"
+       printf '       (handler-case (progn (asdf:load-system "glass-webrtc/nostr")\n'
+       printf '                            (funcall (read-from-string "webrtc-data::start-gateway")))\n'
       printf '         (error (e) (format *error-output* "~&kiln: nostr failed: ~a~%%" e))))\n'
       printf '     :name "kiln-nostr")\n'
       printf '   (format t "~&kiln: nostr    signalling on — reaching this session from away~%%")))\n\n'

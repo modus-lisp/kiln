@@ -1088,6 +1088,13 @@ cmd_local() {
       # WARP_CHANNEL= in the launching shell still turns it off.
       printf '   (unless (sb-ext:posix-getenv "WARP_CHANNEL")\n'
       printf '     (sb-posix:setenv "WARP_CHANNEL" "1" 1))\n'
+      # ...and the file browser that rides it.  Separate variable because it is a
+      # separate cost: :warp-files pulls warren, gesso, scribe and pigment into the
+      # image.  It is loaded at the FIRST message naming the app, never at startup and
+      # never at all when this is unset, so arming it costs nothing until somebody taps
+      # Files.  It grants nothing either -- the desktop it sits beside has a terminal.
+      printf '   (unless (sb-ext:posix-getenv "WARP_FILES")\n'
+      printf '     (sb-posix:setenv "WARP_FILES" "1" 1))\n'
       # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
       # this in the container; here the boot file calls RUN-WM directly, so without it the
       # gateway starts perfectly and refuses every offer.

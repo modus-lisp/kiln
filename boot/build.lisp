@@ -118,7 +118,8 @@
     (:glass/dictation    . "dictation (speech -> keystrokes)")
     (:loom/glass         . "web browser")
     (:warren             . "file browser")
-      (:spool/app          . "podcasts (spool)")))
+    (:spool/app          . "podcasts (spool)")
+    (:warp-media/glass   . "media player (webm-pure + reed, a warp app)")))
 
 (defvar *missing* '())
 

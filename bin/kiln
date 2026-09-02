@@ -1078,9 +1078,16 @@ cmd_local() {
       printf '         (unless bundled\n'
       printf '           (format t "~&kiln: payload  ~a is UNBUNDLED SOURCE — it imports ./novnc/ and~%%" p)\n'
       printf '           (format t "~&kiln: payload  will fail in the browser.  Build it: see~%%")\n'
-      printf '           (format t "~&kiln: payload  glass-webrtc/DEPLOY.md (python3 mkbundle.py)~%%")))))\n'
+      printf '           (format t "~&kiln: payload  glass-webrtc/DEPLOY.md (python3 mksplit.py)~%%")))))\n'
       printf '   (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
       printf '     (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
+      # WARP: the overlay UI (device panel, menus) on data channel 102.  The gateway
+      # reads WARP_CHANNEL when warp-channel.lisp LOADS, so it has to be set before
+      # START-SESSION-NOSTR below, not after.  Default ON -- it rides an already
+      # authenticated data channel and opens no port -- and the environment wins, so
+      # WARP_CHANNEL= in the launching shell still turns it off.
+      printf '   (unless (sb-ext:posix-getenv "WARP_CHANNEL")\n'
+      printf '     (sb-posix:setenv "WARP_CHANNEL" "1" 1))\n'
       # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
       # this in the container; here the boot file calls RUN-WM directly, so without it the
       # gateway starts perfectly and refuses every offer.

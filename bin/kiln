@@ -891,7 +891,20 @@ cmd_local() {
   # and stay that way.  Naming one bypasses generation entirely.
   if [[ -n $config ]]; then
     [[ -f $config ]] || die "no such config: $config"
-    note "config   $config (generation skipped)"
+    # THE DISPLAY IS THE CONFIG'S, NOT THE DEFAULT.  A config file sets its own
+    # GLASS_DISPLAY and names its own sockets; kiln only ever used $display to pick the
+    # detach LOG, which defaults to 1.  So `--config=cortez-boot.lisp --detach' -- the
+    # invocation that file's own header documents -- wrote into session-1.log while the
+    # display-1 desktop was writing there too.  Two desktops, one log, interleaved: the
+    # cortez session's failures appeared under display 1's name and were diagnosed as
+    # display 1's, which cost real time this session.
+    #
+    # Read it back out of the config rather than making the caller repeat it, because a
+    # flag you have to remember is a flag that will be forgotten exactly once.
+    local cfgdisp
+    cfgdisp=$(grep -oE '"GLASS_DISPLAY" "[0-9]+"' "$config" 2>/dev/null | grep -oE '[0-9]+' | tail -1)
+    [[ -n $cfgdisp ]] && display=$cfgdisp
+    note "config   $config (generation skipped, display $display)"
     exec_local "$config" "$display" "$addr" "$gateway" "$gateway_id"
   fi
 

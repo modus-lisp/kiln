@@ -1095,6 +1095,12 @@ cmd_local() {
       # Files.  It grants nothing either -- the desktop it sits beside has a terminal.
       printf '   (unless (sb-ext:posix-getenv "WARP_FILES")\n'
       printf '     (sb-posix:setenv "WARP_FILES" "1" 1))\n'
+      # ...and the operandi chat.  Its own variable again, and the loudest of the three:
+      # :operandi-gui/gateway pulls in the operandi AGENT, which makes OUTBOUND calls.
+      # Same lazy shape -- nothing loads and nothing dials until somebody taps Chat --
+      # and the same escape: WARP_CHAT= in the launching shell turns it off.
+      printf '   (unless (sb-ext:posix-getenv "WARP_CHAT")\n'
+      printf '     (sb-posix:setenv "WARP_CHAT" "1" 1))\n'
       # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
       # this in the container; here the boot file calls RUN-WM directly, so without it the
       # gateway starts perfectly and refuses every offer.

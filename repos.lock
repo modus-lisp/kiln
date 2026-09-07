@@ -6,6 +6,7 @@
 brotli-pure     master  e7ba1fc305ca2b735dddfeecd02b7ad6de79de1b
 cabinet         master  b1aecf879c61d7eadbdd6e20b87cc4fbdeecc27f
 cairn           master  717d7f702d006bee49b457cad2fcec554c8433e2
+cassette        master  cf9d87fc81e91c1ec96445639bf6c8a0fe38b383
 chord           master  8996a54a1fb35f36f53e0748cf4b69777e9f8cab
 cl-consensus    master  3cd39f3b3004403b1bbb3389ecc863c88ad07e08
 cl-frpc         main    bafe63104cb42ecf4a4008a3d7b866151e51e331
@@ -28,6 +29,7 @@ operandi        main    38b0e8e24288f54edb7af89139053cc35b36a9f6
 pagetree        master  89d19e19f0b08dd58e5ac1cefff337f1ae9ab520
 pigment         master  f86a838b4829c0ecb052729ff0dd03615c7bd0bc
 reed            master  1597d9ab8e239879862b3c493f6674c37a2edd8e
+reel            master  7511728ba36f09c9018cac48629710e5faf07ac7
 scribe          master  f68299a132744f25f0c9eb49eab9293b3aa72a4f
 seal            master  91a7610f07f9880ff823b9d5b245482b68f481d6
 secp256k1-fast  master  36ca58e8a3dcf8614700560f9fc977792c170b56

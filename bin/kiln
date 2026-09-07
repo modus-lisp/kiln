@@ -711,7 +711,12 @@ cmd_desktop() {
   # THE WORKS MEANS THE WORKS, so both devices are asked for by name here.  `kiln local' stays
   # a kit where a microphone is something you request; this is the command that requests it,
   # and it says so on every start rather than acquiring one quietly.
-  local -a args=(--view --apps=terminal --control --speaker=on --mic=auto)
+  # A LISP LISTENER, NOT A HOST SHELL.  `terminal' is a pty on the machine underneath, which is
+  # the one thing on this desktop that is not part of the environment it is a desktop FOR: it
+  # answers `ls', not `(room)', and nothing you type into it can see the image it is running in.
+  # :clim-listener is already in the core (boot/build.lisp), so this costs nothing to start and
+  # is the same window minus the detour through bash.
+  local -a args=(--view --apps=clim-listener::listener --control --speaker=on --mic=auto)
   local voice="" ears="" vd sd
   vd=$(chord_voice_dir); sd=$(stave_model_dir)
 
@@ -846,7 +851,7 @@ cmd_local() {
       --resume)     KILN_RESUME=${val:-1} ;;
       --control)    control=${val:-auto} ;;
       --audio)      audio=${val:-auto} ;;
-      --apps)       apps=${val:?--apps=terminal,...} ;;
+      --apps)       apps=${val:?--apps=clim-listener::listener,...} ;;
       --size)       size=${val:?--size=WxH} ;;
       --wallpaper)  wallpaper=${val:?--wallpaper=PATH} ;;
       --voice)      voice=${val:?--voice=PATH-to-graph} ;;
@@ -1235,7 +1240,7 @@ cmd_local() {
     note "nothing enabled — the image and a REPL on stdin/stdout"
     note "ask for something:  --view  --vnc  --vnc-socket  --control  --audio"
     note "                    --gateway  --nostr"
-    note "                    --apps=terminal  --size=WxH  --wallpaper=P  --voice=P"
+    note "                    --apps=clim-listener::listener  --size=WxH  --wallpaper=P"
     exec_local "" "$display" "$addr" "" ""
   fi
 
@@ -1263,7 +1268,10 @@ kiln local [flags] — run the desktop on this machine, no container.
   --vnc-socket[=PATH]  serve the screen on a UNIX socket instead (no port)
   --control[=PORT|PATH] eval control socket; bare gives a 0600 socket file
   --audio[=PORT]       session audio mixer
-  --apps=LIST          startup windows: terminal, or McCLIM frame classes
+  --apps=LIST          startup windows: McCLIM frame classes, e.g.
+                       clim-listener::listener.  `terminal' is still accepted and
+                       is a pty on the HOST -- outside the image, and outside
+                       everything the rest of this desktop can see
   --size=WxH           screen size (default 1280x800)
   --wallpaper=PATH     desktop wallpaper
   --voice=PATH         text-to-speech voice graph (chord)

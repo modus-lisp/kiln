@@ -119,7 +119,7 @@
     (:loom/glass         . "web browser")
     (:warren             . "file browser")
     (:spool/app          . "podcasts (spool)")
-    (:warp-media/glass   . "media player: WebM and MP4, video and audio, a warp app")))
+    (:warp-media/glass   . "media player: WebM and MP4, VP8 and H.264, a warp app")))
 
 (defvar *missing* '())
 

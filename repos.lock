@@ -12,7 +12,7 @@ cl-consensus    master  3cd39f3b3004403b1bbb3389ecc863c88ad07e08
 cl-frpc         main    bafe63104cb42ecf4a4008a3d7b866151e51e331
 cl-nostr        master  aa1903531cc8f4b49719bd122608857548f08404
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
-cl-transport    master  c9ce20833925e442298d2030cac414d7ef0c35a6
+cl-transport    master  23cd9bcd5aaac6bcb55ed98c165ca398f8d9069c
 conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
 cram            master  380c0885f710cd7f424396157496ab1ab9dd53a5
 dist            main    91df9cd1ca24b5caad4591eddd6121603f1bcd2e
@@ -41,7 +41,7 @@ stencil         master  0a7da387844c889d3a1319037c29a68777685e49
 warp            master  4b60f5a6df16abed8ade7d2dcd2b4059f88be4fd
 warren          master  479c43c64a05669c71a59500b293db0d2b7f9573
 webp-pure       master  bf1d898c945c48348b742ecd350e1513ab919173
-webrtc-data     main    e1c10df08ac7307da23f6873a68a5c28d8f71bb7
+webrtc-data     main    bc305e6f93a66255d1946d4ab2eca5934654fabb
 webrtc-media    master  f7247562fbe05714116f2ed1576d06863a1269fb
 weft            master  36ac2a577448f5d0973b3a63b584b9e137cce955
 zstd-pure       master  ebbd28eab4401caf3ad6fba34d5d5353602cc8ff

@@ -310,7 +310,7 @@
                         "~&@@ nostr: ~a is UNBUNDLED — it imports a relative path, which cannot~%~
                            @@   resolve in the browser (the client runs from a blob URL).  The phone~%~
                            @@   will say \"does not resolve to a valid URL\".  Build it:~%~
-                           @@   esbuild payload.js --bundle --format=esm --outfile=<out>/payload.js~%"
+                           @@   sbcl --script glass-webrtc/tools/mkbundle.lisp~%"
                         payload)))))
          (sb-thread:make-thread
           (lambda ()

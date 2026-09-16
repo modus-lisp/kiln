@@ -980,11 +980,47 @@ cmd_local() {
 
     if [[ -n $audio ]]; then
       local ap=${audio}; [[ $ap == auto ]] && ap=$((5910 + display))
-      printf '(let ((start (find-symbol "START-SESSION-AUDIO" :glass)))\n'
-      printf '  (if (and start (fboundp start))\n'
-      printf '      (progn (funcall start :port %s :address "%s")\n' "$ap" "$addr"
-      printf '             (format t "~&kiln: audio    %s:%s~%%"))\n' "$addr" "$ap"
-      printf '      (format t "~&kiln: audio    unavailable (:glass/audio-stream not loaded)~%%")))\n\n'
+      # AUDIO FOLLOWS THE SCREEN, because the gateway makes it follow the screen.  GLASS-ENDPOINT
+      # derives the other three endpoints from where the desktop is: a PORT gives port+10/+11 on
+      # the same host, a PATH gives the siblings beside it -- kiln-5.rfb -> kiln-5.audio/.mic.  So
+      # a socket-file desktop whose mixer listens on TCP is a mixer nobody can reach: the gateway
+      # spends the session retrying a kiln-N.audio that was never created, reporting "silence until
+      # it answers", and the desktop has no voice and no ear.  That is exactly what it did.
+      #
+      # AND THE MIC, which was simply never started.  The mix is only half of it: the ear -- what
+      # dictation and anything else listening actually reads -- lives behind kiln-N.mic, and the
+      # gateway CONNECTS there to deliver the phone's microphone.  Without it the phone's audio
+      # arrives at the box and is dropped on the floor one hop short of the thing waiting for it.
+      if [[ -n $vnc_sock ]]; then
+        local abase; if [[ $vnc_sock == auto ]]; then
+          abase="(glass:socket-path \"kiln-$display.rfb\")"
+        else
+          abase="\"$vnc_sock\""
+        fi
+        printf '(let ((start (find-symbol "START-SESSION-AUDIO" :glass))\n'
+        printf '      (ear   (find-symbol "START-SESSION-MIC" :glass))\n'
+        printf '      (apath (glass:socket-sibling %s "audio"))\n' "$abase"
+        printf '      (mpath (glass:socket-sibling %s "mic")))\n' "$abase"
+        printf '  (if (and start (fboundp start))\n'
+        printf '      (progn (funcall start :path apath)\n'
+        printf '             (format t "~&kiln: audio    ~a~%%" apath))\n'
+        printf '      (format t "~&kiln: audio    unavailable (:glass/audio-stream not loaded)~%%"))\n'
+        printf '  (if (and ear (fboundp ear))\n'
+        printf '      (progn (funcall ear :path mpath)\n'
+        printf '             (format t "~&kiln: mic      ~a~%%" mpath))\n'
+        printf '      (format t "~&kiln: mic      unavailable (:glass/mic-stream not loaded)~%%")))\n\n'
+      else
+        printf '(let ((start (find-symbol "START-SESSION-AUDIO" :glass))\n'
+        printf '      (ear   (find-symbol "START-SESSION-MIC" :glass)))\n'
+        printf '  (if (and start (fboundp start))\n'
+        printf '      (progn (funcall start :port %s :address "%s")\n' "$ap" "$addr"
+        printf '             (format t "~&kiln: audio    %s:%s~%%"))\n' "$addr" "$ap"
+        printf '      (format t "~&kiln: audio    unavailable (:glass/audio-stream not loaded)~%%"))\n'
+        printf '  (if (and ear (fboundp ear))\n'
+        printf '      (progn (funcall ear :port %s :address "%s")\n' "$((ap + 1))" "$addr"
+        printf '             (format t "~&kiln: mic      %s:%s~%%"))\n' "$addr" "$((ap + 1))"
+        printf '      (format t "~&kiln: mic      unavailable (:glass/mic-stream not loaded)~%%")))\n\n'
+      fi
     fi
 
     # THE VOICE IS OPT-IN TOO.  glass used to switch it on merely because a model
@@ -1096,7 +1132,7 @@ cmd_local() {
       printf '         (unless bundled\n'
       printf '           (format t "~&kiln: payload  ~a is UNBUNDLED SOURCE — it imports ./novnc/ and~%%" p)\n'
       printf '           (format t "~&kiln: payload  will fail in the browser.  Build it: see~%%")\n'
-      printf '           (format t "~&kiln: payload  glass-webrtc/DEPLOY.md (python3 mksplit.py)~%%")))))\n'
+      printf '           (format t "~&kiln: payload  glass-webrtc/DEPLOY.md (sbcl --script tools/mksplit.lisp)~%%")))))\n'
       printf '   (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
       printf '     (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
       # WARP: the overlay UI (device panel, menus) on data channel 102.  The gateway

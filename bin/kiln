@@ -947,6 +947,16 @@ cmd_local() {
     fi
     printf '\n'
 
+    # A THREAD THAT DIES SHOULD NOT TAKE THE DESKTOP WITH IT.  --disable-debugger quits the
+    # whole image on an unhandled condition in ANY thread, which for a desktop of a dozen
+    # threads means one app's worker can end the session.  This points worker errors at the
+    # CLIM debugger on the running desktop instead; main keeps the old, loud behaviour.
+    # Installed HERE, before anything that spawns threads, and the port is looked up lazily
+    # at crash time -- so it is safe this early even though glass has not started yet.
+    printf ';;; see boot/debugger.lisp for why this is not clim-debugger:install-debugger\n'
+    printf '(load "%s/boot/debugger.lisp")\n' "$ROOT"
+    printf '(kiln-install-debugger)\n\n'
+
     [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock || -n $view ]] &&
       printf '(setf glass:*desktop-name* "modus-lisp :: glass desktop :%s")\n\n' "$display"
 
@@ -1155,6 +1165,13 @@ cmd_local() {
       # and the same escape: WARP_CHAT= in the launching shell turns it off.
       printf '   (unless (sb-ext:posix-getenv "WARP_CHAT")\n'
       printf '     (sb-posix:setenv "WARP_CHAT" "1" 1))\n'
+      # ...and the media player.  Its own variable again, and the heaviest of the four:
+      # :warp-media/dom pulls cassette and reed, the pure-Lisp decoders.  Same lazy shape
+      # -- nothing loads until somebody taps Media -- and the same escape: WARP_MEDIA= in
+      # the launching shell turns it off.  It grants nothing the desktop does not already
+      # have: the sound goes to the session mixer, which every listener already hears.
+      printf '   (unless (sb-ext:posix-getenv "WARP_MEDIA")\n'
+      printf '     (sb-posix:setenv "WARP_MEDIA" "1" 1))\n'
       # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
       # this in the container; here the boot file calls RUN-WM directly, so without it the
       # gateway starts perfectly and refuses every offer.

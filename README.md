@@ -153,6 +153,43 @@ and nothing reloads it, so editing the modus checkout changes nothing until
 `kiln container`. (`MODUS_BIN` inside the container points the entry point at a
 hand-built one.)
 
+## The attestable image
+
+`kiln image` makes the artifact the SEV-SNP work attests
+([modus/docs/snp-guest.md](https://github.com/modus-lisp/modus/blob/main/docs/snp-guest.md)):
+a **bare-metal** modus, no Linux under it, with the packages you name already
+loaded. It runs on this machine, not in the container, because it needs SBCL to
+build the image, QEMU and OVMF to boot it, and the workspace checkouts to archive
+packages from.
+
+```sh
+kiln image --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)'
+kiln image --with=cl-deposits --snp=test --ddc --out=./deposits-image
+```
+
+Two files come out, and both are measurable:
+
+- `generic.efi` — the UEFI CL image (E1000 + SSH server, SNP mode by `--snp`),
+  built by SBCL from the modus checkout. Its hash is what an SNP launch measures
+  via `-kernel` under the AmdSev OVMF, and `--ddc` proves modus's own compiler
+  produces the same bytes twice (diverse double compilation).
+- `modus.core` — a `save-and-die` heap snapshot taken on **that** image under
+  QEMU after `ql:quickload` of every `--with` system and its dependency closure,
+  then pulled out of guest RAM over QMP. Booting the same image with the core
+  back in RAM (`0x20000000`) comes up with the packages live and no reload; the
+  `--probe` form must answer `--expect` from the restored core.
+
+`manifest.json` records every hash and pin: both artifacts, the load order, each
+tarball's sha256 and where it came from — a modus-lisp repo at the commit
+`repos.lock` pins (`git archive`, so the bytes follow from the commit) or a
+Quicklisp release from `~/quicklisp` — plus the build flags and both commits.
+What cannot be found is listed as unresolved rather than guessed (`--strict`
+makes it fatal). `boot/image-deps.py` is the resolver and `t/run-tests.sh`
+checks it.
+
+The core is attested by hash in the manifest; folding it into the measured
+image itself is the next step, and a real SNP host is the one after.
+
 ## A native window
 
 Two ways, and the difference is the container boundary rather than a preference.

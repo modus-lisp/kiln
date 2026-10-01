@@ -23,6 +23,7 @@
 #   kiln eval '(form)'    evaluate a form in the RUNNING desktop, live
 #   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
+#   kiln image ...        an attestable bare-metal modus image with packages (save-and-die core)
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
@@ -1801,6 +1802,41 @@ USAGE
     ${mounts[@]+"${mounts[@]}"} "$IMAGE" modus "$@"
 }
 
+cmd_image() {
+  # An ATTESTABLE BARE-METAL modus image with packages in it -- the thing the
+  # SEV-SNP work attests (modus/docs/snp-guest.md).  Runs on THIS machine, not in
+  # the container: it needs SBCL to build the image, QEMU + OVMF to boot it, and
+  # the workspace checkouts to archive packages from.  boot/image.sh is the recipe.
+  case ${1:-} in
+    -h|--help)
+      cat >&2 <<'USAGE'
+kiln image [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--probe=FORM --expect=TEXT]
+           [--image=FILE] [--ddc] [--strict]
+
+  Builds the generic bare x86-64 UEFI CL image (net + SSH, SNP mode by --snp),
+  boots it under QEMU, ql:quickloads every --with NAME and its dependency
+  closure from tarballs derived here (modus-lisp repos at repos.lock's pins,
+  Quicklisp releases from ~/quicklisp), snapshots the heap with save-and-die,
+  pulls the core out over QMP, boots the same image with the core back in RAM
+  and runs --probe, requiring --expect in the answer.  Writes DIR/generic.efi,
+  DIR/modus.core, DIR/packages.json and DIR/manifest.json (every hash and pin).
+
+  --with=NAME     a system; repeatable.  Dependencies are followed; what cannot
+                  be found is listed as unresolved (fatal with --strict).
+  --snp=MODE      0 plain UEFI (default), test = fake-#VC self-test, 1 = SNP guest.
+  --image=FILE    reuse a generic image instead of building one.
+  --ddc           also prove generic.efi reproducible (modus-sh x2 == SBCL).
+  --out=DIR       default <workspace>/kiln-image.
+  MODUS_SRC=DIR   the modus checkout (default <workspace>/modus).
+
+  The core is attested by hash in the manifest; folding it into the measured
+  image itself is the next step (see modus/docs/snp-guest.md).
+USAGE
+      return 0 ;;
+  esac
+  KILN_ROOT="$KILN_ROOT" bash "$ROOT/boot/image.sh" "$@"
+}
+
 cmd_modus_rfb() {
   # glass's RFB server, running on MODUS instead of on SBCL, in the image.
   #
@@ -1934,6 +1970,7 @@ case "${1:-}" in
   test)  shift; cmd_test ;;
   modus) shift; cmd_modus "$@" ;;
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
+  image) shift; cmd_image "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   build) shift; cmd_build "$@" ;;

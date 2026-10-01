@@ -27,6 +27,22 @@ for f in boot/entrypoint.sh boot/seed.sh; do
   else printf '  FAIL %s\n' "$f"; sh -n "$ROOT/$f"; rc=1; fi
 done
 
+group "image-deps.py (kiln image's package closure)"
+# alexandria from the ladder tarballs: resolves, has no system-level deps, and the
+# per-file :depends-on inside :components must NOT be read as systems.
+TMPD=$(mktemp -d); LADDER=$ROOT/../modus/test/ladder/tars
+if [ -d "$LADDER" ]; then
+  if out=$(python3 "$ROOT/boot/image-deps.py" --out "$TMPD" --root "$ROOT/.." --lock "$ROOT/repos.lock" --archives "$LADDER" alexandria 2>&1) \
+     && python3 -c "import json,sys; m=json.loads(sys.argv[1]); assert m['order']==['alexandria'], m['order']; assert m['unresolved']==[], m['unresolved']; assert m['systems']['alexandria']['depends_on']==[]" "$out" \
+     && [ -s "$TMPD/alexandria.tar" ]; then printf '  ok   alexandria resolves alone, no per-file deps leaked\n'
+  else printf '  FAIL image-deps.py alexandria: %s\n' "$(echo "$out" | tail -2)"; rc=1; fi
+  # a name nothing provides is reported, and --strict makes it fatal
+  if python3 "$ROOT/boot/image-deps.py" --out "$TMPD" --root "$ROOT/.." --archives "$LADDER" --strict no-such-system-xyz >/dev/null 2>&1; then
+    printf '  FAIL image-deps.py accepted an unresolvable system under --strict\n'; rc=1
+  else printf '  ok   an unresolvable system is fatal under --strict\n'; fi
+else printf '  skip no modus checkout beside kiln (ladder tarballs)\n'; fi
+rm -rf "$TMPD"
+
 group "lisp syntax"
 if command -v sbcl >/dev/null; then
   for f in "$ROOT"/boot/*.lisp; do

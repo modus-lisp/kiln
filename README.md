@@ -155,29 +155,34 @@ hand-built one.)
 
 ## The attestable image
 
-`kiln image` makes the artifact the SEV-SNP work attests
+`kiln image TARGET` makes the bare-metal artifacts
 ([modus/docs/snp-guest.md](https://github.com/modus-lisp/modus/blob/main/docs/snp-guest.md)):
 a **bare-metal** modus, no Linux under it, with the packages you name already
-loaded. It runs on this machine, not in the container, because it needs SBCL to
-build the image, QEMU and OVMF to boot it, and the workspace checkouts to archive
-packages from.
+loaded. Two targets: `x64-uefi`, the SEV-SNP image, and `zero2w`, the
+Raspberry Pi 3B / Zero 2 W kernel the board netboots. It runs on this machine,
+not in the container, because it needs SBCL to build, QEMU to boot, and the
+workspace checkouts to archive packages from.
 
 ```sh
-kiln image --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)'
-kiln image --with=cl-deposits --snp=test --ddc --out=./deposits-image
+kiln image x64-uefi --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)'
+kiln image x64-uefi --with=cl-deposits --snp=test --ddc --out=./deposits-image
+kiln image zero2w   --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)' --stage=modus-pi
 ```
 
-Two files come out, and both are measurable:
+Two files come out per target, and both are measurable:
 
-- `generic.efi` — the UEFI CL image (E1000 + SSH server, SNP mode by `--snp`),
-  built by SBCL from the modus checkout. Its hash is what an SNP launch measures
-  via `-kernel` under the AmdSev OVMF, and `--ddc` proves modus's own compiler
-  produces the same bytes twice (diverse double compilation).
-- `modus.core` — a `save-and-die` heap snapshot taken on **that** image under
-  QEMU after `ql:quickload` of every `--with` system and its dependency closure,
-  then pulled out of guest RAM over QMP. Booting the same image with the core
-  back in RAM (`0x20000000`) comes up with the packages live and no reload; the
-  `--probe` form must answer `--expect` from the restored core.
+- the kernel — `generic.efi` for x64-uefi (built by SBCL; its hash is what an
+  SNP launch measures via `-kernel` under the AmdSev OVMF, and `--ddc` proves
+  modus's own compiler produces the same bytes twice), or `kernel8.img` plus its
+  gzip for zero2w (the chainload layout netboot's `go 0x300000` expects, with
+  the runbook's verified flag set).
+- `modus.core` — a `save-and-die` heap snapshot taken on **that** kernel under
+  QEMU after installing every `--with` system and its dependency closure, pulled
+  out of guest RAM (QMP on x64, the gdbstub on the Pi, whose QEMU has no NIC so
+  the tarballs are placed in RAM instead of fetched). Booting the same kernel
+  with the core back in RAM (`0x20000000` on x64, `0x18000000` on the Pi) comes
+  up with the packages live and no reload; the `--probe` form must answer
+  `--expect` from the restored core.
 
 `manifest.json` records every hash and pin: both artifacts, the load order, each
 tarball's sha256 and where it came from — a modus-lisp repo at the commit
@@ -189,9 +194,12 @@ checks it.
 
 The core is attested by hash in the manifest and is not reproducible run to
 run (two runs differ by tens of KB; timing and hash-table order reach the heap),
-so pin a core you produced or audited; the DDC property is `generic.efi`'s.
-Folding the core into the measured image itself is the next step, and a real
-SNP host is the one after.
+so pin a core you produced or audited; the DDC property is the kernel's.
+`--stage=HOST` copies the Zero's two files into the rig's `/srv/tftp`; the
+netboot itself stays a deliberate step
+([the runbook](https://github.com/modus-lisp/modus/blob/main/docs/reel-on-zero/BOARD-RUNBOOK.md)).
+Folding the core into a measured image is the next step on x64, and a real SNP
+host the one after.
 
 ## A native window
 

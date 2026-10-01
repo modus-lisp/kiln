@@ -23,7 +23,7 @@
 #   kiln eval '(form)'    evaluate a form in the RUNNING desktop, live
 #   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
-#   kiln image ...        an attestable bare-metal modus image with packages (save-and-die core)
+#   kiln image TARGET ... an attestable bare-metal modus image + core (x64-uefi | zero2w)
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
@@ -1810,27 +1810,32 @@ cmd_image() {
   case ${1:-} in
     -h|--help)
       cat >&2 <<'USAGE'
-kiln image [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--probe=FORM --expect=TEXT]
-           [--image=FILE] [--ddc] [--strict]
+kiln image TARGET [--with=NAME ...] [--probe=FORM --expect=TEXT] [--out=DIR]
+                  [--reuse=FILE] [--strict] [--stage=HOST]
+                  x64-uefi only: [--snp=0|test|1] [--ddc]
 
-  Builds the generic bare x86-64 UEFI CL image (net + SSH, SNP mode by --snp),
-  boots it under QEMU, ql:quickloads every --with NAME and its dependency
-  closure from tarballs derived here (modus-lisp repos at repos.lock's pins,
-  Quicklisp releases from ~/quicklisp), snapshots the heap with save-and-die,
-  pulls the core out over QMP, boots the same image with the core back in RAM
-  and runs --probe, requiring --expect in the answer.  Writes DIR/generic.efi,
-  DIR/modus.core, DIR/packages.json and DIR/manifest.json (every hash and pin).
+  TARGET is x64-uefi (the bare x86-64 UEFI CL image, the SEV-SNP artifact) or
+  zero2w (the Pi 3B / Zero 2 W kernel8.img the board netboots).  Builds the
+  kernel from the modus checkout, boots it under QEMU, installs every --with
+  NAME and its dependency closure from tarballs derived here (modus-lisp repos
+  at repos.lock's pins, Quicklisp releases from ~/quicklisp), snapshots the heap
+  with save-and-die, pulls the core out (QMP on x64, the gdbstub on the Pi),
+  boots the same kernel with the core back in RAM and runs --probe, requiring
+  --expect in the answer.  Writes DIR/<kernel>, DIR/modus.core, DIR/packages.json
+  and DIR/manifest.json (every hash and pin); zero2w also writes kernel8.img.gz.
 
   --with=NAME     a system; repeatable.  Dependencies are followed; what cannot
                   be found is listed as unresolved (fatal with --strict).
-  --snp=MODE      0 plain UEFI (default), test = fake-#VC self-test, 1 = SNP guest.
-  --image=FILE    reuse a generic image instead of building one.
-  --ddc           also prove generic.efi reproducible (modus-sh x2 == SBCL).
-  --out=DIR       default <workspace>/kiln-image.
+  --reuse=FILE    reuse a built kernel instead of building one.
+  --stage=HOST    zero2w: scp kernel8.img.gz + modus.core to HOST and put them
+                  in /srv/tftp (the runbook's step 2); netboot is still yours.
+  --snp=MODE      x64-uefi: 0 plain UEFI (default), test, or 1 = SNP guest.
+  --ddc           x64-uefi: also prove the kernel reproducible (modus-sh x2 == SBCL).
+  --out=DIR       default <workspace>/kiln-image-<target>.
   MODUS_SRC=DIR   the modus checkout (default <workspace>/modus).
 
-  The core is attested by hash in the manifest; folding it into the measured
-  image itself is the next step (see modus/docs/snp-guest.md).
+  The core is attested by hash in the manifest and is not reproducible run to
+  run; folding it into a measured image is the next step (modus/docs/snp-guest.md).
 USAGE
       return 0 ;;
   esac

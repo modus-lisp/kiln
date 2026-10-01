@@ -56,7 +56,7 @@ fi
 say "3. quickload under QEMU, save-and-die, dump the core, restore it"
 loads=(); for n in $order; do loads+=("--load=$n"); done
 ( cd "$MODUS" && TARS="$out/tars" test/run-uefi-core.sh "$out/generic.efi" "$out/modus.core" "${loads[@]}" \
-    ${probe:+--probe=$probe} ${expect:+--expect=$expect} ) > "$out/core.log" 2>&1; rc=$?
+    ${probe:+"--probe=$probe"} ${expect:+"--expect=$expect"} ) > "$out/core.log" 2>&1; rc=$?
 grep -a "^   core:\|^   probe reply\|^PASS\|^FAIL" "$out/core.log" | sed 's/^/   /'
 [ $rc = 0 ] || { say "FAIL: core (see $out/core.log)"; exit 1; }
 

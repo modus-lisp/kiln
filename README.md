@@ -187,8 +187,11 @@ What cannot be found is listed as unresolved rather than guessed (`--strict`
 makes it fatal). `boot/image-deps.py` is the resolver and `t/run-tests.sh`
 checks it.
 
-The core is attested by hash in the manifest; folding it into the measured
-image itself is the next step, and a real SNP host is the one after.
+The core is attested by hash in the manifest and is not reproducible run to
+run (two runs differ by tens of KB; timing and hash-table order reach the heap),
+so pin a core you produced or audited; the DDC property is `generic.efi`'s.
+Folding the core into the measured image itself is the next step, and a real
+SNP host is the one after.
 
 ## A native window
 

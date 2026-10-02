@@ -23,6 +23,7 @@
 #   kiln eval '(form)'    evaluate a form in the RUNNING desktop, live
 #   kiln modus            modus-lisp's OWN Lisp, hosted — a REPL or --script
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
+#   kiln ios [sim|device] the iPhone app: glass on the phone's screen (built here)
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
@@ -1801,6 +1802,136 @@ USAGE
     ${mounts[@]+"${mounts[@]}"} "$IMAGE" modus "$@"
 }
 
+cmd_ios() {
+  # THE IPHONE APP, built from this workspace: modus running glass on the
+  # phone's own screen, with the media player.  Everything happens on THIS Mac:
+  #   1. modus is built for the iOS address layout, PC-relative (one ELF);
+  #   2. the macOS build of that same ELF loads the world (boot/ios-world.lisp),
+  #      compiles it to native code and saves a snapshot;
+  #   3. the app is that ELF + the snapshot: the compiled code becomes signed,
+  #      read-only pages in the app, and the heap is a file the app restores
+  #      at launch, relocated to wherever iOS put it.
+  # The phone never compiles anything to native code (it cannot); it runs what
+  # the Mac compiled, and interprets anything new.
+  local kind=sim install=0 reuse=0 dev="" ident="" profile=""
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      sim|device) kind=$arg ;;
+      --install)  install=1 ;;
+      --device)   dev=${val:?--device=ID}; install=1; kind=device ;;
+      --reuse)    reuse=1 ;;
+      --reuse-modus) reuse=2 ;;
+      --identity) ident=${val:?--identity=NAME} ;;
+      --profile)  profile=${val:?--profile=FILE} ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln ios [sim|device] [--install] [--device=ID] [--reuse]
+         [--identity=NAME] [--profile=FILE] — the iPhone app, built here.
+
+  sim          (default) an app for the iOS Simulator
+  device       an app for an iPhone, signed with your development identity and
+               the provisioning profile for its bundle id (found automatically;
+               --identity / --profile to choose)
+  --install    install it (and launch it): the booted Simulator, or the device
+  --device=ID  which iPhone (`xcrun devicectl list devices`); implies device
+  --reuse      keep the modus build and snapshot from last time; repackage only
+  --reuse-modus  keep the modus build; load and snapshot the world again
+
+  Env: KILN_MODUS (the modus checkout; default $KILN_ROOT/modus),
+       KILN_QL (Quicklisp's software dir; default ~/quicklisp/dists/quicklisp/software),
+       MODUS_IOS_BUNDLE_ID (default org.modus-lisp.modus).
+  Output in $KILN_STATE/ios.
+USAGE
+        return 0 ;;
+      *) die "kiln ios: unknown argument $arg (try --help)" ;;
+    esac
+    shift
+  done
+  [[ $(uname -s) == Darwin ]] || die "kiln ios: needs macOS (Xcode)"
+  command -v xcrun >/dev/null || die "kiln ios: needs Xcode's command line tools"
+  command -v sbcl >/dev/null || die "kiln ios: needs sbcl (modus is built with it)"
+  local modus=${KILN_MODUS:-$KILN_ROOT/modus}
+  [[ -f $modus/mvm/build-aarch64-cli.lisp ]] || die "kiln ios: no modus checkout at $modus (set KILN_MODUS)"
+  local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
+  local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus}
+  mkdir -p "$out"
+
+  if [[ $reuse == 0 || ! -f $out/modus-mac ]]; then
+    # THE iOS LAYOUT (modus docs/macos-hosting.md): low enough for an app's
+    # 15 GB of address space, PC-relative so it runs wherever iOS slides it.
+    note "building modus for iOS (several minutes)"
+    ( cd "$modus" && env MODUS_PCREL=1 MODUS_DARWIN=1 MODUS_CODE_BASE=300010000 \
+        MODUS_CONV_DELTA=2FA000000 MODUS_HEAP_BASE=33A000000 MODUS_JIT_ARENA_BASE=3AC000000 \
+        MODUS_CLI_OUT="$out/modus.elf" \
+        sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
+      die "kiln ios: the modus build failed — see $out/build.log"
+    ( cd "$modus" && MODUS_IN_PLACE=1 host/macos/build-macos.sh "$out/modus.elf" "$out/modus-mac" ) \
+      > "$out/runner.log" 2>&1 || die "kiln ios: the macOS runner failed — see $out/runner.log"
+  fi
+  if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
+    note "loading and compiling the world on the Mac (a few minutes)"
+    rm -f "$out/kiln.core"
+    KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+      "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+    [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
+    grep -a "compiled" "$out/world.log" | sed 's/^kiln ios: /  /' >&2 || true
+  fi
+
+  # What the app runs: the snapshot, then the entry point (boot/ios.lisp).
+  printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
+  rm -rf "$out/media"; mkdir -p "$out/media"
+  cp "$KILN_ROOT/cassette/vectors/bbb360.webm" "$out/media/" 2>/dev/null || true
+
+  if [[ $kind == device ]]; then
+    if [[ -z $ident ]]; then
+      ident=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ { print $2; exit }')
+      [[ -n $ident ]] || die "kiln ios: no Apple Development signing identity (Xcode > Settings > Accounts)"
+    fi
+    if [[ -z $profile ]]; then
+      local p now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      for p in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision \
+               "$HOME/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision; do
+        [[ -f $p ]] || continue
+        local plist appid exp
+        plist=$(security cms -D -i "$p" 2>/dev/null) || continue
+        appid=$(plutil -extract Entitlements.application-identifier raw - <<<"$plist" 2>/dev/null) || continue
+        exp=$(plutil -extract ExpirationDate raw - <<<"$plist" 2>/dev/null) || continue
+        if [[ ${appid#*.} == "$bundle_id" && $exp > $now ]]; then profile=$p; break; fi
+      done
+      [[ -n $profile ]] || die "kiln ios: no provisioning profile for $bundle_id — build any app with that bundle id in Xcode once, or pass --profile"
+    fi
+    note "signing as $ident"
+  fi
+
+  note "packaging the $kind app"
+  ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
+      MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media" \
+      host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
+    > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
+  note "app       $out/Modus-$kind.app"
+
+  [[ $install == 1 ]] || return 0
+  if [[ $kind == sim ]]; then
+    # The booted IPHONE: `booted' alone may pick a booted watch or iPad.
+    local sim
+    sim=$(xcrun simctl list devices booted 2>/dev/null | awk -F'[()]' '/iPhone/ { print $2; exit }')
+    [[ -n $sim ]] || die "kiln ios: no iPhone Simulator is booted (open Simulator.app and boot one)"
+    xcrun simctl install "$sim" "$out/Modus-sim.app" || die "kiln ios: install on the Simulator failed"
+    xcrun simctl launch "$sim" "$bundle_id" >/dev/null && note "launched in the Simulator ($sim)"
+  else
+    if [[ -z $dev ]]; then
+      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /available|connected/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F-]{36}$/) { print $i; exit } }')
+      [[ -n $dev ]] || die "kiln ios: no iPhone found — connect one, or pass --device=ID"
+    fi
+    xcrun devicectl device install app --device "$dev" "$out/Modus-device.app" >/dev/null ||
+      die "kiln ios: install on $dev failed"
+    xcrun devicectl device process launch --terminate-existing --device "$dev" "$bundle_id" >/dev/null &&
+      note "launched on $dev"
+  fi
+}
+
 cmd_modus_rfb() {
   # glass's RFB server, running on MODUS instead of on SBCL, in the image.
   #
@@ -1934,6 +2065,7 @@ case "${1:-}" in
   test)  shift; cmd_test ;;
   modus) shift; cmd_modus "$@" ;;
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
+  ios) shift; cmd_ios "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   build) shift; cmd_build "$@" ;;

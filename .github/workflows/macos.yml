@@ -86,10 +86,11 @@ jobs:
           # Idempotent because the reason to run it twice is that something went wrong in one
           # half.  A second run that re-cloned 38 repos, or spent a minute re-dumping a core
           # that is already correct, would make the retry the expensive thing.
-          before=$(stat -f %m "$KILN_ETC/modus.core")
+          KILN_CORE_FILE="$KILN_ETC/modus.core.sbcl-$(sbcl --version | awk '{print $2}')"
+          before=$(stat -f %m "$KILN_CORE_FILE")
           out=$(./bin/kiln build "$MODUS_ROOT" 2>&1); echo "$out"
           case "$out" in *"already here"*) ;; *) echo "::error::second run re-cloned"; exit 1 ;; esac
-          [ "$(stat -f %m "$KILN_ETC/modus.core")" = "$before" ] \
+          [ "$(stat -f %m "$KILN_CORE_FILE")" = "$before" ] \
             || { echo "::error::second run re-dumped the core"; exit 1; }
 
       - name: The gates glass ships
@@ -98,6 +99,7 @@ jobs:
           # Run them against the CORE rather than from source: it is what a desktop runs,
           # and a gate that only passes against a fresh compile does not say much about it.
           fail=0
+          KILN_CORE_FILE="$KILN_ETC/modus.core.sbcl-$(sbcl --version | awk '{print $2}')"
           for g in glass/inspect/density-gate.lisp \
                    glass/inspect/chrome-scale-gate.lisp \
                    glass/inspect/menu-gesture-gate.lisp \
@@ -106,7 +108,7 @@ jobs:
                    glass/inspect/content-scale-gate.lisp; do
             [ -f "$g" ] || { echo "::error::$g is missing"; fail=1; continue; }
             echo "== $g"
-            sbcl --core "$KILN_ETC/modus.core" --dynamic-space-size 4096 \
+            sbcl --core "$KILN_CORE_FILE" --dynamic-space-size 4096 \
                  --noinform --disable-debugger --load "$g" \
               || { echo "::error::$g failed"; fail=1; }
           done

@@ -99,6 +99,28 @@ KILN_STATE=${KILN_STATE:-$HOME/.kiln}
 die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
 
+# WHICH SBCL, decided once.  A core only runs under the SBCL that dumped it, and compiled fasls are
+# cached per version, so "whichever sbcl this shell's PATH finds first" is not an answer: a box with
+# a distro SBCL and a newer one in ~/.local/bin builds a core for one from a shell that launches the
+# other.  KILN_SBCL pins it; the default is PATH's first, which is what a bare `sbcl' would have been.
+#
+# `sbcl' below is then a FUNCTION, so every call site in this file uses the pinned binary without
+# being rewritten -- but a function is invisible to `env', `nohup' and anything exec'd, so those
+# take "$KILN_SBCL" explicitly, and PATH is put in step so a child that runs `sbcl' by name
+# (a login-link script, a gateway) gets the same one.
+KILN_SBCL=${KILN_SBCL:-$(command -v sbcl 2>/dev/null || true)}
+if [[ -n $KILN_SBCL ]]; then
+  KILN_SBCL=$(command -v "$KILN_SBCL" 2>/dev/null || echo "$KILN_SBCL")
+  export PATH="$(dirname "$KILN_SBCL"):$PATH"
+fi
+sbcl() { command "$KILN_SBCL" "$@"; }
+# "2.2.9.debian" -> 2.2.9.debian ; anything not filename-safe becomes '-'.
+sbcl_version() { "$KILN_SBCL" --version 2>/dev/null | awk '{print $2}' | tr -c 'A-Za-z0-9.\n' '-'; }
+have_sbcl() { [[ -n $KILN_SBCL && -x $KILN_SBCL ]]; }
+# One core per SBCL version.  The name keeps "modus.core" as a prefix so `pgrep -f modus.core' and
+# friends still find a running desktop.
+local_core_path() { echo "$KILN_ETC/modus.core.sbcl-$(sbcl_version)"; }
+
 # ------------------------------------------------------------------- engine
 
 detect_engine() {
@@ -274,6 +296,7 @@ cmd_run() {
     ${KILN_VNC:+-e GLASS_BIND=0.0.0.0} \
     ${KILN_RESUME:+-e KILN_RESUME="$KILN_RESUME"} \
     ${KILN_NOSTR:+-e KILN_NOSTR="$KILN_NOSTR"} \
+    ${TURN_ICE:+-e TURN_ICE="$TURN_ICE"} \
     "$@" "$IMAGE" "$MODE" >/dev/null
   # The desktop compiles nothing at startup, but the RFB listener still needs a
   # moment; polling beats a fixed sleep.
@@ -341,7 +364,7 @@ cmd_address() {
 # start with no image to rebuild.
 
 host_prereqs() {
-  command -v sbcl >/dev/null || die "no sbcl on PATH.
+  have_sbcl || die "no sbcl on PATH (or KILN_SBCL is not executable).
   kiln local runs on this machine's Lisp.  brew install sbcl, or use kiln run."
   [[ -f $HOME/quicklisp/setup.lisp ]] || die "no Quicklisp at ~/quicklisp.
   The desktop needs McCLIM, which comes from Quicklisp.  Install it from
@@ -356,7 +379,11 @@ host_prereqs() {
 # it, because ASDF still loads changed systems over the top on the next start.
 # `kiln local --rebuild' is the button for when you want it re-dumped anyway.
 ensure_local_core() {
-  local core="$KILN_ETC/modus.core" stamp="$KILN_ETC/modus.core.stamp"
+  local core stamp
+  core=$(local_core_path); stamp="$core.stamp"
+  # A core dumped by a DIFFERENT SBCL is not ours to load; it is left where it is, and this
+  # version gets its own.  Say which, once, so "which sbcl is this" is never a guess.
+  note "sbcl      $KILN_SBCL ($(sbcl_version))"
   # THE CORE IS WHAT build.lisp LOADED, so its identity is build.lisp's content.  When the system
   # list there changes -- a new required system, say cl-nostr -- a core built against the old list is
   # stale even though it is present, and the old "rebuild only if missing" test missed exactly that:
@@ -392,6 +419,19 @@ ensure_local_core() {
 
 chord_voice_dir() { echo "${CHORD_VOICE_DIR:-$HOME/.chord/voices}"; }
 stave_model_dir() { echo "${STAVE_MODEL_DIR:-$HOME/.stave/models}"; }
+
+# The first complete recognizer under stave's model directory, or nothing.  Complete is
+# three graphs and a tokens.txt -- the same test the listener path and `kiln speech' apply.
+first_ears() {
+  local sd d; sd=$(stave_model_dir)
+  [[ -d $sd ]] || return 0
+  for d in "$sd"/*/; do
+    [[ -d $d ]] || continue
+    if (( $(find -L "$d" -name '*.graph' 2>/dev/null | wc -l) >= 3 )) && [[ -f $d/tokens.txt ]]; then
+      echo "${d%/}"; return 0
+    fi
+  done
+}
 
 # A voice is a path, or a bare name resolved against chord's voice directory the same way
 # CHORD:VOICE-PATH resolves it — .graph preferred, .onnx accepted, since either loads.
@@ -433,7 +473,7 @@ EOF
 check_ears() {
   local e=$1
   if [[ -d $e ]]; then
-    local n; n=$(find "$e" -name '*.graph' 2>/dev/null | wc -l | tr -d ' ')
+    local n; n=$(find -L "$e" -name '*.graph' 2>/dev/null | wc -l | tr -d ' ')
     if (( n >= 3 )) && [[ -f $e/tokens.txt ]]; then
       note "ears     $e ($n graphs)"
       return 0
@@ -583,7 +623,7 @@ cmd_speech() {
 # in one of them: a workspace already there is left alone, and the core is rebuilt only when
 # it is missing or KILN_REBUILD asks.
 cmd_build() {
-  command -v sbcl >/dev/null || die "no sbcl on PATH.
+  have_sbcl || die "no sbcl on PATH (or KILN_SBCL is not executable).
   This runs on this machine's Lisp: cairn to clone, SBCL to build the core.
   brew install sbcl, or use kiln container instead."
   [[ -f $HOME/quicklisp/setup.lisp ]] || die "no Quicklisp at ~/quicklisp.
@@ -613,7 +653,7 @@ cmd_build() {
   # ENSURE_LOCAL_CORE is the same one `kiln local' would reach for; calling it here means a
   # first start is instant instead of a surprise minute of McCLIM.
   KILN_ROOT="$dest" ensure_local_core
-  note "core      $KILN_ETC/modus.core"
+  note "core      $(local_core_path)"
   note "done      kiln local --view"
 }
 
@@ -778,6 +818,23 @@ cmd_desktop() {
   cmd_local "${args[@]}" ${passthru[@]+"${passthru[@]}"}
 }
 
+# Last resort for the relay: the relay's OWN config (coturn's turnserver.conf, kept at
+# ~/.glass/turn.conf, override with TURN_CONF).  Supplies TURN_ICE only when neither the
+# environment nor ~/.kiln/config named one, so it never overrides a deliberate choice.
+# realm is the name clients reach the relay by; external-ip is not, since it is the address
+# the relay advertises and may be a "public/private" pair.  Reads the file without echoing it.
+turn_from_conf() {
+  [[ -n ${TURN_ICE:-} || -n ${TURN_SERVER:-} ]] && return 0
+  local conf=${TURN_CONF:-$HOME/.glass/turn.conf}
+  [[ -r $conf ]] || return 0
+  local realm port cred
+  realm=$(sed -n 's/^realm=//p' "$conf" | head -n1)
+  port=$(sed -n 's/^listening-port=//p' "$conf" | head -n1)
+  cred=$(sed -n 's/^user=//p' "$conf" | head -n1)
+  [[ -n $realm && ${cred} == *:* ]] || return 0
+  export TURN_ICE="turn:$realm:${port:-3478} ${cred%%:*} ${cred#*:}"
+}
+
 cmd_local() {
   # THE SAME .config THE CONTAINER READS, through the same reader (boot/config.sh).
   # ~/.kiln is the box's state, not a session's, so a setting recorded there means the
@@ -786,6 +843,22 @@ cmd_local() {
   # weeks ago.
   # shellcheck source=boot/config.sh
   [[ -f $ROOT/boot/config.sh ]] && { KILN_ETC="$KILN_ETC" . "$ROOT/boot/config.sh"; load_config; }
+
+  # ONE RELAY, TWO CONSUMERS, ONE PLACE TO WRITE IT DOWN.  TURN_ICE is what a phone is told to
+  # use (it rides in the DM); TURN_SERVER/USER/PASS are what THIS gateway uses to allocate its
+  # own relay candidate, read from the environment when an offer arrives.  Nothing populated the
+  # second set on a host, so a box with TURN_ICE configured told phones to relay and never
+  # allocated its own end -- "no ICE peer within 20s", twenty seconds later, on the far side.
+  # Fill each from the other.  The environment and ~/.kiln/config still win, in that order.
+  turn_from_conf
+  if [[ -n ${TURN_ICE:-} && -z ${TURN_SERVER:-} ]]; then
+    local -a _t=($TURN_ICE)
+    if (( ${#_t[@]} >= 3 )); then
+      export TURN_SERVER="${_t[0]#turn:}" TURN_USER="${_t[1]}" TURN_PASS="${_t[2]}"
+    fi
+  elif [[ -n ${TURN_SERVER:-} && -z ${TURN_ICE:-} && -n ${TURN_USER:-} && -n ${TURN_PASS:-} ]]; then
+    export TURN_ICE="turn:$TURN_SERVER $TURN_USER $TURN_PASS"
+  fi
 
   # Every capability is OFF.  A bare `kiln local' is the core and nothing else:
   # SBCL's REPL on stdin and stdout, the whole workspace loaded, not a byte
@@ -877,7 +950,12 @@ cmd_local() {
   # BEFORE the boot file is written and the image starts: a missing model is a typo or an
   # un-run fetch, and both are cheaper to hear about now than from a status line inside a
   # desktop that already came up.  CHECK-VOICE resolves a bare name to the file it found.
+  # lessac by default; --voice / GLASS_VOICE, or the phone's tts options, choose another.
+  [[ -z $voice && -n ${GLASS_VOICE:-} ]] && voice=$GLASS_VOICE
+  [[ -z $voice && -f "$(chord_voice_dir)/en_US-lessac-medium.graph" ]] && voice=en_US-lessac-medium
   [[ -n $voice ]] && { check_voice "$voice"; voice=$VOICE_RESOLVED; }
+  [[ -z $ears && -n ${GLASS_EARS:-} ]] && ears=$GLASS_EARS
+  [[ -z $ears ]] && ears=$(first_ears)
   [[ -n $ears  ]] && check_ears "$ears"
 
   # A policy named on the command line must exist.  Starting without the gate because
@@ -1101,6 +1179,57 @@ cmd_local() {
         printf '                           (or (sb-ext:posix-getenv "NSITE_NPUB")\n'
         printf '                               "%s")))))\n' "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc"
         printf ')\n'
+      fi
+      # THE RELAY THE LINK CARRIES.  TURN_ICE is one line -- "turn:host:port user pass" -- and
+      # it goes into the DM, not into the published page: the browser must have its ICE servers
+      # before it gathers and sends the offer, and the link's #fragment is the only channel that
+      # exists that early.  A TURN credential is a bearer credential, so a page that carries one
+      # hands it to everyone who fetches the page.
+      #
+      # SET DIRECTLY, like *LOGIN-URL-BASE* above and for the same reason: :glass/nostr reads the
+      # environment when it LOADS, which for a saved core was build time.
+      #
+      # THE LOAD COMES FIRST, AND THAT IS NOT DECORATION.  A saved core is a snapshot of the
+      # systems that were in it when it was dumped, and *TURN-ICE* is newer than the core on
+      # this machine -- so `glass:*turn-ice*' is a READER ERROR in that image, and a boot file
+      # that names it before the system is loaded dies before the desktop draws anything.
+      # ASDF loads the changed system over the top of the core, which is what makes the symbol
+      # exist; the load is a no-op when the core already has it.
+      #
+      # AND THE LOAD ITSELF CAN FAIL, which is why it is wrapped and why the fallback is the
+      # SOURCE FILE rather than nothing.  On this machine ASDF refuses glass/nostr outright --
+      # "overwriting old FUN-INFO for %MUL256", a secp256k1-fast VOP redefinition that the
+      # core's compiler will not accept twice -- and that is a property of the core, not of
+      # this setting.  `load' of the .lisp compiles it in the running image and does not go
+      # through the fasl cache, so it sidesteps the collision entirely.  A relay that cannot
+      # be installed must not be the reason a desktop does not come up.
+      #
+      # THE SETF IS BY SYMBOL, not by name, for the same reason: `glass:*turn-ice*' in a form
+      # the reader reaches before the system is loaded is a reader error, and a reader error
+      # in a boot file is a desktop that never draws.  find-symbol cannot fail that way, and
+      # the else branch is a link that names no relay -- degraded, not dead.
+      #
+      # NOT `set --': this runs inside cmd_local's argument loop, where $1 is the flag being
+      # parsed.  Splitting into a local array leaves the loop's own variables alone.
+      if [[ -n ${TURN_ICE:-} ]]; then
+        # shellcheck disable=SC2206
+        local -a turn_ice=($TURN_ICE)
+        if (( ${#turn_ice[@]} >= 3 )); then
+          printf '       (handler-case (asdf:load-system "glass/nostr")\n'
+          printf '         (error (e)\n'
+          printf '           (format t "~&kiln: turn     asdf could not load glass/nostr (~a) — loading the source~%%" e)\n'
+          printf '           (load (asdf:component-pathname\n'
+          printf '                  (asdf:find-component (asdf:find-system "glass/nostr") (list "src" "nostr"))))))\n'
+          printf '       (let ((s (find-symbol "*TURN-ICE*" :glass)))\n'
+          printf '         (if (and s (boundp s))\n'
+          printf '             (progn (setf (symbol-value s) (list "%s" "%s" "%s"))\n' \
+                 "${turn_ice[0]}" "${turn_ice[1]}" "${turn_ice[2]}"
+          printf '                    (format t "~&kiln: turn     ~a (in the link, not the page)~%%" "%s"))\n' \
+                 "${turn_ice[0]}"
+          printf '             (format t "~&kiln: turn     glass/nostr has no *TURN-ICE* — links will name no relay~%%")))\n'
+        else
+          printf '       (format t "~&kiln: turn     TURN_ICE needs 3 fields (server user pass) — ignored~%%")\n'
+        fi
       fi
       # The identity is the SESSION's, minted above.  There is no host key to fall back
       # to and that is deliberate: a fallback is how one key ends up signing for four
@@ -1384,7 +1513,7 @@ exec_local() {
   [[ -n $gwid ]] && envv+=(GW_ID="$gwid")
   [[ -n ${KILN_SSHD:-} ]] && envv+=(KILN_SSHD="$KILN_SSHD")
   [[ -n ${KILN_RESUME:-} ]] && envv+=(KILN_RESUME="$KILN_RESUME")
-  local -a cmd=(sbcl --core "$LOCAL_CORE" --control-stack-size 256
+  local -a cmd=("$KILN_SBCL" --core "$LOCAL_CORE" --control-stack-size 256
                 --dynamic-space-size "${KILN_HEAP:-4096}")
   [[ -n $boot ]] && cmd+=(--load "$boot")
 
@@ -1469,17 +1598,20 @@ ROOT=$HERE/repos
 CORE=$HERE/modus.core
 DISPLAY_N=${GLASS_DISPLAY:-1}
 
-command -v sbcl >/dev/null || { echo "kiln: no sbcl on PATH" >&2; exit 1; }
+SBCL=${KILN_SBCL:-$(command -v sbcl || true)}
+[ -x "$SBCL" ] || { echo "kiln: no sbcl on PATH (or KILN_SBCL is not executable)" >&2; exit 1; }
+# A core only runs under the SBCL that dumped it, so it is keyed by version.
+CORE=$CORE.sbcl-$("$SBCL" --version | awk '{print $2}' | tr -c 'A-Za-z0-9.\n' '-')
 [ -f "$HOME/quicklisp/setup.lisp" ] || {
   echo "kiln: needs Quicklisp at ~/quicklisp (the desktop uses McCLIM)" >&2; exit 1; }
 
 if [ ! -f "$CORE" ]; then
   echo "kiln: building the core, once — McCLIM takes a few minutes" >&2
-  KILN_SOURCE_TREE="$ROOT" KILN_CORE="$CORE"     sbcl --dynamic-space-size 4096 --script "$HERE/boot/build.lisp"
+  KILN_SOURCE_TREE="$ROOT" KILN_CORE="$CORE"     "$SBCL" --dynamic-space-size 4096 --script "$HERE/boot/build.lisp"
 fi
 
 echo "kiln: desktop :$DISPLAY_N  ->  vnc://127.0.0.1:$((5900 + DISPLAY_N))" >&2
-exec sbcl --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}"      --load "$ROOT/glass/backend/inspect/serve-desktop.lisp"
+exec "$SBCL" --core "$CORE" --control-stack-size 256 --dynamic-space-size "${KILN_HEAP:-4096}"      --load "$ROOT/glass/backend/inspect/serve-desktop.lisp"
 LAUNCH
   chmod +x "$out/kiln-run"
 
@@ -1745,8 +1877,8 @@ cmd_sessions() {
   # Reading the list needs cl-nostr (to turn each nsec into an npub), which is in the
   # core.  Building one just to list sessions would be absurd, so this asks for the core
   # that exists and says so plainly when there is not one yet.
-  local core="${KILN_STATE}/modus.core"
-  [[ -f $core ]] || die "no core yet — run kiln local once (it builds one), or kiln local --rebuild"
+  local core; core=$(local_core_path)
+  [[ -f $core ]] || die "no core for sbcl $(sbcl_version) yet — run kiln local once (it builds one), or kiln local --rebuild"
   local LOCAL_CORE=$core
   MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
   sbcl --core "$core" --noinform --non-interactive --disable-debugger \

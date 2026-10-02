@@ -150,7 +150,29 @@ phone connects from outside and hangs.")
        "Long-term credential for the TURN server.  Empty when it needs none.")
       (:string "TURN_PASS" "TURN password" ""
        "Its password.  Stored in this file, so the file's mode is what protects it
--- which is why /etc/kiln is 0700 and not a mount anyone can read.")))))
+-- which is why /etc/kiln is 0700 and not a mount anyone can read.
+
+It is NOT published in the client.  The browser gets the relay from the login
+link's #fragment, which is never sent to a server, so the credential reaches the
+one browser it was minted for and nobody who merely fetches the page.  A TURN
+credential is a bearer credential: whoever holds it relays on this box's
+bandwidth until it is rotated.")
+      (:string "TURN_ICE" "TURN relay for the link" ""
+       "The relay a LOGIN LINK carries, as one line: turn:host:port user pass.
+
+Empty means the link names no relay and the browser gathers host and
+server-reflexive candidates only -- the LAN case works, the symmetric-NAT and
+cellular cases do not.  That is a degradation and not a refusal, which is the
+right shape for a deployment detail.
+
+Kept apart from TURN_SERVER/USER/PASS because the two answer different
+questions.  Those three are what THIS BOX uses to allocate its own relay
+candidate; this one is what a PHONE is told to use.  They are usually the same
+server and need not be -- and the day they differ, a single setting would have
+to be wrong for one of them.
+
+The value is a secret in transit: it is written into a DM, so it is only as
+private as the recipient's key.  Rotate it at the relay when a link leaks.")))))
 
 ;;; ---- item accessors ---------------------------------------------------------
 

@@ -41,21 +41,11 @@
 (dolist (f scribe::*face-files*)
   (scribe::%open-face (first f)))
 
-;; TO A FIXPOINT.  The JIT compiles a function only once everything it calls is native, and
-;; a module that failed is not retried -- so a definition that came before its callee, or a
-;; callee REDEFINED later (reel's NEON loop-filter kernels replace the scalar ones), left its
-;; callers interpreted for good: the whole VP8 loop filter, every pixel of every frame.  So
-;; forget the failures and go again until a pass leaves no fewer modules interpreted.  (Not
-;; "until nothing compiles": a module the native check does not recognise -- one of reel's
-;; recompiles every pass -- would loop for ever, filling the JIT arena.)
-(let ((left nil))
-  (loop
-    (setq *jit-eager-failed* nil)
-    (let ((r (%jit-eager-all)))
-      (format t "~&kiln ios: compiled ~D functions in ~D modules, ~D left to the interpreter~%"
-              (first r) (second r) (third r))
-      (when (and left (>= (third r) left)) (return))
-      (setq left (third r)))))
+;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
+;; fixpoint, retrying a failed module once its callees have gone native.
+(let ((r (%jit-eager-all)))
+  (format t "~&kiln ios: compiled ~D functions in ~D modules, ~D left to the interpreter~%"
+          (first r) (second r) (third r)))
 
 (let ((core (%cli-getenv "KILN_CORE")))
   (format t "~&kiln ios: saving ~A~%" core)

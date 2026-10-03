@@ -50,22 +50,39 @@
     (let ((f (glass:sink-next-frame sink)))
       (when f (%kiln-audio-write f)))))
 
+(defun %kiln-clock-app (fb)
+  "A second window for the desk: the time, redrawn once a second."
+  (let ((last -1))
+    (values nil nil
+            (lambda ()
+              (let ((now (get-universal-time)))
+                (when (/= now last)
+                  (setf last now)
+                  (multiple-value-bind (s m h) (decode-universal-time now)
+                    (glass:fb-fill fb #x10141a)
+                    (glass:fb-text fb 16 20 (format nil "~2,'0d:~2,'0d:~2,'0d" h m s)
+                                   :size 40 :color #xe6ebf2)
+                    (glass:fb-text fb 16 80 "modus on the phone" :size 13 :color #x8b949e))
+                  t))))))
+
 (defun kiln-ios-main (&key autoplay)
-  "The app.  AUTOPLAY, a file name in the bundle's media folder, starts playing once the
-   first picture is up (kiln ios --autoplay=FILE) -- for trying a build without touching it."
+  "The app: a glass desk (glass/desk) on the phone's screen -- windows dragged by their title
+   bars, a root menu on the background -- with the media player open.  AUTOPLAY, a file name in
+   the bundle's media folder, starts playing once the first picture is up (kiln ios
+   --autoplay=FILE) -- for trying a build without touching it."
   (let* ((sw (%kiln-sys 1001 0 0 0))
          (sh (%kiln-sys 1001 1 0 0))
          (dir (or (%kiln-bundle-dir) "./"))
-         ;; THE SCREEN IS IN DEVICE PIXELS (3 per point on this phone) and the
-         ;; window is laid out in desktop pixels, so glass magnifies it --
-         ;; FB-BLIT-SCALED at the largest whole factor that fits the width,
-         ;; which keeps glyph edges exact.  Touches divide by the same K.
-         (fw warp-media-glass:+width+)
-         (k (max 1 (floor sw fw)))
+         ;; THE SCREEN IS IN DEVICE PIXELS (3 per point on this phone) and the desk is laid
+         ;; out in desktop pixels, so glass magnifies it -- FB-BLIT-SCALED at the largest
+         ;; whole factor that keeps the media window's width on screen, which keeps glyph
+         ;; edges exact.  Touches divide by the same K.
+         (k (max 1 (floor sw warp-media-glass:+width+)))
          (y0 (* 60 (%kiln-sys 1001 2 0 0)))          ; below the status bar
-         (fh (min 640 (floor (- sh y0 (* 20 k)) k)))
-         (x0 (floor (- sw (* fw k)) 2))
-         (big (glass:make-framebuffer (* fw k) (* fh k)))
+         (dw (floor sw k))
+         (dh (floor (- sh y0 (* 20 k)) k))
+         (x0 (floor (- sw (* dw k)) 2))
+         (big (glass:make-framebuffer (* dw k) (* dh k)))
          ;; SOUND: a mixer whose clock is this loop (see %KILN-PUMP-AUDIO), and a
          ;; speaker at its rate.  No speaker, no mixer -- the player then paces the
          ;; picture by the wall clock, as it did before there was sound.
@@ -73,39 +90,39 @@
          (mixer (and speaker (glass:make-mixer :rate +kiln-rate+)))
          (sink (and mixer (glass:mixer-subscribe mixer :name "speaker" :rate +kiln-rate+)))
          (lib (warp-media:make-library :root (concatenate 'string dir "media/") :mixer mixer))
-         (fb (glass:make-framebuffer fw fh)))
-    (format t "~&kiln: ~Dx~D screen, media from ~A~%" sw sh dir)
+         (desk (glass.desk:make-desk (glass:make-framebuffer dw dh))))
+    (format t "~&kiln: ~Dx~D screen, desk ~Dx~D at ~Dx, media from ~A~%" sw sh dw dh k dir)
     (%kiln-sys 1002 0 (+ sw (* sh 65536)) #x1E2530)
-    (multiple-value-bind (on-key on-pointer dirty-p) (warp-media-glass:make-media-window fb lib)
-      (declare (ignore on-key))
-      (funcall dirty-p)
-      (progn (glass:fb-blit-scaled big fb 0 0 k) (%kiln-blit big x0 y0))
-      (%kiln-sys 1003 0 0 0)
-      ;; NOT PLAYING ON OPEN: a tap on a track starts it.
-      (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
-      (when autoplay
-        (let ((path (concatenate 'string dir "media/" autoplay)))
-          (if (probe-file path)
-              (progn (format t "~&kiln: autoplay ~A~%" autoplay)
-                     (warp-media:play-path (warp-media:library-player lib) path))
-              (format t "~&kiln: autoplay ~A: no such file~%" autoplay))))
-      (format t "~&kiln: ~D track~:P~%"
-              (length (warp-media:folder-tracks (concatenate 'string dir "media/"))))
-      ;; A tap or a repaint that signals is logged and dropped: one bad gesture
-      ;; must not take the app down (an error out of here ends the process).
-      (loop
-       (handler-case
-        (let ((e (%kiln-sys 1004 0 0 0)))
-          (if (zerop e)
-              (progn
-                (when mixer (%kiln-pump-audio mixer sink))
-                (when (funcall dirty-p)
-                  (progn (glass:fb-blit-scaled big fb 0 0 k) (%kiln-blit big x0 y0))
-                  (%kiln-sys 1003 0 0 0))
-                (%sleep-ms 16))
-              (let ((type (floor e 1099511627776))
-                    (y (logand (floor e 1048576) #xFFFFF))
-                    (x (logand e #xFFFFF)))
-                (funcall on-pointer (if (= type 3) 0 1)
-                         (floor (- x x0) k) (floor (- y y0) k)))))
-         (error (c) (format t "~&kiln: ~A~%" (%escape-describe c))))))))
+    (glass.desk:desk-register-app desk "Media"
+                                  (lambda (fb) (warp-media-glass:make-media-window fb lib))
+                                  :width warp-media-glass:+width+ :height 560)
+    (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
+    (glass.desk:desk-open desk "Media")
+    (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
+    (when autoplay
+      (let ((path (concatenate 'string dir "media/" autoplay)))
+        (if (probe-file path)
+            (progn (format t "~&kiln: autoplay ~A~%" autoplay)
+                   (warp-media:play-path (warp-media:library-player lib) path))
+            (format t "~&kiln: autoplay ~A: no such file~%" autoplay))))
+    (format t "~&kiln: ~D track~:P~%"
+            (length (warp-media:folder-tracks (concatenate 'string dir "media/"))))
+    ;; A tap or a repaint that signals is logged and dropped: one bad gesture
+    ;; must not take the app down (an error out of here ends the process).
+    (loop
+     (handler-case
+      (let ((e (%kiln-sys 1004 0 0 0)))
+        (if (zerop e)
+            (progn
+              (when mixer (%kiln-pump-audio mixer sink))
+              (when (glass.desk:desk-tick desk)
+                (glass:fb-blit-scaled big (glass.desk:desk-fb desk) 0 0 k)
+                (%kiln-blit big x0 y0)
+                (%kiln-sys 1003 0 0 0))
+              (%sleep-ms 16))
+            (let ((type (floor e 1099511627776))
+                  (y (logand (floor e 1048576) #xFFFFF))
+                  (x (logand e #xFFFFF)))
+              (glass.desk:desk-pointer desk (if (= type 3) 0 1)
+                                       (floor (- x x0) k) (floor (- y y0) k)))))
+       (error (c) (format t "~&kiln: ~A~%" (%escape-describe c)))))))

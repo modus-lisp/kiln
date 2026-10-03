@@ -30,6 +30,26 @@
     (%kiln-sys 1005 addr (+ (glass::fb-width fb) (* (glass::fb-height fb) 65536))
                (+ x (* y 65536)))))
 
+;;; THE SPEAKER.  glass's mixer normally runs its own 20 ms clock thread, and on modus that
+;;; thread's frames cannot be stored into the shared mix (the store guard).  So here the MAIN
+;;; loop is the clock: after each paint it tops the device's queue up to a cushion, one
+;;; MIXER-TICK and one sink frame at a time.  The device -- an AudioQueue in the shim,
+;;; pseudo-syscalls 1010-1012 -- keeps the real time and plays silence if the loop is late.
+(defconstant +kiln-rate+ 48000)
+(defparameter *kiln-cushion* 7200 "Samples to keep queued: 150 ms.")
+
+(defun %kiln-audio-write (frame)
+  (%kiln-sys 1011 (+ (%gc-word-of frame (%conv-addr #x100050A0)) 7) (length frame) 0))
+
+(defun %kiln-pump-audio (mixer sink)
+  "Mix and queue until the device holds *KILN-CUSHION* samples; at most a few ticks a call,
+   so a long pause costs one cushion's catching-up and not a stall of the picture."
+  (dotimes (i 12)
+    (when (>= (%kiln-sys 1012 0 0 0) *kiln-cushion*) (return))
+    (glass:mixer-tick mixer)
+    (let ((f (glass:sink-next-frame sink)))
+      (when f (%kiln-audio-write f)))))
+
 (defun kiln-ios-main ()
   (let* ((sw (%kiln-sys 1001 0 0 0))
          (sh (%kiln-sys 1001 1 0 0))
@@ -44,10 +64,13 @@
          (fh (min 640 (floor (- sh y0 (* 20 k)) k)))
          (x0 (floor (- sw (* fw k)) 2))
          (big (glass:make-framebuffer (* fw k) (* fh k)))
-         ;; NO AUDIO YET: glass's session mixer keeps its own objects in
-         ;; state its thread shares, and modus threads share nothing -- the
-         ;; store guard refuses every mix tick.  The picture plays without it.
-         (lib (warp-media:make-library :root (concatenate 'string dir "media/")))
+         ;; SOUND: a mixer whose clock is this loop (see %KILN-PUMP-AUDIO), and a
+         ;; speaker at its rate.  No speaker, no mixer -- the player then paces the
+         ;; picture by the wall clock, as it did before there was sound.
+         (speaker (zerop (%kiln-sys 1010 +kiln-rate+ 0 0)))
+         (mixer (and speaker (glass:make-mixer :rate +kiln-rate+)))
+         (sink (and mixer (glass:mixer-subscribe mixer :name "speaker" :rate +kiln-rate+)))
+         (lib (warp-media:make-library :root (concatenate 'string dir "media/") :mixer mixer))
          (fb (glass:make-framebuffer fw fh)))
     (format t "~&kiln: ~Dx~D screen, media from ~A~%" sw sh dir)
     (%kiln-sys 1002 0 (+ sw (* sh 65536)) #x1E2530)
@@ -56,9 +79,8 @@
       (funcall dirty-p)
       (progn (glass:fb-blit-scaled big fb 0 0 k) (%kiln-blit big x0 y0))
       (%kiln-sys 1003 0 0 0)
-      ;; NOT PLAYING ON OPEN: the decoder thread cannot run on modus yet (it
-      ;; shares state the way SBCL threads may; modus threads share nothing),
-      ;; and when it dies it leaves the player's lock held.
+      ;; NOT PLAYING ON OPEN: a tap on a track starts it.
+      (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
       (format t "~&kiln: ~D track~:P~%"
               (length (warp-media:folder-tracks (concatenate 'string dir "media/"))))
       ;; A tap or a repaint that signals is logged and dropped: one bad gesture
@@ -68,6 +90,7 @@
         (let ((e (%kiln-sys 1004 0 0 0)))
           (if (zerop e)
               (progn
+                (when mixer (%kiln-pump-audio mixer sink))
                 (when (funcall dirty-p)
                   (progn (glass:fb-blit-scaled big fb 0 0 k) (%kiln-blit big x0 y0))
                   (%kiln-sys 1003 0 0 0))

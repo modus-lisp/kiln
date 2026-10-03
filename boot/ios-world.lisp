@@ -41,6 +41,29 @@
 (dolist (f scribe::*face-files*)
   (scribe::%open-face (first f)))
 
+;; THE DECODERS' TABLES, NOW, for the same kind of reason.  reed builds its transform plans,
+;; codebooks and windows on first use and keeps them in globals.  On the phone first use is
+;; the player's decoding thread, and modus refuses a thread's store of its own object into a
+;; global (the shared-store guard): every file with sound failed to open.  Built here they
+;; are the snapshot's.  Every size a Vorbis block may be (64..8192); AAC's tables are fixed;
+;; Opus by decoding a file, which visits the sizes CELT uses.
+(defun %kiln-warm (what thunk)
+  (handler-case (progn (funcall thunk) (format t "~&kiln ios: warmed ~A~%" what))
+    (serious-condition (e) (format t "~&kiln ios: could not warm ~A: ~A~%" what e))))
+(%kiln-warm "vorbis transforms"
+            (lambda () (loop for n = 64 then (* n 2) while (<= n 8192) do (reed::imdct-plan n))))
+(%kiln-warm "aac tables"
+            (lambda ()
+              (reed::aac-imdct-long-matrix) (reed::aac-imdct-short-matrix)
+              (reed::aac-sf-decoder) (reed::aac-spec-decoder 0)
+              (reed::aac-pow43 0) (reed::aac-ensure-windows)))
+(dolist (f '("wpt-test.webm" "t5-av.webm" "opus-ogg.ogg"))
+  (let ((path (concatenate 'string *kiln-root* "/cassette/vectors/" f)))
+    (when (probe-file path)
+      (%kiln-warm f (lambda ()
+                      (let ((wp (cassette:open-media path :audio t)))
+                        (loop (unless (cassette:next-audio-frame wp) (return)))))))))
+
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.
 (let ((r (%jit-eager-all)))

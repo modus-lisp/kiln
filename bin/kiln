@@ -1882,7 +1882,10 @@ USAGE
   # What the app runs: the snapshot, then the entry point (boot/ios.lisp).
   printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
   rm -rf "$out/media"; mkdir -p "$out/media"
-  cp "$KILN_ROOT/cassette/vectors/bbb360.webm" "$out/media/" 2>/dev/null || true
+  # a picture, and a picture with sound (VP8 + Vorbis) to hear the speaker by
+  for f in bbb360.webm wpt-test.webm; do
+    cp "$KILN_ROOT/cassette/vectors/$f" "$out/media/" 2>/dev/null || true
+  done
 
   if [[ $kind == device ]]; then
     if [[ -z $ident ]]; then

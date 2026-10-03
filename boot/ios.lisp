@@ -65,6 +65,15 @@
                     (glass:fb-text fb 16 80 "modus on the phone" :size 13 :color #x8b949e))
                   t))))))
 
+(defun %kiln-blit-region (big k x0 y0 x y w h)
+  "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
+   pseudo-syscall 1005 reads the block in place, BIG's row length as its stride."
+  (let* ((bw (glass:fb-width big))
+         (base (+ (%gc-word-of (glass:fb-pixels big) (%conv-addr #x100050A0)) 7))
+         (addr (+ base (* 8 (+ (* y k bw) (* x k))))))
+    (%kiln-sys 1005 addr (+ (* w k) (* (* h k) 65536))
+               (+ (+ x0 (* x k)) (* (+ y0 (* y k)) 65536)) bw)))
+
 (defun kiln-ios-main (&key autoplay)
   "The app: a glass desk (glass/desk) on the phone's screen -- windows dragged by their title
    bars, a root menu on the background -- with the media player open.  AUTOPLAY, a file name in
@@ -113,13 +122,18 @@
      (handler-case
       (let ((e (%kiln-sys 1004 0 0 0)))
         (if (zerop e)
-            (progn
+            (let ((t0 (get-internal-real-time)))
               (when mixer (%kiln-pump-audio mixer sink))
-              (when (glass.desk:desk-tick desk)
-                (glass:fb-blit-scaled big (glass.desk:desk-fb desk) 0 0 k)
-                (%kiln-blit big x0 y0)
-                (%kiln-sys 1003 0 0 0))
-              (%sleep-ms 16))
+              ;; ONLY WHAT CHANGED is magnified and shown: a video window is a fifth of the
+              ;; screen, and the whole of it 2x was most of a frame
+              (multiple-value-bind (changed x y w h) (glass.desk:desk-tick desk)
+                (when changed
+                  (glass:fb-blit-scaled-region big (glass.desk:desk-fb desk) k x y w h)
+                  (%kiln-blit-region big k x0 y0 x y w h)
+                  (%kiln-sys 1003 0 0 0)))
+              ;; a frame is 16 ms; sleep only what is left of it, not 16 ms on top of the work
+              (let ((left (- 16 (floor (- (get-internal-real-time) t0) 1000))))
+                (when (> left 1) (%sleep-ms left))))
             (let ((type (floor e 1099511627776))
                   (y (logand (floor e 1048576) #xFFFFF))
                   (x (logand e #xFFFFF)))

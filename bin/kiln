@@ -1813,7 +1813,7 @@ cmd_ios() {
   #      at launch, relocated to wherever iOS put it.
   # The phone never compiles anything to native code (it cannot); it runs what
   # the Mac compiled, and interprets anything new.
-  local kind=sim install=0 reuse=0 dev="" ident="" profile=""
+  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay=""
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -1825,10 +1825,11 @@ cmd_ios() {
       --reuse-modus) reuse=2 ;;
       --identity) ident=${val:?--identity=NAME} ;;
       --profile)  profile=${val:?--profile=FILE} ;;
+      --autoplay) autoplay=${val:?--autoplay=FILE} ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln ios [sim|device] [--install] [--device=ID] [--reuse]
-         [--identity=NAME] [--profile=FILE] — the iPhone app, built here.
+         [--identity=NAME] [--profile=FILE] [--autoplay=FILE] — the iPhone app, built here.
 
   sim          (default) an app for the iOS Simulator
   device       an app for an iPhone, signed with your development identity and
@@ -1880,12 +1881,19 @@ USAGE
   fi
 
   # What the app runs: the snapshot, then the entry point (boot/ios.lisp).
-  printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
+  if [[ -n $autoplay ]]; then
+    printf '%s\n' --core @kiln.core --eval "(kiln-ios-main :autoplay \"$autoplay\")" > "$out/modus.args"
+  else
+    printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
+  fi
   rm -rf "$out/media"; mkdir -p "$out/media"
   # a picture, and a picture with sound (VP8 + Vorbis) to hear the speaker by
   for f in bbb360.webm wpt-test.webm; do
     cp "$KILN_ROOT/cassette/vectors/$f" "$out/media/" 2>/dev/null || true
   done
+  # kiln's own: test-pattern.mkv, VP8 + a 440 Hz beep a second as mono 48 kHz FLAC -- audible,
+  # and FLAC because it is the codec modus decodes fastest (wpt-test's Vorbis track is silent)
+  cp "$KILN_ROOT/kiln/media/"* "$out/media/" 2>/dev/null || true
 
   if [[ $kind == device ]]; then
     if [[ -z $ident ]]; then

@@ -50,7 +50,9 @@
     (let ((f (glass:sink-next-frame sink)))
       (when f (%kiln-audio-write f)))))
 
-(defun kiln-ios-main ()
+(defun kiln-ios-main (&key autoplay)
+  "The app.  AUTOPLAY, a file name in the bundle's media folder, starts playing once the
+   first picture is up (kiln ios --autoplay=FILE) -- for trying a build without touching it."
   (let* ((sw (%kiln-sys 1001 0 0 0))
          (sh (%kiln-sys 1001 1 0 0))
          (dir (or (%kiln-bundle-dir) "./"))
@@ -81,6 +83,12 @@
       (%kiln-sys 1003 0 0 0)
       ;; NOT PLAYING ON OPEN: a tap on a track starts it.
       (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
+      (when autoplay
+        (let ((path (concatenate 'string dir "media/" autoplay)))
+          (if (probe-file path)
+              (progn (format t "~&kiln: autoplay ~A~%" autoplay)
+                     (warp-media:play-path (warp-media:library-player lib) path))
+              (format t "~&kiln: autoplay ~A: no such file~%" autoplay))))
       (format t "~&kiln: ~D track~:P~%"
               (length (warp-media:folder-tracks (concatenate 'string dir "media/"))))
       ;; A tap or a repaint that signals is logged and dropped: one bad gesture

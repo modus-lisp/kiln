@@ -158,8 +158,12 @@ hand-built one.)
 `kiln image TARGET` makes the bare-metal artifacts
 ([modus/docs/snp-guest.md](https://github.com/modus-lisp/modus/blob/main/docs/snp-guest.md)):
 a **bare-metal** modus, no Linux under it, with the packages you name already
-loaded. Two targets: `x64-uefi`, the SEV-SNP image, and `zero2w`, the
-Raspberry Pi 3B / Zero 2 W kernel the board netboots. It runs on this machine,
+loaded — or, for `nitro`, the hosted modus as an AWS Nitro Enclave image. Three
+targets: `x64-uefi`, the SEV-SNP image; `zero2w`, the Raspberry Pi 3B / Zero 2 W
+kernel the board netboots; and `nitro`, an EIF built from AWS's boot blobs with
+no Docker and no nitro-cli
+([modus/docs/nitro-enclaves.md](https://github.com/modus-lisp/modus/blob/main/docs/nitro-enclaves.md)).
+It runs on this machine,
 not in the container, because it needs SBCL to build, QEMU to boot, and the
 workspace checkouts to archive packages from.
 
@@ -167,6 +171,7 @@ workspace checkouts to archive packages from.
 kiln image x64-uefi --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)'
 kiln image x64-uefi --with=cl-deposits --snp=test --ddc --out=./deposits-image
 kiln image zero2w   --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)' --stage=modus-pi
+kiln image nitro    --with=alexandria          # modus.eif + pcrs.json; the packages are inside the measured ramdisk
 ```
 
 Two files come out per target, and both are measurable:

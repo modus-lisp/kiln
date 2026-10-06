@@ -19,8 +19,9 @@ set -uo pipefail
 ROOT=${KILN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}   # the modus-lisp workspace
 KILN=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 MODUS=${MODUS_SRC:-$ROOT/modus}
-target=${1:-}; case $target in x64-uefi|zero2w) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;;
-  *) echo "kiln image: the first argument is the TARGET: x64-uefi or zero2w" >&2; exit 2 ;; esac
+KILN_STATE_DIR=${KILN_STATE:-$HOME/.local/state/kiln}; mkdir -p "$KILN_STATE_DIR"
+target=${1:-}; case $target in x64-uefi|zero2w|nitro) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;; aws|enclave) target=nitro; shift ;;
+  *) echo "kiln image: the first argument is the TARGET: x64-uefi, zero2w or nitro" >&2; exit 2 ;; esac
 out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""
 for a in "$@"; do
   v=${a#*=}
@@ -30,11 +31,12 @@ for a in "$@"; do
     *) echo "kiln image: unknown argument $a" >&2; exit 2 ;;
   esac
 done
-[ $target = zero2w ] && [ "$snp" != 0 ] && { echo "kiln image: --snp is x64-uefi only (the Pi has no SEV)" >&2; exit 2; }
-[ $target = zero2w ] && [ -n "$ddc" ] && { echo "kiln image: --ddc is x64-uefi only (test/run-uefi-ddc.sh)" >&2; exit 2; }
-case $target in x64-uefi) kernel=generic.efi; qemu=qemu-system-x86_64 ;; zero2w) kernel=kernel8.img; qemu=qemu-system-aarch64 ;; esac
+[ $target != x64-uefi ] && [ "$snp" != 0 ] && { echo "kiln image: --snp is x64-uefi only" >&2; exit 2; }
+[ $target != x64-uefi ] && [ -n "$ddc" ] && { echo "kiln image: --ddc is x64-uefi only (test/run-uefi-ddc.sh)" >&2; exit 2; }
+[ $target = nitro ] && [ -n "$probe" ] && { echo "kiln image: --probe needs an enclave to run in; nitro builds and measures only" >&2; exit 2; }
+case $target in x64-uefi) kernel=generic.efi; qemu=qemu-system-x86_64 ;; zero2w) kernel=kernel8.img; qemu=qemu-system-aarch64 ;; nitro) kernel=modus; qemu="" ;; esac
 say() { echo "[kiln image] $(date +%H:%M:%S) $*"; }
-for tool in sbcl $qemu python3 $([ $target = x64-uefi ] && echo mformat || echo gdb-multiarch); do command -v $tool >/dev/null || { echo "kiln image: needs $tool" >&2; exit 2; }; done
+for tool in sbcl $qemu python3 $([ $target = x64-uefi ] && echo mformat) $([ $target = zero2w ] && echo gdb-multiarch) $([ $target = nitro ] && echo curl); do command -v $tool >/dev/null || { echo "kiln image: needs $tool" >&2; exit 2; }; done
 [ -f "$MODUS/mvm/build-uefi-cl-repl.lisp" ] || { echo "kiln image: no modus checkout at $MODUS (MODUS_SRC=...)" >&2; exit 2; }
 mkdir -p "$out/tars"; out=$(cd "$out" && pwd)
 
@@ -50,6 +52,13 @@ elif [ $target = x64-uefi ]; then
   say "2. SBCL build of the generic UEFI image (snp=$snp, net+ssh, 4 MB fetch buffer)"
   ( cd "$MODUS" && MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
       MODUS_CL_REPL_OUT="$out/$kernel" sbcl --dynamic-space-size 12288 --script mvm/build-uefi-cl-repl.lisp ) > "$out/build.log" 2>&1 \
+    || { say "FAIL: build (see $out/build.log)"; exit 1; }
+elif [ $target = nitro ]; then
+  # The HOSTED static ELF: the enclave runs AWS's Linux kernel, and modus is its
+  # one process (init execs /cmd).  No libc, no dynamic loader, nothing else in
+  # the ramdisk but modus, the tarballs and the two files init reads.
+  say "2. SBCL build of the hosted x86-64 CLI (the enclave's one process)"
+  ( cd "$MODUS" && MODUS_CLI_OUT="$out/$kernel" sbcl --dynamic-space-size 12288 --script mvm/build-generic-cli.lisp ) > "$out/build.log" 2>&1 \
     || { say "FAIL: build (see $out/build.log)"; exit 1; }
 else
   # The runbook's verified flag set (docs/reel-on-zero/BOARD-RUNBOOK.md 1): net +
@@ -69,6 +78,38 @@ if [ -n "$ddc" ]; then
       MODUS_DDC_WORK="$out/ddc" test/run-uefi-ddc.sh ) > "$out/ddc.log" 2>&1 && say "   DDC PASS" || { say "FAIL: DDC (see $out/ddc.log)"; exit 1; }
 fi
 
+if [ $target = nitro ]; then
+  # EIF = kernel + cmdline + init ramdisk (AWS's init + nsm.ko) + application
+  # ramdisk (modus, the tarballs, /cmd, /env), measured into PCR0/1/2 by
+  # eif_build (aws-nitro-enclaves-image-format), built from source here -- no
+  # Docker and no nitro-cli; the ramdisks are deterministic cpio (mkcpio.py),
+  # so the PCRs follow from the inputs.  The boot blobs are AWS's own, pinned by
+  # sha256 in the manifest.  Packages are INSIDE the measured ramdisk and are
+  # installed at start by the /cmd line (no save-and-die core here yet).
+  BLOBS=${NITRO_BLOBS:-$KILN_STATE_DIR/nitro-blobs}; EIFB=${EIF_BUILD:-$KILN_STATE_DIR/cargo/bin/eif_build}
+  say "3. enclave image (EIF) from AWS's boot blobs + eif_build"
+  mkdir -p "$BLOBS"
+  for f in bzImage bzImage.config cmdline init nsm.ko; do
+    [ -s "$BLOBS/$f" ] || curl -sfL -o "$BLOBS/$f" "https://raw.githubusercontent.com/aws/aws-nitro-enclaves-cli/main/blobs/x86_64/$f" || { say "FAIL: fetching blob $f"; exit 1; }
+  done
+  [ -x "$EIFB" ] || { say "   building eif_build from source (cargo)"; cargo install -q --git https://github.com/aws/aws-nitro-enclaves-image-format --bin eif_build --root "$(dirname "$(dirname "$EIFB")")" > "$out/cargo.log" 2>&1 || { say "FAIL: eif_build (see $out/cargo.log)"; exit 1; }; }
+  python3 "$MODUS/test/nitro/mkcpio.py" "$out/init.cpio" --file "$BLOBS/init:init" --file "$BLOBS/nsm.ko:nsm.ko:100644" > /dev/null
+  cmd="/modus"; tarargs=()
+  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:tars/$n.tar:100644"); cmd="$cmd --eval (install-tarball \"/tars/$n.tar\")"; done
+  cmd="$cmd --eval (nsm-attest-selftest) --eval (vsock-repl 5000)"
+  printf '%s\n' "$cmd" | tr ' ' '\n' > "$out/cmd.txt"      # init reads /cmd as one argv entry per line
+  python3 "$MODUS/test/nitro/mkcpio.py" "$out/app.cpio" --file "$out/$kernel:modus" "${tarargs[@]}" --file "$out/cmd.txt:cmd:100644" --text 'env:MODUS_NITRO=1' > /dev/null
+  "$EIFB" --kernel "$BLOBS/bzImage" --kernel_config "$BLOBS/bzImage.config" --cmdline "$(cat "$BLOBS/cmdline")" \
+      --ramdisk "$out/init.cpio" --ramdisk "$out/app.cpio" --output "$out/modus.eif" --name modus --version 0 \
+      --build-time 2000-01-01T00:00:00Z --build-tool kiln --build-tool-version 0 --arch x86_64 > "$out/eif.log" 2>&1 \
+    || { say "FAIL: eif_build (see $out/eif.log)"; exit 1; }
+  python3 - "$out/eif.log" "$out/pcrs.json" <<'PY'
+import sys, json, re
+txt = open(sys.argv[1]).read(); pcrs = dict(re.findall(r'"(PCR\d)":\s*"([0-9a-f]+)"', txt))
+json.dump(pcrs, open(sys.argv[2], "w"), indent=1); print("   " + " ".join(f"{k}={v[:16]}.." for k, v in pcrs.items()))
+PY
+  say "   $out/modus.eif $(stat -c %s "$out/modus.eif") bytes"
+else
 say "3. install under QEMU, save-and-die, dump the core, restore it"
 loads=(); for n in $order; do loads+=("--load=$n"); done
 rig=test/run-uefi-core.sh; [ $target = zero2w ] && rig=test/run-rpi-core.sh
@@ -76,9 +117,10 @@ rig=test/run-uefi-core.sh; [ $target = zero2w ] && rig=test/run-rpi-core.sh
     ${probe:+"--probe=$probe"} ${expect:+"--expect=$expect"} ) > "$out/core.log" 2>&1; rc=$?
 grep -a "^   core:\|^   probe reply\|^PASS\|^FAIL" "$out/core.log" | sed 's/^/   /'
 [ $rc = 0 ] || { say "FAIL: core (see $out/core.log)"; exit 1; }
+fi
 
 say "4. manifest"
-python3 - "$out" "$snp" "$KILN" "$MODUS" "$probe" "$expect" "$ddc" "$target" "$kernel" <<'PY'
+NITRO_BLOBS_DIR="${BLOBS:-}" python3 - "$out" "$snp" "$KILN" "$MODUS" "$probe" "$expect" "$ddc" "$target" "$kernel" <<'PY'
 import json, sys, hashlib, subprocess, os, datetime
 out, snp, kiln, modus, probe, expect, ddc, target, kernel = sys.argv[1:10]
 def sha(p):
@@ -89,6 +131,19 @@ if target == "x64-uefi":
     core_addr = "0x20000000"
     att = dict(measured_by="AmdSev OVMF -kernel generic.efi (kernel-hashes=on); the core is NOT inside the measured image: it is placed in RAM by the loader and its sha256 is pinned here",
                verify="test/snp/verify-report.py REPORT --measurement <launch digest of generic.efi> --hostkey-b64 <handshake key> --vcek VCEK.pem")
+elif target == "nitro":
+    build = dict(script="mvm/build-generic-cli.lisp", eif_build="aws-nitro-enclaves-image-format", ramdisks="test/nitro/mkcpio.py (deterministic newc)")
+    core_addr = None
+    blobs = {}
+    bd = os.environ.get("NITRO_BLOBS_DIR")
+    for f in ("bzImage", "bzImage.config", "cmdline", "init", "nsm.ko"):
+        pth = os.path.join(bd, f) if bd else None
+        if pth and os.path.exists(pth): blobs[f] = dict(bytes=os.path.getsize(pth), sha256=sha(pth))
+    att = dict(measured_by="Nitro: PCR0 = the whole EIF, PCR1 = kernel + init ramdisk, PCR2 = the application ramdisk (modus + tarballs + /cmd + /env); from eif_build, see pcrs.json",
+               verify="test/nitro/verify-attestation.py DOC.cose --pcr0 .. --pcr1 .. --pcr2 .. --nonce .. [--hostkey-b64 ..] (root: test/nitro/aws-nitro-root.pem)",
+               enclave_memory="the hosted ELF maps two 896 MB semispaces plus 16 MB; give the enclave at least 2560 MB",
+               network="vsock only: the /cmd line ends in (vsock-repl 5000); the parent forwards with vsock-proxy or socat",
+               boot_blobs=blobs, pcrs=json.load(open(out+"/pcrs.json")))
 else:
     build = dict(MODUS_NET_BUILD="1", MODUS_SSH_BUILD="1", MODUS_NET_NOAUTO="1", MODUS_RPI_CHAINLOAD="1", MODUS_NET_BUFSZ="4194304", script="mvm/build-rpi-cl-repl.lisp")
     core_addr = "0x18000000"
@@ -102,8 +157,9 @@ m = dict(
   produced=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
   kiln_commit=rev(kiln), modus_commit=rev(modus),
   build=build, kernel=kern,
-  core=dict(file="modus.core", bytes=os.path.getsize(out+"/modus.core"), sha256=sha(out+"/modus.core"), ram_address=core_addr,
-            probe=probe, expect=expect, reproducible=False),
+  core=(dict(file="modus.core", bytes=os.path.getsize(out+"/modus.core"), sha256=sha(out+"/modus.core"), ram_address=core_addr,
+             probe=probe, expect=expect, reproducible=False) if os.path.exists(out+"/modus.core") else None),
+  eif=(dict(file="modus.eif", bytes=os.path.getsize(out+"/modus.eif"), sha256=sha(out+"/modus.eif")) if os.path.exists(out+"/modus.eif") else None),
   packages=json.load(open(out+"/packages.json")),
   attestation=att)
 json.dump(m, open(out+"/manifest.json", "w"), indent=1)
@@ -115,4 +171,4 @@ if [ -n "$stage" ]; then
   scp -q $files "$stage:/home/modus/" && ssh "$stage" 'for f in '"$(for f in $files; do basename $f; done | tr '\n' ' ')"'; do sudo -n cp /home/modus/$f /srv/tftp/ && sudo -n chown modus:modus /srv/tftp/$f; done; ls -la /srv/tftp/modus.core' \
     && say "   staged; netboot with: python3 netboot-core.py --img $kernel.gz --core modus.core" || { say "FAIL: staging"; exit 1; }
 fi
-say "done: $out/$kernel + $out/modus.core (manifest.json)"
+[ $target = nitro ] && say "done: $out/modus.eif (manifest.json, pcrs.json)" || say "done: $out/$kernel + $out/modus.core (manifest.json)"

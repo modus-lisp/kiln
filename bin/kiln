@@ -1942,12 +1942,15 @@ cmd_image() {
   case ${1:-} in
     -h|--help)
       cat >&2 <<'USAGE'
-kiln image TARGET [--with=NAME ...] [--probe=FORM --expect=TEXT] [--out=DIR]
+kiln image TARGET [--with=NAME ...] [--probe=FORM --expect=TEXT] [--out=DIR]   (TARGET: x64-uefi | zero2w | nitro)
                   [--reuse=FILE] [--strict] [--stage=HOST]
                   x64-uefi only: [--snp=0|test|1] [--ddc]
 
-  TARGET is x64-uefi (the bare x86-64 UEFI CL image, the SEV-SNP artifact) or
-  zero2w (the Pi 3B / Zero 2 W kernel8.img the board netboots).  Builds the
+  TARGET is x64-uefi (the bare x86-64 UEFI CL image, the SEV-SNP artifact),
+  zero2w (the Pi 3B / Zero 2 W kernel8.img the board netboots) or nitro (the
+  hosted modus as an AWS Nitro Enclave image: modus.eif + pcrs.json, packages
+  inside the measured ramdisk, no QEMU step -- see modus/docs/nitro-enclaves.md).
+  For x64-uefi and zero2w it builds the
   kernel from the modus checkout, boots it under QEMU, installs every --with
   NAME and its dependency closure from tarballs derived here (modus-lisp repos
   at repos.lock's pins, Quicklisp releases from ~/quicklisp), snapshots the heap

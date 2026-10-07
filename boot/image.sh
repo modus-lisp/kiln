@@ -13,7 +13,7 @@
 #                 they are placed in RAM by the loader.
 # plus manifest.json: every hash, pin and flag that went into them.
 #
-#   kiln image x64-uefi|zero2w|nitro [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--console=ssh|repl] [--nocore]
+#   kiln image x64-uefi|zero2w|nitro [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--console=ssh|repl] [--nocore] [--sign-key=PEM --sign-cert=PEM | --nosign]
 #              [--probe=FORM --expect=TEXT] [--reuse=FILE] [--ddc] [--strict] [--stage=HOST]
 set -uo pipefail
 ROOT=${KILN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}   # the modus-lisp workspace
@@ -22,11 +22,11 @@ MODUS=${MODUS_SRC:-$ROOT/modus}
 KILN_STATE_DIR=${KILN_STATE:-$HOME/.local/state/kiln}; mkdir -p "$KILN_STATE_DIR"
 target=${1:-}; case $target in x64-uefi|zero2w|nitro) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;; aws|enclave) target=nitro; shift ;;
   *) echo "kiln image: the first argument is the TARGET: x64-uefi, zero2w or nitro" >&2; exit 2 ;; esac
-out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh; nocore=""
+out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh; nocore=""; signkey=""; signcert=""; nosign=""
 for a in "$@"; do
   v=${a#*=}
   case $a in
-    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --nocore) nocore=1 ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
+    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --nocore) nocore=1 ;; --sign-key=*) signkey=$v ;; --sign-cert=*) signcert=$v ;; --nosign) nosign=1 ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
     --reuse=*) image=$v ;; --ddc) ddc=1 ;; --strict) strict=--strict ;; --stage=*) stage=$v ;;
     *) echo "kiln image: unknown argument $a" >&2; exit 2 ;;
   esac
@@ -133,7 +133,29 @@ if [ $target = nitro ]; then
   # rootfs/ (plus the mount points init fills: dev, proc, sys, tmp, run -- its ops table).
   python3 "$MODUS/test/nitro/mkcpio.py" "$out/app.cpio" --file "$out/$kernel:rootfs/modus" "${tarargs[@]}" --file "$out/cmd.txt:cmd:100644" --text 'env:MODUS_NITRO=1' \
       --text 'rootfs/dev/.keep:' --text 'rootfs/proc/.keep:' --text 'rootfs/sys/.keep:' --text 'rootfs/tmp/.keep:' --text 'rootfs/run/.keep:' > /dev/null
-  "$EIFB" --kernel "$BLOBS/bzImage" --kernel_config "$BLOBS/bzImage.config" --cmdline "$(cat "$BLOBS/cmdline")" \
+  # SIGNING (PCR8).  The EIF is signed with a P-384 key; PCR8 = SHA-384(48 zero
+  # bytes || SHA-384(certificate DER)), so a verifier holding only the
+  # CERTIFICATE can require it -- an image built from the same sources by
+  # someone without the key gets the same PCR0-2 and a different PCR8.  With no
+  # --sign-key/--sign-cert, kiln uses (and on first use creates) a per-machine
+  # DEVELOPMENT key in its state dir; a release passes its own.  --nosign = no PCR8.
+  signargs=()
+  if [ -z "$nosign" ]; then
+    if [ -z "$signkey" ]; then
+      sd="$KILN_STATE_DIR/nitro-signing"; signkey="$sd/dev-key.pem"; signcert="$sd/dev-cert.pem"
+      if [ ! -s "$signkey" ]; then
+        mkdir -p "$sd" && chmod 700 "$sd"
+        openssl ecparam -name secp384r1 -genkey -noout -out "$signkey" 2>/dev/null && chmod 600 "$signkey"
+        openssl req -new -x509 -key "$signkey" -out "$signcert" -days 3650 -sha384 -subj "/CN=kiln development signing key $(hostname)/O=modus" 2>/dev/null
+        say "   created a DEVELOPMENT signing key: $signkey (not a release key)"
+      fi
+    fi
+    [ -s "$signkey" ] && [ -s "$signcert" ] || { say "FAIL: signing key/cert missing ($signkey, $signcert)"; exit 1; }
+    signargs=(--signing-certificate "$signcert" --private-key "$signkey")
+    cp "$signcert" "$out/signing-cert.pem"
+    say "   signing with $(openssl x509 -in "$signcert" -noout -subject 2>/dev/null)"
+  fi
+  "$EIFB" "${signargs[@]}" --kernel "$BLOBS/bzImage" --kernel_config "$BLOBS/bzImage.config" --cmdline "$(cat "$BLOBS/cmdline")" \
       --ramdisk "$out/init.cpio" --ramdisk "$out/app.cpio" --output "$out/modus.eif" --name modus --version 0 \
       --build-time 2000-01-01T00:00:00Z --build-tool kiln --build-tool-version 0 --arch x86_64 > "$out/eif.log" 2>&1 \
     || { say "FAIL: eif_build (see $out/eif.log)"; exit 1; }

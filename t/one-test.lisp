@@ -13,6 +13,9 @@
 ;;;;   sbcl --script t/one-test.lisp
 
 (require :sb-posix)
+;; not to use it: boot/one.lisp mentions ASDF:FIND-SYSTEM and friends, and the reader
+;; refuses a symbol whose package does not exist, so reading the file needs ASDF loaded
+(require :asdf)
 
 (defparameter *wanted*
   '(kiln-env kiln-flag kiln-flag-default kiln-file-line kiln-file-has-relative-import-p))

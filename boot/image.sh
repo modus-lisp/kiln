@@ -73,9 +73,14 @@ fi
 say "   $kernel $(stat -c %s "$out/$kernel") bytes sha256 $(sha256sum "$out/$kernel" | cut -c1-16)"
 
 if [ -n "$ddc" ]; then
-  say "2b. DDC: modus-sh compiles the same source twice and must match SBCL"
+  # THE PROVEN IMAGE IS THE SHIPPED IMAGE.  The DDC compares SBCL's static-
+  # configuration build with modus-sh's two in-image compiles of the same
+  # source; what it proves is THAT file, so generic.efi becomes it (the plain
+  # build above is replaced), and the rig below runs on it.
+  say "2b. DDC: modus-sh compiles the same source twice and must match SBCL; the match is what ships"
   ( cd "$MODUS" && MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
       MODUS_DDC_WORK="$out/ddc" test/run-uefi-ddc.sh ) > "$out/ddc.log" 2>&1 && say "   DDC PASS" || { say "FAIL: DDC (see $out/ddc.log)"; exit 1; }
+  cp "$out/ddc/sbcl.efi" "$out/$kernel"; say "   $kernel := the DDC'd image, $(stat -c %s "$out/$kernel") bytes md5 $(md5sum "$out/$kernel" | cut -c1-32)"
 fi
 
 if [ $target = nitro ]; then

@@ -13,7 +13,7 @@
 #                 they are placed in RAM by the loader.
 # plus manifest.json: every hash, pin and flag that went into them.
 #
-#   kiln image x64-uefi|zero2w [--out=DIR] [--with=NAME ...] [--snp=0|test|1]
+#   kiln image x64-uefi|zero2w|nitro [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--console=ssh|repl]
 #              [--probe=FORM --expect=TEXT] [--reuse=FILE] [--ddc] [--strict] [--stage=HOST]
 set -uo pipefail
 ROOT=${KILN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}   # the modus-lisp workspace
@@ -22,11 +22,11 @@ MODUS=${MODUS_SRC:-$ROOT/modus}
 KILN_STATE_DIR=${KILN_STATE:-$HOME/.local/state/kiln}; mkdir -p "$KILN_STATE_DIR"
 target=${1:-}; case $target in x64-uefi|zero2w|nitro) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;; aws|enclave) target=nitro; shift ;;
   *) echo "kiln image: the first argument is the TARGET: x64-uefi, zero2w or nitro" >&2; exit 2 ;; esac
-out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""
+out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh
 for a in "$@"; do
   v=${a#*=}
   case $a in
-    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
+    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
     --reuse=*) image=$v ;; --ddc) ddc=1 ;; --strict) strict=--strict ;; --stage=*) stage=$v ;;
     *) echo "kiln image: unknown argument $a" >&2; exit 2 ;;
   esac
@@ -104,7 +104,13 @@ if [ $target = nitro ]; then
   # in two -> READER-ERROR on the first enclave boot that reached modus).
   argv=(/modus); tarargs=()
   for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); argv+=(--eval "(install-tarball \"/tars/$n.tar\")"); done
-  argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(vsock-repl 5000)")
+  # The enclave's service: SSH on vsock port 22 (the parent reaches it through
+  # test/nitro/vsock-proxy.py), attesting its own host key on request
+  # (nitro-attest-ssh).  --console=repl keeps the line-per-form vsock REPL instead.
+  case $console in
+    repl) argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(vsock-repl 5000)") ;;
+    *)    argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(ssh-serve-vsock 22)") ;;
+  esac
   printf '%s\n' "${argv[@]}" > "$out/cmd.txt"
   # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:
   # cmd and env live at the ramdisk root, EVERYTHING the program sees under

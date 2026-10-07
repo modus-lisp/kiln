@@ -216,7 +216,9 @@
               ;; a press puts the caret where it lands, and a drag carries it along
               (lambda (mask x y)
                 (when (logbitp 0 mask) (place (row-at-y y) x)))
-              (lambda () (when dirty (setf dirty nil) (redraw) t))))))
+              (lambda () (when dirty (setf dirty nil) (redraw) t))
+              nil nil
+              t))))                       ; it takes typing: focusing it brings up the keyboard
 
 (defun %kiln-blit-region (big k x0 y0 x y w h)
   "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
@@ -265,11 +267,11 @@
                                   :width dw :height 440)
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
     (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app :width dw :height 300)
-    ;; THE KEYBOARD: a keys button on each title bar raises that window and shows or hides
-    ;; the phone's keyboard (pseudo-syscall 1006); what is typed arrives as key events below
-    (let ((up nil))
-      (setf (glass.desk:desk-keyboard-fn desk)
-            (lambda () (setf up (not up)) (%kiln-sys 1006 (if up 1 0) 0 0))))
+    ;; THE KEYBOARD follows the focus: the desk raises the phone's keyboard (pseudo-syscall 1006)
+    ;; when a window that takes text is opened or tapped into, and puts it away when you tap
+    ;; elsewhere; what is typed arrives as key events below
+    (setf (glass.desk:desk-keyboard-fn desk)
+          (lambda (on) (%kiln-sys 1006 (if on 1 0) 0 0)))
     (glass.desk:desk-open desk "Media")
     (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
     (when autoplay

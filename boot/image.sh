@@ -13,7 +13,7 @@
 #                 they are placed in RAM by the loader.
 # plus manifest.json: every hash, pin and flag that went into them.
 #
-#   kiln image x64-uefi|zero2w|nitro [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--console=ssh|repl]
+#   kiln image x64-uefi|zero2w|nitro [--out=DIR] [--with=NAME ...] [--snp=0|test|1] [--console=ssh|repl] [--nocore]
 #              [--probe=FORM --expect=TEXT] [--reuse=FILE] [--ddc] [--strict] [--stage=HOST]
 set -uo pipefail
 ROOT=${KILN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}   # the modus-lisp workspace
@@ -22,11 +22,11 @@ MODUS=${MODUS_SRC:-$ROOT/modus}
 KILN_STATE_DIR=${KILN_STATE:-$HOME/.local/state/kiln}; mkdir -p "$KILN_STATE_DIR"
 target=${1:-}; case $target in x64-uefi|zero2w|nitro) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;; aws|enclave) target=nitro; shift ;;
   *) echo "kiln image: the first argument is the TARGET: x64-uefi, zero2w or nitro" >&2; exit 2 ;; esac
-out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh
+out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh; nocore=""
 for a in "$@"; do
   v=${a#*=}
   case $a in
-    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
+    --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --nocore) nocore=1 ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
     --reuse=*) image=$v ;; --ddc) ddc=1 ;; --strict) strict=--strict ;; --stage=*) stage=$v ;;
     *) echo "kiln image: unknown argument $a" >&2; exit 2 ;;
   esac
@@ -102,8 +102,24 @@ if [ $target = nitro ]; then
   # init reads /cmd as one argv entry PER LINE, so each --eval form is one line
   # whatever spaces it contains (splitting on spaces cut install-tarball's form
   # in two -> READER-ERROR on the first enclave boot that reached modus).
+  # THE CORE: install the packages HERE, once, and snapshot (save-and-die);
+  # the enclave restores the snapshot (--core) instead of compiling them at
+  # every boot -- seconds instead of minutes to the SSH banner, and the
+  # attested ramdisk (PCR2) carries the exact heap that will serve.  The host
+  # key is not in it: it is generated when SSH starts (hosted-ssh.lisp).
+  # --nocore keeps the install-at-boot shape.
   argv=(/modus); tarargs=()
-  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); argv+=(--eval "(install-tarball \"/tars/$n.tar\")"); done
+  if [ -z "$nocore" ]; then
+    say "   snapshot: install ${order:-nothing} and save-and-die -> modus.core"
+    loads=(); for n in $order; do loads+=(--eval "(install-tarball \"$out/tars/$n.tar\")"); done
+    ( cd "$out" && timeout 1200 ./$kernel "${loads[@]}" --eval "(save-and-die \"$out/modus.core\")" ) > "$out/core.log" 2>&1 \
+      || { say "FAIL: save-and-die (see $out/core.log)"; exit 1; }
+    [ -s "$out/modus.core" ] || { say "FAIL: no core written (see $out/core.log)"; exit 1; }
+    say "   modus.core $(stat -c %s "$out/modus.core") bytes"
+    tarargs+=(--file "$out/modus.core:rootfs/modus.core:100644"); argv+=(--core /modus.core)
+  else
+    for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); argv+=(--eval "(install-tarball \"/tars/$n.tar\")"); done
+  fi
   # The enclave's service: SSH on vsock port 22 (the parent reaches it through
   # test/nitro/vsock-proxy.py), attesting its own host key on request
   # (nitro-attest-ssh).  --console=repl keeps the line-per-form vsock REPL instead.

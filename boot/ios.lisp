@@ -119,11 +119,11 @@
   (let* ((sw (%kiln-sys 1001 0 0 0))
          (sh (%kiln-sys 1001 1 0 0))
          (dir (or (%kiln-bundle-dir) "./"))
-         ;; THE SCREEN IS IN DEVICE PIXELS (3 per point on this phone) and the desk is laid
-         ;; out in desktop pixels, so glass magnifies it -- FB-BLIT-SCALED at the largest
-         ;; whole factor that keeps the media window's width on screen, which keeps glyph
-         ;; edges exact.  Touches divide by the same K.
-         (k (max 1 (floor sw warp-media-glass:+width+)))
+         ;; THE SCREEN IS IN DEVICE PIXELS and the desk is laid out in desktop pixels, so glass
+         ;; magnifies it, at the screen's own scale (3 on this phone): ONE DESK PIXEL IS ONE
+         ;; POINT, and 16-pixel text is iOS's 16-point text.  At 2x it was two-thirds of that
+         ;; and read as tiny.  Touches divide by the same K.
+         (k (max 1 (%kiln-sys 1001 2 0 0)))
          (y0 (* 60 (%kiln-sys 1001 2 0 0)))          ; below the status bar
          (dw (floor sw k))
          (dh (floor (- sh y0 (* 20 k)) k))
@@ -139,11 +139,16 @@
          (desk (glass.desk:make-desk (glass:make-framebuffer dw dh))))
     (format t "~&kiln: ~Dx~D screen, desk ~Dx~D at ~Dx, media from ~A~%" sw sh dw dh k dir)
     (%kiln-sys 1002 0 (+ sw (* sh 65536)) #x1E2530)
+    ;; TOUCH-SIZED CHROME: a 34-point title bar to drag by, 44-point menu rows (iOS's
+    ;; minimum touch target), 16-point labels
+    (setf glass.desk:*title-h* 34 glass.desk:*menu-item-h* 44 glass.desk:*menu-w* 220
+          glass.desk:*font-size* 16)
+    ;; the media and notes windows take the width of the phone
     (glass.desk:desk-register-app desk "Media"
                                   (lambda (fb) (warp-media-glass:make-media-window fb lib))
-                                  :width warp-media-glass:+width+ :height 560)
+                                  :width dw :height 440)
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
-    (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app :width 420 :height 300)
+    (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app :width dw :height 300)
     ;; THE KEYBOARD: a keys button on each title bar raises that window and shows or hides
     ;; the phone's keyboard (pseudo-syscall 1006); what is typed arrives as key events below
     (let ((up nil))

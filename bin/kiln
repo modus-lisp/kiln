@@ -25,6 +25,7 @@
 #   kiln modus-rfb PORT   glass's RFB SERVER, on modus, on a port you name
 #   kiln image TARGET ... an attestable bare-metal modus image + core (x64-uefi | zero2w)
 #   kiln ios [sim|device] the iPhone app: glass on the phone's screen (built here)
+#   kiln android          the Android app: the same, as an APK (built here)
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
@@ -2050,10 +2051,10 @@ USAGE
   if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
     note "loading and compiling the world on the Mac (a few minutes)"
     rm -f "$out/kiln.core"
-    KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+    KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
       "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
-    grep -a "compiled" "$out/world.log" | sed 's/^kiln ios: /  /' >&2 || true
+    grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true
   fi
 
   # What the app runs: the snapshot, then the entry point (boot/ios.lisp).
@@ -2117,6 +2118,175 @@ USAGE
     xcrun devicectl device process launch --terminate-existing --device "$dev" "$bundle_id" >/dev/null &&
       note "launched on $dev"
   fi
+}
+
+# The Android SDK pieces `kiln android' packages with, fetched once into
+# $KILN_STATE/android-sdk: build-tools (aapt2, zipalign, apksigner), a
+# platform's android.jar, and the NDK's SYSROOT only -- the launcher is linked
+# against it by the system's clang and lld, so no NDK compiler is needed.
+# Google publishes these for x86-64 Linux (and macOS) hosts.
+android_sdk() {
+  local sdk=${KILN_ANDROID_SDK:-$KILN_STATE/android-sdk}
+  local base=https://dl.google.com/android/repository
+  local bt=build-tools_r36.1_linux.zip pf=platform-36_r02.zip ndk=android-ndk-r29-linux.zip
+  if [[ ! -x $sdk/build-tools/aapt2 || ! -f $sdk/android.jar || ! -d $sdk/sysroot ]]; then
+    [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] ||
+      die "kiln android: the SDK tools are x86-64 Linux builds; set KILN_ANDROID_SDK to a ready one"
+    note "fetching the Android SDK pieces into $sdk (once; ~900 MB down, ~200 MB kept)"
+    note "(Google's Android SDK License Agreement applies to these)"
+    mkdir -p "$sdk/tmp"
+    local f
+    for f in $bt $pf $ndk; do
+      [[ -s $sdk/tmp/$f ]] || curl -fsSL -o "$sdk/tmp/$f" "$base/$f" || die "kiln android: download $f failed"
+    done
+    rm -rf "$sdk/build-tools" "$sdk/sysroot" "$sdk/android.jar"
+    (cd "$sdk/tmp" && unzip -q -o $bt && unzip -q -o $pf && unzip -q -o $ndk \
+       'android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/sysroot/*') || die "kiln android: unpacking failed"
+    mv "$sdk/tmp/android-16" "$sdk/build-tools"             # build-tools 36.1 unpacks as android-16
+    mv "$sdk/tmp/android-36/android.jar" "$sdk/android.jar"
+    mv "$sdk/tmp/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/sysroot" "$sdk/sysroot"
+    rm -rf "$sdk/tmp"
+  fi
+  echo "$sdk"
+}
+
+cmd_android() {
+  # THE ANDROID APP, built from this workspace: what `kiln ios' builds, for an
+  # Android phone (aarch64).  Three steps, as for the iPhone:
+  #   1. modus is built for hosted aarch64 Linux -- Android IS aarch64 Linux,
+  #      so the image needs no Android layout;
+  #   2. that same image loads the world (boot/ios-world.lisp, KILN_APP=android)
+  #      on an aarch64 Linux host, compiles it to native code and saves a
+  #      snapshot: this machine if it is one, else --builder=USER@HOST (over
+  #      ssh), else qemu-aarch64 here (slow);
+  #   3. the APK is modus's host/android launcher + the image + the snapshot,
+  #      args and media as assets.  On the phone the launcher runs the image as
+  #      a child process and is its screen, touch and speaker.
+  local install=0 reuse=0 serial="" autoplay="" builder=${KILN_ANDROID_BUILDER:-}
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      --install)  install=1 ;;
+      --serial)   serial=${val:?--serial=ADB-SERIAL}; install=1 ;;
+      --reuse)    reuse=1 ;;
+      --reuse-modus) reuse=2 ;;
+      --builder)  builder=${val:?--builder=USER@HOST} ;;
+      --autoplay) autoplay=${val:?--autoplay=FILE} ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln android [--install] [--serial=ADB-SERIAL] [--builder=USER@HOST]
+             [--reuse] [--reuse-modus] [--autoplay=FILE] — the Android app, built here.
+
+  --install      install it with adb (and launch it)
+  --serial=S     which device (`adb devices`); implies --install
+  --builder=U@H  an aarch64 Linux machine to build the world on, over ssh
+                 (needed unless this machine is one; else qemu-aarch64, slowly).
+                 Its scratch dir is ~/.kiln-android-builder (KILN_ANDROID_BUILDER_DIR).
+  --reuse        keep the modus build and snapshot from last time; repackage only
+  --reuse-modus  keep the modus build; load and snapshot the world again
+
+  Env: KILN_MODUS (the modus checkout; default $KILN_ROOT/modus),
+       KILN_QL (Quicklisp's software dir), KILN_ANDROID_SDK (default: fetched
+       into $KILN_STATE/android-sdk), CLANG (default clang; needs ld.lld), ADB.
+  Output in $KILN_STATE/android.
+USAGE
+        return 0 ;;
+      *) die "kiln android: unknown argument $arg (try --help)" ;;
+    esac
+    shift
+  done
+  command -v sbcl >/dev/null || die "kiln android: needs sbcl (modus is built with it)"
+  local modus=${KILN_MODUS:-$KILN_ROOT/modus}
+  [[ -f $modus/host/android/build-apk.sh ]] || die "kiln android: no modus checkout with host/android at $modus (set KILN_MODUS)"
+  local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
+  local out=$KILN_STATE/android
+  local clang=${CLANG:-clang}
+  command -v "$clang" >/dev/null || die "kiln android: needs clang (set CLANG)"
+  command -v ld.lld >/dev/null || [[ -x $(dirname "$(command -v "$clang")")/ld.lld ]] ||
+    die "kiln android: needs ld.lld beside clang"
+  local sdk; sdk=$(android_sdk)
+  mkdir -p "$out"
+
+  if [[ $reuse == 0 || ! -f $out/modus.elf ]]; then
+    note "building modus for aarch64 Linux (several minutes)"
+    ( cd "$modus" && MODUS_CLI_OUT="$out/modus.elf" \
+        sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
+      die "kiln android: the modus build failed — see $out/build.log"
+  fi
+
+  if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
+    rm -f "$out/kiln.core"
+    local repos="glass cram warp gesso scribe brotli-pure cassette reed reel cl-transport"
+    local warm="bbb360.webm wpt-test.webm t5-av.webm opus-ogg.ogg"
+    if [[ $(uname -s) == Linux && $(uname -m) == aarch64 ]]; then
+      note "loading and compiling the world here (a few minutes)"
+      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+        "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+    elif [[ -n $builder ]]; then
+      local rdir=${KILN_ANDROID_BUILDER_DIR:-.kiln-android-builder}
+      note "loading and compiling the world on $builder (a few minutes)"
+      command -v rsync >/dev/null || die "kiln android: --builder needs rsync"
+      ssh "$builder" "mkdir -p $rdir/root/kiln $rdir/root/cassette/vectors $rdir/ql" ||
+        die "kiln android: cannot reach $builder"
+      local r
+      for r in $repos; do
+        rsync -a --delete --exclude=.git --exclude='cassette/vectors/*' "$KILN_ROOT/$r" "$builder:$rdir/root/" ||
+          die "kiln android: copying $r to $builder failed"
+      done
+      for r in $warm; do
+        [[ -f $KILN_ROOT/cassette/vectors/$r ]] && rsync -a "$KILN_ROOT/cassette/vectors/$r" "$builder:$rdir/root/cassette/vectors/"
+      done
+      rsync -a --delete "$ROOT/boot" "$builder:$rdir/root/kiln/" &&
+        rsync -a --delete "$ql/" "$builder:$rdir/ql/" &&
+        rsync -a "$out/modus.elf" "$builder:$rdir/modus.elf" || die "kiln android: copying to $builder failed"
+      ssh "$builder" "cd $rdir && rm -f kiln.core && KILN_APP=android KILN_ROOT=\$PWD/root KILN_BOOT=\$PWD/root/kiln/boot KILN_QL=\$PWD/ql KILN_CORE=\$PWD/kiln.core ./modus.elf --script root/kiln/boot/ios-world.lisp" \
+        > "$out/world.log" 2>&1
+      rsync -a "$builder:$rdir/kiln.core" "$out/kiln.core" 2>/dev/null || true
+    elif command -v qemu-aarch64-static >/dev/null || command -v qemu-aarch64 >/dev/null; then
+      local q; q=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
+      note "loading and compiling the world under $q (slow: tens of minutes; --builder=U@H is faster)"
+      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+        "$q" "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+    else
+      die "kiln android: the world needs an aarch64 Linux host: --builder=USER@HOST, or install qemu-user"
+    fi
+    [[ -f $out/kiln.core ]] || die "kiln android: no snapshot was saved — see $out/world.log"
+    grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true
+  fi
+
+  # The assets: the snapshot, what the app runs, and the media (as kiln ios).
+  local assets=$out/assets
+  rm -rf "$assets"; mkdir -p "$assets/media"
+  ln "$out/kiln.core" "$assets/kiln.core" 2>/dev/null || cp "$out/kiln.core" "$assets/kiln.core"
+  if [[ -n $autoplay ]]; then
+    printf '%s\n' --core @kiln.core --eval "(kiln-android-main :autoplay \"$autoplay\")" > "$assets/modus.args"
+  else
+    printf '%s\n' --core @kiln.core --eval '(kiln-android-main)' > "$assets/modus.args"
+  fi
+  # AUDIO: warp-media's *EXTENSIONS* is audio-only now (mp3 opus ogg oga m4a
+  # aac), so a video file would sit in the folder unlisted.
+  local f
+  for f in audio.m4a opus-ogg.ogg tone-sweep-440-880.mp3; do
+    cp "$KILN_ROOT/cassette/vectors/$f" "$assets/media/" 2>/dev/null || true
+  done
+
+  note "packaging the app"
+  local lld_dir; lld_dir=$(dirname "$(command -v "$clang")")
+  ( cd "$modus" && PATH="$lld_dir:$PATH" CLANG="$clang" ANDROID_BUILD_TOOLS="$sdk/build-tools" \
+      ANDROID_JAR="$sdk/android.jar" NDK_SYSROOT="$sdk/sysroot" MODUS_ANDROID_ASSETS="$assets" \
+      MODUS_ANDROID_KEYSTORE="$KILN_STATE/android-debug.keystore" \
+      host/android/build-apk.sh "$out/modus.elf" "$out/Modus.apk" ) > "$out/package.log" 2>&1 ||
+    die "kiln android: packaging failed — see $out/package.log"
+  note "app       $out/Modus.apk"
+
+  [[ $install == 1 ]] || return 0
+  local adb=${ADB:-adb}
+  command -v "$adb" >/dev/null || die "kiln android: --install needs adb (set ADB)"
+  local -a ad=("$adb"); [[ -n $serial ]] && ad+=(-s "$serial")
+  "${ad[@]}" install -r "$out/Modus.apk" >/dev/null || die "kiln android: adb install failed"
+  "${ad[@]}" shell am start -n org.modus_lisp.modus/android.app.NativeActivity >/dev/null &&
+    note "launched${serial:+ on $serial}"
 }
 
 cmd_modus_rfb() {
@@ -2254,6 +2424,7 @@ case "${1:-}" in
   modus-rfb) shift; cmd_modus_rfb "$@" ;;
   image) shift; cmd_image "$@" ;;
   ios) shift; cmd_ios "$@" ;;
+  android) shift; cmd_android "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   build) shift; cmd_build "$@" ;;

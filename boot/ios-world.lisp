@@ -1,4 +1,5 @@
-;;;; ios-world.lisp — the world an iPhone app carries, built ON THE MAC.
+;;;; ios-world.lisp — the world a phone app carries: built ON THE MAC for an
+;;;; iPhone, ON AN aarch64 LINUX HOST for Android (KILN_APP=android).
 ;;;;
 ;;;;   KILN_ROOT=… KILN_QL=… KILN_CORE=out.core  modus --script boot/ios-world.lisp
 ;;;;
@@ -29,9 +30,16 @@
     "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass" "glass/desk"))
 
 (dolist (s *kiln-systems*)
-  (format t "~&kiln ios: ~A~%" s)
+  (format t "~&kiln: ~A~%" s)
   (asdf:load-system s))
-(load (concatenate 'string *kiln-root* "/kiln/boot/ios.lisp"))
+;; The app (boot/app.lisp) and the platform's way to the screen: KILN_APP is
+;; "ios" (the default) or "android".  KILN_BOOT is this directory, so a kiln
+;; worktree loads its own files rather than $KILN_ROOT/kiln's.
+(defvar *kiln-app* (let ((a (%cli-getenv "KILN_APP"))) (if (and a (> (length a) 0)) a "ios")))
+(defvar *kiln-boot* (let ((b (%cli-getenv "KILN_BOOT")))
+                      (if (and b (> (length b) 0)) b (concatenate 'string *kiln-root* "/kiln/boot"))))
+(load (concatenate 'string *kiln-boot* "/" *kiln-app* ".lisp"))
+(load (concatenate 'string *kiln-boot* "/app.lisp"))
 
 ;; THE FONTS, NOW.  glass and scribe open their faces lazily, by path into the
 ;; source tree -- which exists on this Mac and not on the phone.  Opened here,
@@ -48,8 +56,8 @@
 ;; are the snapshot's.  Every size a Vorbis block may be (64..8192); AAC's tables are fixed;
 ;; Opus by decoding a file, which visits the sizes CELT uses.
 (defun %kiln-warm (what thunk)
-  (handler-case (progn (funcall thunk) (format t "~&kiln ios: warmed ~A~%" what))
-    (serious-condition (e) (format t "~&kiln ios: could not warm ~A: ~A~%" what e))))
+  (handler-case (progn (funcall thunk) (format t "~&kiln: warmed ~A~%" what))
+    (serious-condition (e) (format t "~&kiln: could not warm ~A: ~A~%" what e))))
 (%kiln-warm "vorbis transforms"
             (lambda () (loop for n = 64 then (* n 2) while (<= n 8192) do (reed::imdct-plan n))))
 (%kiln-warm "aac tables"
@@ -67,9 +75,9 @@
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.
 (let ((r (%jit-eager-all)))
-  (format t "~&kiln ios: compiled ~D functions in ~D modules, ~D left to the interpreter~%"
+  (format t "~&kiln: compiled ~D functions in ~D modules, ~D left to the interpreter~%"
           (first r) (second r) (third r)))
 
 (let ((core (%cli-getenv "KILN_CORE")))
-  (format t "~&kiln ios: saving ~A~%" core)
+  (format t "~&kiln: saving ~A~%" core)
   (save-and-die core))

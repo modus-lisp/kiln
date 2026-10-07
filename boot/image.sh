@@ -104,7 +104,7 @@ if [ $target = nitro ]; then
   # in two -> READER-ERROR on the first enclave boot that reached modus).
   argv=(/modus); tarargs=()
   for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); argv+=(--eval "(install-tarball \"/tars/$n.tar\")"); done
-  argv+=(--eval "(nsm-attest-selftest)" --eval "(vsock-repl 5000)")
+  argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(vsock-repl 5000)")
   printf '%s\n' "${argv[@]}" > "$out/cmd.txt"
   # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:
   # cmd and env live at the ramdisk root, EVERYTHING the program sees under

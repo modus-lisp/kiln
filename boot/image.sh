@@ -99,10 +99,13 @@ if [ $target = nitro ]; then
   done
   [ -x "$EIFB" ] || { say "   building eif_build from source (cargo)"; cargo install -q --git https://github.com/aws/aws-nitro-enclaves-image-format --bin eif_build --root "$(dirname "$(dirname "$EIFB")")" > "$out/cargo.log" 2>&1 || { say "FAIL: eif_build (see $out/cargo.log)"; exit 1; }; }
   python3 "$MODUS/test/nitro/mkcpio.py" "$out/init.cpio" --file "$BLOBS/init:init" --file "$BLOBS/nsm.ko:nsm.ko:100644" > /dev/null
-  cmd="/modus"; tarargs=()
-  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); cmd="$cmd --eval (install-tarball \"/tars/$n.tar\")"; done
-  cmd="$cmd --eval (nsm-attest-selftest) --eval (vsock-repl 5000)"
-  printf '%s\n' "$cmd" | tr ' ' '\n' > "$out/cmd.txt"      # init reads /cmd as one argv entry per line
+  # init reads /cmd as one argv entry PER LINE, so each --eval form is one line
+  # whatever spaces it contains (splitting on spaces cut install-tarball's form
+  # in two -> READER-ERROR on the first enclave boot that reached modus).
+  argv=(/modus); tarargs=()
+  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); argv+=(--eval "(install-tarball \"/tars/$n.tar\")"); done
+  argv+=(--eval "(nsm-attest-selftest)" --eval "(vsock-repl 5000)")
+  printf '%s\n' "${argv[@]}" > "$out/cmd.txt"
   # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:
   # cmd and env live at the ramdisk root, EVERYTHING the program sees under
   # rootfs/ (plus the mount points init fills: dev, proc, sys, tmp, run -- its ops table).

@@ -2179,7 +2179,7 @@ kiln android [--install] [--serial=ADB-SERIAL] [--builder=USER@HOST]
              [--reuse] [--reuse-modus] [--autoplay=FILE] — the Android app, built here.
 
   --install      install it with adb (and launch it)
-  --serial=S     which device (`adb devices`); implies --install
+  --serial=S     which device (`adb devices`, or HOST:PORT over the network); implies --install
   --builder=U@H  an aarch64 Linux machine to build the world on, over ssh
                  (needed unless this machine is one; else qemu-aarch64, slowly).
                  Its scratch dir is ~/.kiln-android-builder (KILN_ANDROID_BUILDER_DIR).
@@ -2283,6 +2283,11 @@ USAGE
   [[ $install == 1 ]] || return 0
   local adb=${ADB:-adb}
   command -v "$adb" >/dev/null || die "kiln android: --install needs adb (set ADB)"
+  # A HOST:PORT serial is a device over the network (an emulator on another machine, e.g.
+  # Cuttlefish's adb at :6520): connect to it first.
+  if [[ $serial == *:* ]]; then
+    "$adb" connect "$serial" >/dev/null || die "kiln android: adb connect $serial failed"
+  fi
   local -a ad=("$adb"); [[ -n $serial ]] && ad+=(-s "$serial")
   "${ad[@]}" install -r "$out/Modus.apk" >/dev/null || die "kiln android: adb install failed"
   "${ad[@]}" shell am start -n org.modus_lisp.modus/android.app.NativeActivity >/dev/null &&

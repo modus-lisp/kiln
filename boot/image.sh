@@ -100,10 +100,14 @@ if [ $target = nitro ]; then
   [ -x "$EIFB" ] || { say "   building eif_build from source (cargo)"; cargo install -q --git https://github.com/aws/aws-nitro-enclaves-image-format --bin eif_build --root "$(dirname "$(dirname "$EIFB")")" > "$out/cargo.log" 2>&1 || { say "FAIL: eif_build (see $out/cargo.log)"; exit 1; }; }
   python3 "$MODUS/test/nitro/mkcpio.py" "$out/init.cpio" --file "$BLOBS/init:init" --file "$BLOBS/nsm.ko:nsm.ko:100644" > /dev/null
   cmd="/modus"; tarargs=()
-  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:tars/$n.tar:100644"); cmd="$cmd --eval (install-tarball \"/tars/$n.tar\")"; done
+  for n in $order; do tarargs+=(--file "$out/tars/$n.tar:rootfs/tars/$n.tar:100644"); cmd="$cmd --eval (install-tarball \"/tars/$n.tar\")"; done
   cmd="$cmd --eval (nsm-attest-selftest) --eval (vsock-repl 5000)"
   printf '%s\n' "$cmd" | tr ' ' '\n' > "$out/cmd.txt"      # init reads /cmd as one argv entry per line
-  python3 "$MODUS/test/nitro/mkcpio.py" "$out/app.cpio" --file "$out/$kernel:modus" "${tarargs[@]}" --file "$out/cmd.txt:cmd:100644" --text 'env:MODUS_NITRO=1' > /dev/null
+  # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:
+  # cmd and env live at the ramdisk root, EVERYTHING the program sees under
+  # rootfs/ (plus the mount points init fills: dev, proc, sys, tmp).
+  python3 "$MODUS/test/nitro/mkcpio.py" "$out/app.cpio" --file "$out/$kernel:rootfs/modus" "${tarargs[@]}" --file "$out/cmd.txt:cmd:100644" --text 'env:MODUS_NITRO=1' \
+      --text 'rootfs/dev/.keep:' --text 'rootfs/proc/.keep:' --text 'rootfs/sys/.keep:' --text 'rootfs/tmp/.keep:' > /dev/null
   "$EIFB" --kernel "$BLOBS/bzImage" --kernel_config "$BLOBS/bzImage.config" --cmdline "$(cat "$BLOBS/cmdline")" \
       --ramdisk "$out/init.cpio" --ramdisk "$out/app.cpio" --output "$out/modus.eif" --name modus --version 0 \
       --build-time 2000-01-01T00:00:00Z --build-tool kiln --build-tool-version 0 --arch x86_64 > "$out/eif.log" 2>&1 \

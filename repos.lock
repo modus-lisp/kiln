@@ -6,7 +6,7 @@
 brotli-pure     master  e7ba1fc305ca2b735dddfeecd02b7ad6de79de1b
 cabinet         master  b1aecf879c61d7eadbdd6e20b87cc4fbdeecc27f
 cairn           master  717d7f702d006bee49b457cad2fcec554c8433e2
-cassette        master  0108bb609a9a7e2923fff044e3941512694053db
+cassette        master  a8353efdbd4b1e3d51fabd3661e721d2310c0bf9
 chord           master  fc5260fddb7d0d8fece924d53e27047e69f53a15
 cl-consensus    master  b08415f08963ca56b7d6e28f1d2dcde11d6637f0
 cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
@@ -18,12 +18,12 @@ cram            master  f878dae6a8302c4c2fae6779816dcdd395328543
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc
 folio           master  f310b5838076b528aafa0b254447e4035c019d3e
 gesso           master  6981f2d1fc5c0af7ffd2ea97666387226df08fb0
-glass           master  f60480093edb490c227fc1edffc511ff367a3908
+glass           master  54b90de821cbc50fc910480c7fcb48a9849b2c25
 glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61
 glass-webrtc    master  e9545bb2f4579a3cc4ce3a74c27810db5b383f2e
 loom            master  9fd14de7d980aebfacb2aeaa2b73612412579621
 mill            master  3a3f8c91688b1738efd8991a604eea55c7a95ea7
-modus           main    e5a222e8e290461e91ef42565d8ef7df8292dc87
+modus           main    fb609a0ff629ab9e2d16b4fee608ac9a6ebe31e9
 natrium         master  b0684e3f61c22cc448ccc6ccc0e82ea6f22dc9f1
 operandi        main    457b947fcfcec448dfc28034bc480a014ffa10f1
 pagetree        master  89d19e19f0b08dd58e5ac1cefff337f1ae9ab520
@@ -38,7 +38,7 @@ skep            main    8c035963bc0875d56413fb8b16053e65273f5e58
 spool           master  5901b9040bae42695153f5b82a54a75646a95dab
 stave           master  b13cb327ea88829bd4b83e0cda2872eb66565d2f
 stencil         master  0a7da387844c889d3a1319037c29a68777685e49
-warp            master  18281cb20cf0dbf8917505d60213347203847126
+warp            master  7a7025fc625da5cb412073a1416d359c4114baf1
 warren          master  be8a0251809fe75301cdfad9cebdd8adf395790c
 webp-pure       master  bf1d898c945c48348b742ecd350e1513ab919173
 webrtc-data     main    bc305e6f93a66255d1946d4ab2eca5934654fabb

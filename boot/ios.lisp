@@ -72,23 +72,66 @@
         ((<= #x20 ks #xff) (code-char ks))
         ((<= #x1000000 ks #x110ffff) (code-char (- ks #x1000000)))))
 
+(defun %kiln-wrap (line width size font)
+  "LINE broken into rows no wider than WIDTH at SIZE in FONT: at spaces, and inside a word only
+   when the word alone is wider than a row."
+  (let ((rows '()) (row ""))
+    (flet ((fits (s) (<= (glass:text-width s :size size :font font) width)))
+      (dolist (word (let ((acc '()) (start 0))          ; split, keeping each word's trailing space
+                      (loop for k from 0 below (length line)
+                            when (char= (char line k) #\Space)
+                              do (push (subseq line start (1+ k)) acc) (setf start (1+ k)))
+                      (push (subseq line start) acc)
+                      (nreverse acc)))
+        (cond ((fits (concatenate 'string row (string-right-trim " " word)))
+               (setf row (concatenate 'string row word)))
+              (t
+               (when (plusp (length row)) (push row rows))
+               (setf row "")
+               ;; a word longer than a row: as many characters as fit, then the rest
+               (loop for ch across word
+                     do (if (fits (concatenate 'string row (string ch)))
+                            (setf row (concatenate 'string row (string ch)))
+                            (progn (push row rows) (setf row (string ch))))))))
+      (push row rows)
+      (nreverse rows))))
+
 (defun %kiln-notes-app (fb)
-  "Somewhere to type: the keyboard's text, wrapped to the window, the latest lines showing."
-  (let ((lines (list "")) (dirty t) (size 15) (lh 20))
-    (labels ((wrap (line cols)
-               (if (<= (length line) cols)
-                   (list line)
-                   (cons (subseq line 0 cols) (wrap (subseq line cols) cols))))
+  "Somewhere to type, looking like the phone's own notes: 17-point text on white, the first line
+   a bold title, words wrapped whole, a thin gold cursor; the latest lines showing."
+  (let ((lines (list "")) (dirty t)
+        (body (glass:default-font)) (bold (glass:default-font t))
+        (size 17) (lh 23) (tsize 22) (tlh 30) (margin 16) (top 14)
+        (ink #x1c1c1e) (paper #xffffff) (caret #xe0a800))
+    (labels ((rows ()
+               ;; (font size line-height text) per visual row, the first line as the title
+               (let ((w (- (glass:fb-width fb) (* 2 margin))) (out '()))
+                 (loop for line in lines for first = t then nil
+                       do (let ((font (if first bold body)) (sz (if first tsize size)) (h (if first tlh lh)))
+                            (dolist (r (%kiln-wrap line w sz font))
+                              (push (list font sz h r) out))))
+                 (nreverse out)))
              (redraw ()
-               (let* ((cols (max 8 (floor (- (glass:fb-width fb) 24) (max 1 (glass:text-width "n" :size size)))))
-                      (rows (mapcan (lambda (l) (wrap l cols)) (copy-list lines)))
-                      (fit (max 1 (floor (- (glass:fb-height fb) 16) lh)))
-                      (shown (last rows fit)))
-                 (glass:fb-fill fb #xf4f1e8)
-                 (loop for row in shown for i from 0
-                       do (glass:fb-text fb 12 (+ 8 (* i lh))
-                                         (if (= i (1- (length shown))) (concatenate 'string row "_") row)
-                                         :size size :color #x222222)))))
+               (let* ((all (rows))
+                      (room (- (glass:fb-height fb) top margin))
+                      ;; the latest rows that fit, bottom-up
+                      (shown (let ((acc '()) (used 0))
+                               (dolist (r (reverse all) acc)
+                                 (when (> (+ used (third r)) room) (return acc))
+                                 (incf used (third r))
+                                 (push r acc)))))
+                 (glass:fb-fill fb paper)
+                 (let ((y top) (last-x margin) (last-y top) (last-h lh) (last-sz size))
+                   (dolist (r shown)
+                     (destructuring-bind (font sz h text) r
+                       (glass:fb-text fb margin (+ y (floor (- h (* 1.2 sz)) 2)) text
+                                      :size sz :color ink :font font)
+                       (setf last-x (+ margin (glass:text-width text :size sz :font font))
+                             last-y y last-h h last-sz sz)
+                       (incf y h)))
+                   ;; the caret: two pixels wide, the height of the text it follows
+                   (glass:fb-rect fb (+ last-x 1) (+ last-y (floor (- last-h (* 1.25 last-sz)) 2))
+                                  2 (round (* 1.25 last-sz)) caret)))))
       (values (lambda (down ks)
                 (when down
                   (let ((ch (%kiln-keysym-char ks)) (cur (car (last lines))))

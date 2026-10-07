@@ -65,6 +65,43 @@
                     (glass:fb-text fb 16 80 "modus on the phone" :size 13 :color #x8b949e))
                   t))))))
 
+(defun %kiln-keysym-char (ks)
+  "The character an X11 KEYSYM types, or NIL."
+  (cond ((= ks #xff0d) #\Newline)
+        ((= ks #xff09) #\Space)
+        ((<= #x20 ks #xff) (code-char ks))
+        ((<= #x1000000 ks #x110ffff) (code-char (- ks #x1000000)))))
+
+(defun %kiln-notes-app (fb)
+  "Somewhere to type: the keyboard's text, wrapped to the window, the latest lines showing."
+  (let ((lines (list "")) (dirty t) (size 15) (lh 20))
+    (labels ((wrap (line cols)
+               (if (<= (length line) cols)
+                   (list line)
+                   (cons (subseq line 0 cols) (wrap (subseq line cols) cols))))
+             (redraw ()
+               (let* ((cols (max 8 (floor (- (glass:fb-width fb) 24) (max 1 (glass:text-width "n" :size size)))))
+                      (rows (mapcan (lambda (l) (wrap l cols)) (copy-list lines)))
+                      (fit (max 1 (floor (- (glass:fb-height fb) 16) lh)))
+                      (shown (last rows fit)))
+                 (glass:fb-fill fb #xf4f1e8)
+                 (loop for row in shown for i from 0
+                       do (glass:fb-text fb 12 (+ 8 (* i lh))
+                                         (if (= i (1- (length shown))) (concatenate 'string row "_") row)
+                                         :size size :color #x222222)))))
+      (values (lambda (down ks)
+                (when down
+                  (let ((ch (%kiln-keysym-char ks)) (cur (car (last lines))))
+                    (cond ((= ks #xff08)
+                           (if (and (zerop (length cur)) (cdr lines))
+                               (setf lines (butlast lines))
+                               (setf (car (last lines)) (subseq cur 0 (max 0 (1- (length cur)))))))
+                          ((eql ch #\Newline) (setf lines (append lines (list ""))))
+                          (ch (setf (car (last lines)) (concatenate 'string cur (string ch)))))
+                    (setf dirty t))))
+              nil
+              (lambda () (when dirty (setf dirty nil) (redraw) t))))))
+
 (defun %kiln-blit-region (big k x0 y0 x y w h)
   "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
    pseudo-syscall 1005 reads the block in place, BIG's row length as its stride."
@@ -106,6 +143,12 @@
                                   (lambda (fb) (warp-media-glass:make-media-window fb lib))
                                   :width warp-media-glass:+width+ :height 560)
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
+    (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app :width 420 :height 300)
+    ;; THE KEYBOARD: a keys button on each title bar raises that window and shows or hides
+    ;; the phone's keyboard (pseudo-syscall 1006); what is typed arrives as key events below
+    (let ((up nil))
+      (setf (glass.desk:desk-keyboard-fn desk)
+            (lambda () (setf up (not up)) (%kiln-sys 1006 (if up 1 0) 0 0))))
     (glass.desk:desk-open desk "Media")
     (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
     (when autoplay
@@ -137,6 +180,11 @@
             (let ((type (floor e 1099511627776))
                   (y (logand (floor e 1048576) #xFFFFF))
                   (x (logand e #xFFFFF)))
-              (glass.desk:desk-pointer desk (if (= type 3) 0 1)
-                                       (floor (- x x0) k) (floor (- y y0) k)))))
+              (if (= type 4)
+                  ;; a key: the keysym is the low 40 bits; a press and its release
+                  (let ((ks (logand e #xFFFFFFFFFF)))
+                    (glass.desk:desk-key desk t ks)
+                    (glass.desk:desk-key desk nil ks))
+                  (glass.desk:desk-pointer desk (if (= type 3) 0 1)
+                                           (floor (- x x0) k) (floor (- y y0) k))))))
        (error (c) (format t "~&kiln: ~A~%" (%escape-describe c)))))))

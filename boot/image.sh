@@ -105,9 +105,9 @@ if [ $target = nitro ]; then
   printf '%s\n' "$cmd" | tr ' ' '\n' > "$out/cmd.txt"      # init reads /cmd as one argv entry per line
   # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:
   # cmd and env live at the ramdisk root, EVERYTHING the program sees under
-  # rootfs/ (plus the mount points init fills: dev, proc, sys, tmp).
+  # rootfs/ (plus the mount points init fills: dev, proc, sys, tmp, run -- its ops table).
   python3 "$MODUS/test/nitro/mkcpio.py" "$out/app.cpio" --file "$out/$kernel:rootfs/modus" "${tarargs[@]}" --file "$out/cmd.txt:cmd:100644" --text 'env:MODUS_NITRO=1' \
-      --text 'rootfs/dev/.keep:' --text 'rootfs/proc/.keep:' --text 'rootfs/sys/.keep:' --text 'rootfs/tmp/.keep:' > /dev/null
+      --text 'rootfs/dev/.keep:' --text 'rootfs/proc/.keep:' --text 'rootfs/sys/.keep:' --text 'rootfs/tmp/.keep:' --text 'rootfs/run/.keep:' > /dev/null
   "$EIFB" --kernel "$BLOBS/bzImage" --kernel_config "$BLOBS/bzImage.config" --cmdline "$(cat "$BLOBS/cmdline")" \
       --ramdisk "$out/init.cpio" --ramdisk "$out/app.cpio" --output "$out/modus.eif" --name modus --version 0 \
       --build-time 2000-01-01T00:00:00Z --build-tool kiln --build-tool-version 0 --arch x86_64 > "$out/eif.log" 2>&1 \

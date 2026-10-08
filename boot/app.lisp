@@ -15,7 +15,7 @@
 (defun %kiln-bundle-dir ()
   "The app bundle: the directory of the file after --core (the shim resolved
    @kiln.core to a path beside the executable)."
-  (let ((args (%cli-collect-argv)))
+  (let ((args (and (fboundp '%cli-collect-argv) (%cli-collect-argv))))
     (loop for (a b) on args
           when (and (stringp a) (string= a "--core") (stringp b))
             do (return (directory-namestring b)))))
@@ -227,11 +227,15 @@
     (%kiln-sys 1005 addr (+ (* w k) (* (* h k) 65536))
                (+ (+ x0 (* x k)) (* (+ y0 (* y k)) 65536)) bw)))
 
-(defun kiln-app-main (&key autoplay (top 60))
+(defun kiln-app-main (&key autoplay (top 60) (media t))
   "The app: a glass desk (glass/desk) on the phone's screen -- windows dragged by their title
    bars, a root menu on the background -- with the media player open.  AUTOPLAY, a file name in
    the bundle's media folder, starts playing once the first picture is up (kiln ios
-   --autoplay=FILE) -- for trying a build without touching it."
+   --autoplay=FILE) -- for trying a build without touching it.  MEDIA NIL leaves out the
+   player and its codecs (warp, reel, reed, cassette) and opens the Clock instead: the
+   Zero's bare-metal image has no files to play and installs the desk over the network.
+   Pointer events of type 5 move the pointer with no button down -- a mouse hovers, a
+   finger cannot."
   (let* ((sw (%kiln-sys 1001 0 0 0))
          (sh (%kiln-sys 1001 1 0 0))
          (dir (or (%kiln-bundle-dir) "./"))
@@ -251,7 +255,8 @@
          (speaker (zerop (%kiln-sys 1010 +kiln-rate+ 0 0)))
          (mixer (and speaker (glass:make-mixer :rate +kiln-rate+)))
          (sink (and mixer (glass:mixer-subscribe mixer :name "speaker" :rate +kiln-rate+)))
-         (lib (warp-media:make-library :root (concatenate 'string dir "media/") :mixer mixer))
+         (lib (and media (warp-media:make-library :root (concatenate 'string dir "media/")
+                                                  :mixer mixer)))
          (desk (glass.desk:make-desk (glass:make-framebuffer dw dh))))
     (format t "~&kiln: ~Dx~D screen, desk ~Dx~D at ~Dx, media from ~A~%" sw sh dw dh k dir)
     (%kiln-sys 1002 0 (+ sw (* sh 65536)) #x1E2530)
@@ -263,29 +268,32 @@
     ;; FIVE values, then NIL: warp's MAKE-MEDIA-WINDOW answers the WM surface contract, whose
     ;; sixth value is its CONSUMER -- and the desk reads an app's sixth value as TEXT-P, so the
     ;; player counted as a text window and raised the keyboard at launch.
-    (glass.desk:desk-register-app desk "Media"
-                                  (lambda (fb)
-                                    (multiple-value-bind (on-key on-pointer dirty-p copy-p close-fn)
-                                        (warp-media-glass:make-media-window fb lib)
-                                      (values on-key on-pointer dirty-p copy-p close-fn nil)))
-                                  :width dw :height 440)
+    (when media
+      (glass.desk:desk-register-app desk "Media"
+                                    (lambda (fb)
+                                      (multiple-value-bind (on-key on-pointer dirty-p copy-p close-fn)
+                                          (warp-media-glass:make-media-window fb lib)
+                                        (values on-key on-pointer dirty-p copy-p close-fn nil)))
+                                    :width dw :height 440))
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
-    (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app :width dw :height 300)
+    (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app
+                                  :width (if media dw (min dw 420)) :height 300)
     ;; THE KEYBOARD follows the focus: the desk raises the phone's keyboard (pseudo-syscall 1006)
     ;; when a window that takes text is opened or tapped into, and puts it away when you tap
     ;; elsewhere; what is typed arrives as key events below
     (setf (glass.desk:desk-keyboard-fn desk)
           (lambda (on) (%kiln-sys 1006 (if on 1 0) 0 0)))
-    (glass.desk:desk-open desk "Media")
+    (glass.desk:desk-open desk (if media "Media" "Clock"))
     (format t "~&kiln: ~:[no speaker~;speaker at ~D Hz~]~%" speaker +kiln-rate+)
-    (when autoplay
+    (when (and media autoplay)
       (let ((path (concatenate 'string dir "media/" autoplay)))
         (if (probe-file path)
             (progn (format t "~&kiln: autoplay ~A~%" autoplay)
                    (warp-media:play-path (warp-media:library-player lib) path))
             (format t "~&kiln: autoplay ~A: no such file~%" autoplay))))
-    (format t "~&kiln: ~D track~:P~%"
-            (length (warp-media:folder-tracks (concatenate 'string dir "media/"))))
+    (when media
+      (format t "~&kiln: ~D track~:P~%"
+              (length (warp-media:folder-tracks (concatenate 'string dir "media/")))))
     ;; A tap or a repaint that signals is logged and dropped: one bad gesture
     ;; must not take the app down (an error out of here ends the process).
     (loop
@@ -312,6 +320,7 @@
                   (let ((ks (logand e #xFFFFFFFFFF)))
                     (glass.desk:desk-key desk t ks)
                     (glass.desk:desk-key desk nil ks))
-                  (glass.desk:desk-pointer desk (if (= type 3) 0 1)
+                  (glass.desk:desk-pointer desk (if (or (= type 3) (= type 5)) 0 1)
                                            (floor (- x x0) k) (floor (- y y0) k))))))
-       (error (c) (format t "~&kiln: ~A~%" (%escape-describe c)))))))
+       (error (c) (format t "~&kiln: ~A~%"
+                          (if (fboundp '%escape-describe) (%escape-describe c) c)))))))

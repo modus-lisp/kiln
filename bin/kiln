@@ -2295,6 +2295,184 @@ USAGE
     note "launched${serial:+ on $serial}"
 }
 
+cmd_zero() {
+  # THE PHONE APP ON A RASPBERRY PI ZERO 2 W running bare-metal modus: the desk on
+  # the Zero's HDMI screen, its USB keyboard and mouse as input (boot/zero.lisp
+  # is the platform layer, over modus's board drivers).  The Zero cannot build:
+  # kiln assembles ONE system from this workspace -- brotli-pure, cram, scribe,
+  # glass's framebuffer, text and desk, boot/zero.lisp, boot/app.lisp -- and the
+  # board installs it over its network from the machine that hosts it
+  # (--builder: the Pi 5 the Zero is wired to, which reaches it at 10.0.0.2).
+  #
+  # Assumes the Zero is running a modus board image with networking up (the
+  # board rig's netboot, then (ssh-boot)); --netboot=IMG.gz does that first with
+  # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
+  # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
+  # each checked against an FNV-1a manifest and fetched again if it is wrong.
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      --builder) builder=${val:?--builder=USER@HOST} ;;
+      --board)   board=${val:?--board=IP} ;;
+      --netboot) netboot=${val:?--netboot=IMG.gz} ;;
+      --no-start) start=0 ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--no-start]
+  — the desk on a Pi Zero 2 W's HDMI screen, its USB keyboard and mouse as input.
+
+  --builder=U@H     the machine wired to the Zero (it serves the install over the
+                    Zero's link, on that link's address only, for the install's length)
+  --board=IP        the Zero (default 10.0.0.2)
+  --netboot=IMG.gz  netboot this modus board image first (the rig's netboot-gz.py in
+                    the builder's home), then bring its network up
+  --no-start        install only
+Output in $KILN_STATE/zero.
+USAGE
+        return 0 ;;
+      *) die "kiln zero: unknown argument $arg (try --help)" ;;
+    esac
+    shift
+  done
+  [[ -n $builder ]] || die "kiln zero: --builder=USER@HOST is required (the machine wired to the Zero)"
+  local r
+  for r in brotli-pure cram scribe glass; do
+    [[ -d $KILN_ROOT/$r/src ]] || die "kiln zero: no $r checkout at $KILN_ROOT/$r"
+  done
+  local out=$KILN_STATE/zero sys
+  sys=$out/kiln-zero
+  rm -rf "$out"; mkdir -p "$sys/src/scribe/tables"
+  local f
+  for f in packages bitio tables huffman dict decompress brotli; do
+    cp "$KILN_ROOT/brotli-pure/src/$f.lisp" "$sys/src/brotli-$f.lisp"; done
+  for f in packages deflate inflate prefix lzw tar; do
+    cp "$KILN_ROOT/cram/src/$f.lisp" "$sys/src/cram-$f.lisp"; done
+  # scribe without match.lisp (it resolves font directories through ASDF when
+  # loaded) -- but glass/text needs its three hhea metric accessors
+  for f in packages blend font woff cmap cff var glyf raster shape otl hint color; do
+    cp "$KILN_ROOT/scribe/src/$f.lisp" "$sys/src/scribe/$f.lisp"; done
+  for f in hmtx os_2 post name cmap-0 cmap-4 cmap-12; do
+    cp "$KILN_ROOT/scribe/src/tables/$f.lisp" "$sys/src/scribe/tables/$f.lisp"; done
+  cat > "$sys/src/scribe/metrics.lisp" <<'EOF'
+;;;; From scribe's src/match.lisp, which kiln zero leaves out.
+(in-package :scribe)
+(defun font-ascent (font) (cdr (assoc "ascent" (parse-hhea font) :test #'string=)))
+(defun font-descent (font) (cdr (assoc "descent" (parse-hhea font) :test #'string=)))
+(defun font-line-gap (font) (cdr (assoc "lineGap" (parse-hhea font) :test #'string=)))
+EOF
+  # glass without wordlist.lisp: the desk does not name sessions, and its BIP-39
+  # literal stalls the board's compiler
+  for f in packages record framebuffer text desk; do
+    cp "$KILN_ROOT/glass/src/$f.lisp" "$sys/src/glass-$f.lisp"; done
+  cp "$ROOT/boot/zero.lisp" "$sys/src/zero.lisp"
+  cp "$ROOT/boot/app.lisp" "$sys/src/app.lisp"
+  cat > "$sys/kiln-zero.asd" <<'EOF'
+;;;; kiln zero's desk, as ONE system in load order (the board installs one tarball).
+(asdf:defsystem :kiln-zero
+  :serial t
+  :components
+  ((:module "src" :serial t
+    :components
+    ((:file "brotli-packages") (:file "brotli-bitio") (:file "brotli-tables")
+     (:file "brotli-huffman") (:file "brotli-dict") (:file "brotli-decompress")
+     (:file "brotli-brotli")
+     (:file "cram-packages") (:file "cram-deflate") (:file "cram-inflate")
+     (:file "cram-prefix") (:file "cram-lzw") (:file "cram-tar")
+     (:module "scribe" :serial t
+      :components ((:file "packages") (:file "blend") (:file "font") (:file "woff")
+                   (:file "tables/hmtx") (:file "tables/os_2") (:file "tables/post")
+                   (:file "tables/name") (:file "cmap") (:file "tables/cmap-0")
+                   (:file "tables/cmap-4") (:file "tables/cmap-12") (:file "cff")
+                   (:file "var") (:file "glyf") (:file "raster") (:file "shape")
+                   (:file "otl") (:file "hint") (:file "metrics") (:file "color")))
+     (:file "glass-packages") (:file "glass-record") (:file "glass-framebuffer")
+     (:file "glass-text") (:file "glass-desk")
+     (:file "zero") (:file "app")))))
+EOF
+  # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
+  (cd "$out" && tar cf kiln-zero.tar kiln-zero)
+  cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" "$out/"
+  python3 - "$out" <<'EOF'
+import os, sys
+out = sys.argv[1]
+def pieces(name, src):
+    d = os.path.join(out, name); os.makedirs(d, exist_ok=True)
+    data = open(os.path.join(out, src), "rb").read(); entries = []
+    for i in range(0, len(data), 16384):
+        chunk = data[i:i+16384]; h = 2166136261
+        for b in chunk: h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+        fn = "p%04d" % (i // 16384)
+        open(os.path.join(d, fn), "wb").write(chunk)
+        entries.append('("%s/%s" %d %d)' % (name, fn, len(chunk), h))
+    open(os.path.join(out, name + ".lisp"), "w").write("(" + " ".join(entries) + ")")
+pieces("tar", "kiln-zero.tar")
+pieces("regular", "LiberationSans-Regular.ttf")
+pieces("bold", "LiberationSans-Bold.ttf")
+EOF
+  cat > "$out/forms.txt" <<'EOF'
+(defun kz-fnv (arr n) (let ((h 2166136261) (i 0)) (loop (when (>= i n) (return h)) (setq h (logand (* (logxor h (aref arr i)) 16777619) 4294967295)) (setq i (+ i 1)))))
+(defun kz-piece (url n hash) (let ((tries 0)) (loop (when (> tries 30) (return nil)) (let ((tb (net-fetch-bytes url))) (when (and tb (= (cdr tb) n) (= (kz-fnv (car tb) n) hash)) (return (car tb)))) (setq tries (+ tries 1)))))
+(defun kz-fetch (base m) (let* ((total (let ((s 0)) (dolist (e m s) (setq s (+ s (cadr e)))))) (v (make-array total :element-type (quote (unsigned-byte 8)))) (off 0)) (dolist (e m v) (let ((p (kz-piece (concatenate (quote string) base (car e)) (cadr e) (caddr e)))) (when (null p) (return nil)) (dotimes (i (cadr e)) (setf (aref v (+ off i)) (aref p i))) (setq off (+ off (cadr e)))))))
+(progn (setq *jit-hot-only* nil) (setq *tar-block-size* 512) (setq *kz-tar* (kz-fetch "@BASE@" (quote @TAR@))) (if *kz-tar* (length *kz-tar*) :fetch-failed))
+(install-tarball-from-bytes *kz-tar*)
+EOF
+  cat > "$out/fonts.txt" <<'EOF'
+(progn (setq *kz-tar* nil) (setq *kz-reg* (kz-fetch "@BASE@" (quote @REG@))) (setq *kz-bold* (kz-fetch "@BASE@" (quote @BOLD@))) (if (and *kz-reg* *kz-bold*) (progn (setf glass::*font-regular* (scribe:open-font *kz-reg*) glass::*font-bold* (scribe:open-font *kz-bold*)) :fonts) :fonts-failed))
+EOF
+  cat > "$out/install.sh" <<'EOF'
+#!/bin/bash
+# Run on the builder: serve this directory to the Zero, install, start.
+here=$(cd -- "$(dirname -- "$0")" && pwd); cd "$here"
+board=$1 port=$2 start=$3 hostip=$4
+SSH="ssh -n -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no test@$board"
+python3 -m http.server "$port" --bind "$hostip" >http.log 2>&1 & srv=$!
+trap 'kill $srv 2>/dev/null' EXIT
+base="http://$hostip:$port/"
+send() {
+  local line=$1
+  line=${line//@BASE@/$base}; line=${line//@TAR@/$(cat tar.lisp)}
+  line=${line//@REG@/$(cat regular.lisp)}; line=${line//@BOLD@/$(cat bold.lisp)}
+  echo "> ${line:0:100}"; $SSH "$line" 2>/dev/null
+}
+sleep 1
+while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < forms.txt
+# the install holds the board's network loop: wait for it to answer again
+for i in $(seq 1 180); do ping -c1 -W2 "$board" >/dev/null && break; sleep 20; done
+while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < fonts.txt
+if [[ $start == 1 ]]; then
+  echo "> (kiln-zero-main)"
+  setsid nohup $SSH "(kiln-zero-main)" >app.log 2>&1 </dev/null &
+fi
+echo KILN-ZERO-DONE
+EOF
+  chmod +x "$out/install.sh"
+  local host=${builder#*@} dir=kiln-zero
+  note "zero: $(du -sh "$out/kiln-zero.tar" | cut -f1) system, staging on $builder"
+  ssh "$builder" "rm -rf ~/$dir && mkdir -p ~/$dir" || die "kiln zero: cannot reach $builder"
+  rsync -a "$out/" "$builder:$dir/" || die "kiln zero: rsync to $builder failed"
+  if [[ -n $netboot ]]; then
+    note "zero: netbooting $netboot"
+    scp -q "$netboot" "$builder:" || die "kiln zero: cannot copy $netboot"
+    local img; img=$(basename "$netboot")
+    ssh "$builder" "sudo -n cp ~/$img /srv/tftp/ && python3 ~/netboot-gz.py --img $img --tftp-tries 6 --send-delay 240 --send '(ssh-boot)' > ~/$dir/netboot.log 2>&1" \
+      || die "kiln zero: netboot failed (see ~/$dir/netboot.log on $builder)"
+  fi
+  local hostip
+  hostip=$(ssh "$builder" "ip -4 -o route get $board | sed -n 's/.* src \([0-9.]*\).*/\1/p'")
+  [[ -n $hostip ]] || die "kiln zero: $builder has no route to $board"
+  ssh "$builder" "ping -c1 -W2 $board >/dev/null" || die "kiln zero: $board does not answer (network up? (ssh-boot))"
+  note "zero: installing on $board (about half an hour: the Zero compiles it)"
+  ssh "$builder" "~/$dir/install.sh $board $port $start $hostip" | tee "$out/install.log"
+  grep -q KILN-ZERO-DONE "$out/install.log" || die "kiln zero: install did not finish"
+  if [[ $start == 1 ]]; then
+    note "zero: done -- the desk is on the Zero's screen; a byte on its serial port ends it"
+  else
+    note "zero: installed; start it with (kiln-zero-main) over ssh test@$board"
+  fi
+}
+
 cmd_modus_rfb() {
   # glass's RFB server, running on MODUS instead of on SBCL, in the image.
   #
@@ -2431,6 +2609,7 @@ case "${1:-}" in
   image) shift; cmd_image "$@" ;;
   ios) shift; cmd_ios "$@" ;;
   android) shift; cmd_android "$@" ;;
+  zero) shift; cmd_zero "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   build) shift; cmd_build "$@" ;;

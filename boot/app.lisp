@@ -311,9 +311,14 @@
               ;; screen, and the whole of it 2x was most of a frame
               (multiple-value-bind (changed x y w h) (glass.desk:desk-tick desk)
                 (when changed
-                  (glass:fb-blit-scaled-region big (glass.desk:desk-fb desk) k x y w h)
-                  (%kiln-blit-region big k x0 y0 x y w h)
-                  (%kiln-sys 1003 0 0 0)))
+                  (if (eq (glass:fb-format (glass.desk:desk-fb desk)) :xrgb)
+                      (progn
+                        (glass:fb-blit-scaled-region big (glass.desk:desk-fb desk) k x y w h)
+                        (%kiln-blit-region big k x0 y0 x y w h)
+                        (%kiln-sys 1003 0 0 0))
+                      ;; A Y'CbCr desk (glass :I420) is shown as it is: the platform scans
+                      ;; the planes out (pseudo-syscall 1007, the Zero's HVS)
+                      (%kiln-sys 1007 (glass.desk:desk-fb desk) 0 0))))
               ;; a frame is 16 ms; sleep only what is left of it, not 16 ms on top of the work
               (let ((left (- 16 (floor (- (get-internal-real-time) t0) 1000))))
                 (when (> left 1) (%sleep-ms left))))

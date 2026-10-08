@@ -2419,7 +2419,7 @@ EOF
 (setq *jit-hot-only* nil)
 (defun kz-fnv (arr n) (let ((h 2166136261) (i 0)) (loop (when (>= i n) (return h)) (setq h (logand (* (logxor h (aref arr i)) 16777619) 4294967295)) (setq i (+ i 1)))))
 (defun kz-piece (url n hash) (let ((tries 0)) (loop (when (> tries 30) (return nil)) (let ((tb (net-fetch-bytes url))) (when (and tb (= (cdr tb) n) (= (kz-fnv (car tb) n) hash)) (return (car tb)))) (setq tries (+ tries 1)))))
-(defun kz-fetch (base m) (let* ((total (let ((s 0)) (dolist (e m s) (setq s (+ s (cadr e)))))) (v (make-array total :element-type (quote (unsigned-byte 8)))) (off 0)) (dolist (e m v) (let ((p (kz-piece (concatenate (quote string) base (car e)) (cadr e) (caddr e)))) (when (null p) (return nil)) (dotimes (i (cadr e)) (setf (aref v (+ off i)) (aref p i))) (setq off (+ off (cadr e)))))))
+(defun kz-fetch (base m) (let* ((total (let ((s 0)) (dolist (e m s) (setq s (+ s (cadr e)))))) (v (make-array total :element-type (quote (unsigned-byte 8)))) (off 0)) (dolist (e m v) (let ((p (kz-piece (concatenate (quote string) base (car e)) (cadr e) (caddr e)))) (when (null p) (return nil)) (replace v p :start1 off) (setq off (+ off (cadr e)))))))
 (progn (setq *tar-block-size* 512) (setq *kz-tar* (kz-fetch "@BASE@" (quote @TAR@))) (if *kz-tar* (length *kz-tar*) :fetch-failed))
 (install-tarball-from-bytes *kz-tar*)
 EOF

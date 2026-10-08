@@ -18,12 +18,12 @@
 ;;;; A phone has no pointer to draw; a mouse does.  The pointer is drawn here, over whatever
 ;;;; was blitted, with the pixels under it saved and put back when it moves.
 ;;;;
-;;;; A character on the serial port ends the app and gives the screen back to the text console.
+;;;; Ctrl-C or q on the serial port ends the app and gives the screen back to the text console.
 
 (in-package :cl-user)
 
-;;; app.lisp names the media player's symbols; without the player (MEDIA NIL) the packages
-;;; still have to exist for the file to read.
+;;; app.lisp names the media player's symbols; without the player (kiln zero without --media)
+;;; the packages still have to exist for the file to read.  With it they already do.
 (unless (find-package "WARP-MEDIA")
   (make-package "WARP-MEDIA" :use nil)
   (dolist (n '("FOLDER-TRACKS" "LIBRARY-PLAYER" "MAKE-LIBRARY" "PLAY-PATH"))
@@ -103,7 +103,13 @@
       (setf *zero-mouse* (list nx ny nb)))))
 
 (defun %zero-next-event ()
-  (when (hid-serial-ready-p) (read-char-serial) (throw 'kiln-zero-exit nil))
+  ;; Ctrl-C or q on the serial port ends the app; any other byte is dropped.  It used to be
+  ;; ANY byte, and the line carries strays (netboot's trailing LF, a reader opening the port):
+  ;; the media app's first start ended itself before it had painted.
+  (when (hid-serial-ready-p)
+    (let ((c (read-char-serial)))
+      (when (member (if (characterp c) (char-code c) c) '(3 113))
+        (throw 'kiln-zero-exit nil))))
   (unless *zero-events* (%zero-poll))
   (if *zero-events* (pop *zero-events*) 0))
 
@@ -126,7 +132,18 @@
     (%zero-pointer-show)
     0))
 
+;;; Breadcrumbs on the serial port: each stage of KILN-ZERO-MAIN, and the FIRST use of each
+;;; pseudo-syscall (size, fill, event, blit) -- so a start that never reaches the screen says
+;;; how far it got.  The board is single-threaded: when the app is wedged, serial is the only
+;;; voice it has.
+(defvar *kz-said* 0)
+(defun %kz-say (s) (write-string-serial s) (write-char-serial 10))
+
 (defun %kiln-sys (n a b c &optional (d 0))
+  (let ((bit (case n (1001 1) (1002 2) (1004 4) (1005 8) (t 0))))
+    (when (and (plusp bit) (zerop (logand *kz-said* bit)))
+      (setf *kz-said* (logior *kz-said* bit))
+      (%kz-say (case n (1001 "KZ:size") (1002 "KZ:fill") (1004 "KZ:event") (t "KZ:blit")))))
   (case n
     (1001 (case a (0 (hcon-get #x0C)) (1 (hcon-get #x10)) (t 1)))
     (1002 (%zero-pointer-hide)
@@ -137,16 +154,30 @@
     (1010 1)
     (t 0)))
 
-(defun kiln-zero-main ()
-  "The phone app on the Zero's screen, until a character arrives on the serial port."
+(defun kiln-zero-main (&key media autoplay)
+  "The phone app on the Zero's screen, until a character arrives on the serial port.  MEDIA
+   opens the media player on the files under /media/ of the mounted cabinet (kiln zero
+   --media installs the player, mounts the cabinet and puts the clips there); the player
+   decodes on this thread, in the time between events (WARP-MEDIA:*COOPERATIVE*).  AUTOPLAY, a
+   file name under /media/, starts it playing once the desk is up."
   (let ((ready (hcon-get 0)))
     (setf *zero-events* nil *zero-mouse* nil *zero-under* nil
           *zero-px* (floor (hcon-get #x0C) 2) *zero-py* (floor (hcon-get #x10) 2))
-    ;; bytes already waiting on serial are not a request to stop
-    (loop (if (hid-serial-ready-p) (read-char-serial) (return)))
+    (setf *kz-said* 0)
+    (%kz-say "KZ:start")
+    ;; bytes already waiting on serial are not a request to stop.  BOUNDED: the first start
+    ;; after a netboot never drew, with netboot's LF left on the line -- a drain that
+    ;; trusts READ-CHAR-SERIAL to empty the line it polls can spin forever if it does not.
+    (dotimes (i 64) (if (hid-serial-ready-p) (read-char-serial) (return)))
+    (%kz-say (if (hid-serial-ready-p) "KZ:serial-not-drained" "KZ:drained"))
     (hcon-put 0 0)                        ; the text console stops drawing
     (unwind-protect
-         (catch 'kiln-zero-exit (kiln-app-main :top 0 :media nil))
+         (catch 'kiln-zero-exit
+           (%kz-say "KZ:app")
+           (when media
+             (setf *kiln-bundle-dir* "/")
+             (setf (symbol-value (find-symbol "*COOPERATIVE*" "WARP-MEDIA")) t))
+           (kiln-app-main :top 0 :media media :autoplay (and media autoplay)))
       (%zero-pointer-hide)
       (hcon-put 0 ready)
       (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) (hcon-get #x28))

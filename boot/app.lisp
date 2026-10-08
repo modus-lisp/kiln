@@ -12,9 +12,14 @@
 ;;;; In CL-USER on purpose: it calls modus internals (%GC-SAFE-BLOCK-6,
 ;;;; %GC-WORD-OF, %CLI-COLLECT-ARGV), which a script names unqualified.
 
+(defvar *kiln-bundle-dir* nil
+  "Overrides %KILN-BUNDLE-DIR: a platform with no --core argument says where its bundle is
+   (the Zero: \"/\", the root of the cabinet it mounts).")
+
 (defun %kiln-bundle-dir ()
   "The app bundle: the directory of the file after --core (the shim resolved
    @kiln.core to a path beside the executable)."
+  (when *kiln-bundle-dir* (return-from %kiln-bundle-dir *kiln-bundle-dir*))
   (let ((args (and (fboundp '%cli-collect-argv) (%cli-collect-argv))))
     (loop for (a b) on args
           when (and (stringp a) (string= a "--core") (stringp b))

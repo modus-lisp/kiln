@@ -2309,7 +2309,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -2318,9 +2318,10 @@ cmd_zero() {
       --board)   board=${val:?--board=IP} ;;
       --netboot) netboot=${val:?--netboot=IMG.gz} ;;
       --no-start) start=0 ;;
+      --media) media=1 ;;
       -h|--help)
         cat >&2 <<'USAGE'
-kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--no-start]
+kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
   — the desk on a Pi Zero 2 W's HDMI screen, its USB keyboard and mouse as input.
 
   --builder=U@H     the machine wired to the Zero (it serves the install over the
@@ -2328,6 +2329,9 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--no-start]
   --board=IP        the Zero (default 10.0.0.2)
   --netboot=IMG.gz  netboot this modus board image first (the rig's netboot-gz.py in
                     the builder's home), then bring its network up
+  --media           the media player too: warp-media in its cooperative mode (the board has
+                    one thread), reel's VP8 decoder and cassette's demuxers, and a cabinet
+                    filesystem on a 32 MB RAM disk holding the bundle's media/ clips
   --no-start        install only
 Output in $KILN_STATE/zero.
 USAGE
@@ -2366,9 +2370,55 @@ EOF
   # literal stalls the board's compiler
   for f in packages record framebuffer text desk; do
     cp "$KILN_ROOT/glass/src/$f.lisp" "$sys/src/glass-$f.lisp"; done
+  # --media: the player and what it needs, trimmed to what a board with no speaker uses.
+  # reed contributes its PACKAGE only (the engine names reed's functions; with no mixer
+  # nothing decodes sound), reel its packages and the VP8 decoder (cassette names the other
+  # codecs' packages), and the files arrive on a cabinet filesystem: pagetree + cabinet +
+  # modus's lib/cabinet-fs.lisp, which routes CL's OPEN and DIRECTORY to it.
+  local media_files=""
+  if [[ $media == 1 ]]; then
+    for r in reed reel cassette warp pagetree cabinet modus; do
+      [[ -d $KILN_ROOT/$r ]] || die "kiln zero --media: no $r checkout at $KILN_ROOT/$r"
+    done
+    cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
+    cp "$KILN_ROOT/reed/src/common/packages.lisp" "$sys/src/reed-packages.lisp"
+    cp "$KILN_ROOT/reel/src/packages.lisp" "$sys/src/reel-packages.lisp"
+    for f in tables bool transform intra intra-neon loopfilter inter-tables inter inter-neon loopfilter-neon; do
+      cp "$KILN_ROOT/reel/src/decode/$f.lisp" "$sys/src/reel-$f.lisp"; done
+    for f in packages ebml demux mp4 mpegsys avi ogg mux player; do
+      cp "$KILN_ROOT/cassette/src/$f.lisp" "$sys/src/cassette-$f.lisp"; done
+    for f in packages presentation reconcile command widget icons present projection consumer menu; do
+      cp "$KILN_ROOT/warp/src/$f.lisp" "$sys/src/warp-$f.lisp"; done
+    for f in package surface icons; do
+      cp "$KILN_ROOT/warp/glass/$f.lisp" "$sys/src/warpg-$f.lisp"; done
+    for f in package engine model layout glass; do
+      cp "$KILN_ROOT/warp/media/$f.lisp" "$sys/src/media-$f.lisp"; done
+    for f in packages device device-file device-sector pager node btree store; do
+      cp "$KILN_ROOT/pagetree/src/$f.lisp" "$sys/src/pt-$f.lisp"; done
+    for f in packages utf8 codec fs; do
+      cp "$KILN_ROOT/cabinet/src/$f.lisp" "$sys/src/cab-$f.lisp"; done
+    cp "$KILN_ROOT/modus/lib/cabinet-fs.lisp" "$sys/src/cabinet-fs.lisp"
+    media_files='(:file "zero-bt")
+     (:file "pt-packages") (:file "pt-device") (:file "pt-device-file") (:file "pt-device-sector")
+     (:file "pt-pager") (:file "pt-node") (:file "pt-btree") (:file "pt-store")
+     (:file "cab-packages") (:file "cab-utf8") (:file "cab-codec") (:file "cab-fs") (:file "cabinet-fs")
+     (:file "reed-packages") (:file "reel-packages")
+     (:file "reel-tables") (:file "reel-bool") (:file "reel-transform") (:file "reel-intra")
+     (:file "reel-intra-neon") (:file "reel-loopfilter") (:file "reel-inter-tables")
+     (:file "reel-inter") (:file "reel-inter-neon") (:file "reel-loopfilter-neon")
+     (:file "cassette-packages") (:file "cassette-ebml") (:file "cassette-demux")
+     (:file "cassette-mp4") (:file "cassette-mpegsys") (:file "cassette-avi") (:file "cassette-ogg")
+     (:file "cassette-mux") (:file "cassette-player")
+     (:file "warp-packages") (:file "warp-presentation") (:file "warp-reconcile")
+     (:file "warp-command") (:file "warp-widget") (:file "warp-icons") (:file "warp-present")
+     (:file "warp-projection") (:file "warp-consumer") (:file "warp-menu")
+     (:file "warpg-package") (:file "warpg-surface") (:file "warpg-icons")
+     (:file "media-package") (:file "media-engine") (:file "media-model") (:file "media-layout")
+     (:file "media-glass")'
+  fi
   cp "$ROOT/boot/zero.lisp" "$sys/src/zero.lisp"
   cp "$ROOT/boot/app.lisp" "$sys/src/app.lisp"
-  cat > "$sys/kiln-zero.asd" <<'EOF'
+  cat > "$sys/kiln-zero.asd" <<EOF
 ;;;; kiln zero's desk, as ONE system in load order (the board installs one tarball).
 (asdf:defsystem :kiln-zero
   :serial t
@@ -2389,11 +2439,16 @@ EOF
                    (:file "otl") (:file "hint") (:file "metrics") (:file "color")))
      (:file "glass-packages") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
+     $media_files
      (:file "zero") (:file "app")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)
   cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" "$out/"
+  # the clips, one manifest each: clip-<name>.<ext> -> pieces in clip-<name>/
+  if [[ $media == 1 ]]; then
+    for f in "$ROOT"/media/*; do [[ -f $f ]] && cp "$f" "$out/clip-$(basename "$f")"; done
+  fi
   python3 - "$out" <<'EOF'
 import os, sys
 out = sys.argv[1]
@@ -2410,7 +2465,12 @@ def pieces(name, src):
 pieces("tar", "kiln-zero.tar")
 pieces("regular", "LiberationSans-Regular.ttf")
 pieces("bold", "LiberationSans-Bold.ttf")
+for f in sorted(os.listdir(out)):
+    if f.startswith("clip-"): pieces(f[:-len(os.path.splitext(f)[1])] if "." in f else f, f)
 EOF
+  # (jit-eager) after the install: the installed DEFUNs are compiled natively only once HOT,
+  # and a function called once a frame never is -- warp-media's frame blit stayed interpreted
+  # and took 48 s a frame (36 ms native, measured on the Zero).  ~2 min for the media build.
   # *jit-hot-only* NIL comes FIRST: a defun is compiled under the JIT setting in
   # force when it is DEFINED, so kz-fetch defined before it ran interpreted --
   # its byte-copy loop cost ~0.5 ms a byte (117 s for a 215 KB tar, 13 min for
@@ -2425,12 +2485,26 @@ EOF
 EOF
   cat > "$out/fonts.txt" <<'EOF'
 (progn (setq *kz-tar* nil) (setq *kz-reg* (kz-fetch "@BASE@" (quote @REG@))) (setq *kz-bold* (kz-fetch "@BASE@" (quote @BOLD@))) (if (and *kz-reg* *kz-bold*) (progn (setf glass::*font-regular* (scribe:open-font *kz-reg*) glass::*font-bold* (scribe:open-font *kz-bold*)) :fonts) :fonts-failed))
+(jit-eager)
 EOF
+  # THE CABINET: a 32 MB RAM disk of raw memory at 0x1B000000 (outside the Lisp heap,
+  # between the core save area and the I/O buffers), formatted, mounted under CL's OPEN,
+  # and each clip written to /media/ in one WRITE-FILE.
+  : > "$out/media.txt"
+  if [[ $media == 1 ]]; then
+    echo '(progn (cabinet-mount-device (cabinet-raw-disk #x1B000000 33554432) :format t) (funcall (symbol-function (intern "MAKE-DIRECTORIES" "CABINET")) *cabfs* "/media") :mounted)' >> "$out/media.txt"
+    local c
+    for c in "$ROOT"/media/*; do
+      [[ -f $c ]] || continue
+      local cn; cn=$(basename "$c")
+      echo "(let ((b (kz-fetch \"@BASE@\" (quote @CLIP:${cn%.*}@)))) (if b (progn (funcall (symbol-function (intern \"WRITE-FILE\" \"CABINET\")) *cabfs* \"/media/$cn\" b) (list :$cn (length b))) :clip-failed))" >> "$out/media.txt"
+    done
+  fi
   cat > "$out/install.sh" <<'EOF'
 #!/bin/bash
 # Run on the builder: serve this directory to the Zero, install, start.
 here=$(cd -- "$(dirname -- "$0")" && pwd); cd "$here"
-board=$1 port=$2 start=$3 hostip=$4
+board=$1 port=$2 start=$3 hostip=$4 media=$5
 SSH="ssh -n -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no test@$board"
 python3 -m http.server "$port" --bind "$hostip" >http.log 2>&1 & srv=$!
 trap 'kill $srv 2>/dev/null' EXIT
@@ -2439,6 +2513,9 @@ send() {
   local line=$1
   line=${line//@BASE@/$base}; line=${line//@TAR@/$(cat tar.lisp)}
   line=${line//@REG@/$(cat regular.lisp)}; line=${line//@BOLD@/$(cat bold.lisp)}
+  while [[ $line =~ @CLIP:([^@]+)@ ]]; do
+    line=${line//@CLIP:${BASH_REMATCH[1]}@/$(cat "clip-${BASH_REMATCH[1]}.lisp")}
+  done
   echo "> ${line:0:100}"; $SSH "$line" 2>/dev/null
 }
 sleep 1
@@ -2446,9 +2523,11 @@ while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < forms.txt
 # the install holds the board's network loop: wait for it to answer again
 for i in $(seq 1 180); do ping -c1 -W2 "$board" >/dev/null && break; sleep 20; done
 while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < fonts.txt
+while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < media.txt
+main="(kiln-zero-main)"; [[ $media == 1 ]] && main="(kiln-zero-main :media t)"
 if [[ $start == 1 ]]; then
-  echo "> (kiln-zero-main)"
-  setsid nohup $SSH "(kiln-zero-main)" >app.log 2>&1 </dev/null &
+  echo "> $main"
+  setsid nohup $SSH "$main" >app.log 2>&1 </dev/null &
 fi
 echo KILN-ZERO-DONE
 EOF
@@ -2469,7 +2548,7 @@ EOF
   [[ -n $hostip ]] || die "kiln zero: $builder has no route to $board"
   ssh "$builder" "ping -c1 -W2 $board >/dev/null" || die "kiln zero: $board does not answer (network up? (ssh-boot))"
   note "zero: installing on $board (about half an hour: the Zero compiles it)"
-  ssh "$builder" "~/$dir/install.sh $board $port $start $hostip" | tee "$out/install.log"
+  ssh "$builder" "~/$dir/install.sh $board $port $start $hostip $media" | tee "$out/install.log"
   grep -q KILN-ZERO-DONE "$out/install.log" || die "kiln zero: install did not finish"
   if [[ $start == 1 ]]; then
     note "zero: done -- the desk is on the Zero's screen; a byte on its serial port ends it"

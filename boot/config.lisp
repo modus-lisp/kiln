@@ -59,6 +59,16 @@ control plane, so leave it on unless the box is configured for good.")
       (:int "KILN_SSH_PORT" "SSH port" 2222
        "TCP port for the SSH control plane.")))
 
+    (:menu "Logging"
+     ((:bool "KILN_LOG_DM" "Event log over nostr DMs" nil
+       "Send this desktop's log lines as NIP-59 gift-wrapped DMs to the npub kiln
+bakes in (override it with KILN_LOG_NPUB).  Each line is encrypted to that npub
+and published to the relays in NOSTR_RELAYS; a relay sees an ephemeral sender.
+
+Off by default, because it sends what the desktop logs off the box.  A line that
+no relay accepts is dropped, not retried, so this is a log to read, not a record
+to rely on.")))
+
     (:menu "Desktop"
      ((:int "GLASS_DISPLAY" "Display number" 1
        "X-style display number.  EVERY port the desktop owns is derived from it

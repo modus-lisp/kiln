@@ -1514,7 +1514,7 @@ exec_local() {
   [[ -n ${KILN_SSHD:-} ]] && envv+=(KILN_SSHD="$KILN_SSHD")
   [[ -n ${KILN_RESUME:-} ]] && envv+=(KILN_RESUME="$KILN_RESUME")
   local -a cmd=("$KILN_SBCL" --core "$LOCAL_CORE" --control-stack-size 256
-                --dynamic-space-size "${KILN_HEAP:-4096}")
+                --dynamic-space-size "${KILN_HEAP_ASKED:-4096}")
   [[ -n $boot ]] && cmd+=(--load "$boot")
 
   # DETACHED, because a desktop is not a command you are waiting on.  `kiln run' has

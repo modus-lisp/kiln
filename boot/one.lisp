@@ -352,6 +352,17 @@
                 :name "kiln-sshd"))
       (error (e) (format *error-output* "~&@@ control plane failed to load: ~a~%" e)))))
 
+;;; The event log, when the config says so.  Opt-in (KILN_LOG_DM), because it sends what it
+;;; is given to the baked npub over public relays, and that is the box owner's call, not a
+;;; side effect of starting a desktop.  See boot/klog.lisp for what it does and does not keep.
+(let ((klog (format nil "~a/boot/klog.lisp" (kiln-env "KILN_HOME" "/kiln"))))
+  (when (and (kiln-flag "KILN_LOG_DM") (probe-file klog))
+    (handler-case
+        (progn (load klog)
+               (klog-start)
+               (klog-event "INFO" "desktop up on ~a" (kiln-env "GLASS_HOST" "?")))
+      (error (e) (format *error-output* "~&@@ klog failed to start: ~a~%" e)))))
+
 ;;; Housekeeping (the periodic full GC that keeps gen-6 garbage from accumulating) is
 ;;; registered in the CORE, by boot/build.lisp, as an init hook — so the container, `kiln
 ;;; local', `repl' and `modus' all get it from the one place instead of this file getting

@@ -177,6 +177,8 @@
   (hcon-ncopy dst src (logand (+ bytes 63) (lognot 63))))
 
 (defvar *zy-presents* 0)
+(defvar *zy-first* nil)   ; GET-INTERNAL-REAL-TIME of this run's first and latest present: the
+(defvar *zy-last* nil)    ; frame rate, measured on the screen, is printed on leaving
 (defun %zero-present-yuv (fb)
   "Show :I420 framebuffer FB: copy its planes into the back scanout buffer, draw the pointer,
    point the HVS at it."
@@ -211,13 +213,20 @@
               (%zy-slot-wr (+ (%zy-slot) i) w) (setq i (+ i 1)))
             (setf (mem-ref (+ (%zy-hvs) #x24) :u32) (%zy-slot))))
       (setf (second *zy*) (- 1 back) (fourth *zy*) fb)
-      (setq *zy-presents* (+ *zy-presents* 1)))))
+      (setq *zy-presents* (+ *zy-presents* 1))
+      (setq *zy-last* (get-internal-real-time))
+      (unless *zy-first* (setq *zy-first* *zy-last* *zy-presents* 1)))))
 
 (defun %zero-yuv-restore ()
   "Point the HVS back at the text console."
   (when *zy*
     (setf (mem-ref (+ (%zy-hvs) #x24) :u32) (third *zy*))
-    (setf *zy* nil)))
+    (setf *zy* nil))
+  (when (and *zy-first* (> *zy-presents* 1) (> *zy-last* *zy-first*))
+    (let ((ms (round (- *zy-last* *zy-first*) (floor internal-time-units-per-second 1000))))
+      (format t "~&KZ: ~d presents in ~d ms = ~,2f fps~%" *zy-presents* ms
+              (/ (* 1000.0 (- *zy-presents* 1)) ms))))
+  (setq *zy-first* nil *zy-last* nil *zy-presents* 0))
 
 ;;; --- screen --------------------------------------------------------------------------------
 

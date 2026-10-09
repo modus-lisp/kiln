@@ -2309,7 +2309,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core=""
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -2319,6 +2319,8 @@ cmd_zero() {
       --netboot) netboot=${val:?--netboot=IMG.gz} ;;
       --no-start) start=0 ;;
       --media) media=1 ;;
+      --core)  core=${val:?--core=FILE.core} ;;
+      --build-core) build_core=${val:?--build-core=OUT.core} ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2333,6 +2335,14 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     one thread), reel's VP8 decoder and cassette's demuxers, and a cabinet
                     filesystem on a 32 MB RAM disk holding the bundle's media/ clips
   --no-start        install only
+  --build-core=OUT  instead of installing on the board: install this same system under
+                    QEMU raspi3b on the --netboot image, jit-eager it, and save-and-die it
+                    to OUT (modus test/run-rpi-core.sh; ~50 min, here, no board needed)
+  --core=FILE       with --netboot: boot that image WITH this core (from --build-core on the
+                    same image and system) -- the system is already in it, native, so only
+                    the RAM-disk clips are fetched: ~3 min, not the half hour of compiling.
+                    A media core is ~74 MB; it fits only with gpu_mem=32 in the Zero's
+                    config.txt (480 MiB; the 448 MiB default leaves a 64 MB slot)
 Output in $KILN_STATE/zero.
 USAGE
         return 0 ;;
@@ -2340,7 +2350,9 @@ USAGE
     esac
     shift
   done
-  [[ -n $builder ]] || die "kiln zero: --builder=USER@HOST is required (the machine wired to the Zero)"
+  [[ -n $builder || -n $build_core ]] || die "kiln zero: --builder=USER@HOST is required (the machine wired to the Zero)"
+  [[ -z $core || -n $netboot ]] || die "kiln zero: --core needs --netboot (the image the core was saved on)"
+  [[ -z $build_core || -n $netboot ]] || die "kiln zero: --build-core needs --netboot (the image to save the core on)"
   local r
   for r in brotli-pure cram scribe glass; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln zero: no $r checkout at $KILN_ROOT/$r"
@@ -2504,7 +2516,7 @@ EOF
 #!/bin/bash
 # Run on the builder: serve this directory to the Zero, install, start.
 here=$(cd -- "$(dirname -- "$0")" && pwd); cd "$here"
-board=$1 port=$2 start=$3 hostip=$4 media=$5
+board=$1 port=$2 start=$3 hostip=$4 media=$5 core=${6:-0}
 SSH="ssh -n -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no test@$board"
 python3 -m http.server "$port" --bind "$hostip" >http.log 2>&1 & srv=$!
 trap 'kill $srv 2>/dev/null' EXIT
@@ -2519,10 +2531,18 @@ send() {
   echo "> ${line:0:100}"; $SSH "$line" 2>/dev/null
 }
 sleep 1
-while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < forms.txt
-# the install holds the board's network loop: wait for it to answer again
-for i in $(seq 1 180); do ping -c1 -W2 "$board" >/dev/null && break; sleep 20; done
-while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < fonts.txt
+if [[ $core == 1 ]]; then
+  # Restored from a core: the system and fonts are in it, native.  Only the fetch helpers
+  # (defined with the JIT forced, so they are native too) and the clips remain.  Hot-only
+  # goes back on after: it promotes a form evaluated twice, never a function called often.
+  while IFS= read -r l; do [[ $l == "(setq *jit-hot-only*"* || $l == "(defun "* ]] && send "$l"; done < forms.txt
+  send "(setq *jit-hot-only* t)"
+else
+  while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < forms.txt
+  # the install holds the board's network loop: wait for it to answer again
+  for i in $(seq 1 180); do ping -c1 -W2 "$board" >/dev/null && break; sleep 20; done
+  while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < fonts.txt
+fi
 while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < media.txt
 main="(kiln-zero-main)"; [[ $media == 1 ]] && main="(kiln-zero-main :media t)"
 if [[ $start == 1 ]]; then
@@ -2532,11 +2552,40 @@ fi
 echo KILN-ZERO-DONE
 EOF
   chmod +x "$out/install.sh"
+  if [[ -n $build_core ]]; then
+    # The board's compile, done once here: modus's QEMU rig installs the staged system from
+    # guest RAM, loads the fonts, jit-eagers (a core saved hot-only restores every DEFUN
+    # interpreted), and dumps [0x18000000, CORE-END).  It then restores the core and probes it.
+    local modus=${KILN_MODUS:-$KILN_ROOT/modus} w; w=$(mktemp -d)
+    [[ -x $modus/test/run-rpi-core.sh ]] || die "kiln zero: no modus test/run-rpi-core.sh at $modus"
+    gunzip -c "$netboot" > "$w/kernel8.img" || die "kiln zero: cannot unzip $netboot"
+    mkdir -p "$w/tars"; ln -s "$out/kiln-zero.tar" "$w/tars/kiln-zero.tar"
+    local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
+    note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
+    TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" --load=kiln-zero \
+      --blob="$reg@0x1B000000" --blob="$bold@0x1B100000" \
+      --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv #x1B000000 $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv #x1B100000 $(stat -c %s "$bold")))) :fonts)" \
+      --form="(jit-eager)" \
+      --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))" \
+      --expect="MAIN T FONTS T" | tee "$out/core.log"   # the board prints :MAIN as MAIN
+    grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
+    rm -rf "$w"
+    note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"
+    return 0
+  fi
   local host=${builder#*@} dir=kiln-zero
   note "zero: $(du -sh "$out/kiln-zero.tar" | cut -f1) system, staging on $builder"
   ssh "$builder" "rm -rf ~/$dir && mkdir -p ~/$dir" || die "kiln zero: cannot reach $builder"
   rsync -a "$out/" "$builder:$dir/" || die "kiln zero: rsync to $builder failed"
-  if [[ -n $netboot ]]; then
+  if [[ -n $netboot && -n $core ]]; then
+    note "zero: netbooting $netboot with core $(basename "$core")"
+    local modus=${KILN_MODUS:-$KILN_ROOT/modus}
+    [[ -f $modus/scripts/netboot-core-gz.py ]] || die "kiln zero: no modus scripts/netboot-core-gz.py at $modus"
+    scp -q "$netboot" "$core" "$modus/scripts/netboot-core-gz.py" "$builder:$dir/" || die "kiln zero: cannot copy the image and core"
+    local img cn; img=$(basename "$netboot"); cn=$(basename "$core")
+    ssh "$builder" "sudo -n cp ~/$dir/$img ~/$dir/$cn /srv/tftp/ && python3 ~/$dir/netboot-core-gz.py --img $img --core $cn --send '(ssh-boot)' --send-delay 20 > ~/$dir/netboot.log 2>&1 && grep -q CORE-RESTORED ~/$dir/netboot.log" \
+      || die "kiln zero: core netboot failed (see ~/$dir/netboot.log on $builder)"
+  elif [[ -n $netboot ]]; then
     note "zero: netbooting $netboot"
     scp -q "$netboot" "$builder:" || die "kiln zero: cannot copy $netboot"
     local img; img=$(basename "$netboot")
@@ -2546,9 +2595,15 @@ EOF
   local hostip
   hostip=$(ssh "$builder" "ip -4 -o route get $board | sed -n 's/.* src \([0-9.]*\).*/\1/p'")
   [[ -n $hostip ]] || die "kiln zero: $builder has no route to $board"
-  ssh "$builder" "ping -c1 -W2 $board >/dev/null" || die "kiln zero: $board does not answer (network up? (ssh-boot))"
-  note "zero: installing on $board (about half an hour: the Zero compiles it)"
-  ssh "$builder" "~/$dir/install.sh $board $port $start $hostip $media" | tee "$out/install.log"
+  # a few tries: right after (ssh-boot) prints NETUP the first ping can still go unanswered
+  ssh "$builder" "for i in 1 2 3 4 5 6 7 8 9 10; do ping -c1 -W2 $board >/dev/null && exit 0; sleep 1; done; exit 1" \
+    || die "kiln zero: $board does not answer (network up? (ssh-boot))"
+  if [[ -n $core ]]; then
+    note "zero: restored from the core; fetching the clips"
+  else
+    note "zero: installing on $board (about half an hour: the Zero compiles it)"
+  fi
+  ssh "$builder" "~/$dir/install.sh $board $port $start $hostip $media $([[ -n $core ]] && echo 1 || echo 0)" | tee "$out/install.log"
   grep -q KILN-ZERO-DONE "$out/install.log" || die "kiln zero: install did not finish"
   if [[ $start == 1 ]]; then
     note "zero: done -- the desk is on the Zero's screen; a byte on its serial port ends it"

@@ -36,7 +36,7 @@ done
 [ $target = nitro ] && [ -n "$probe" ] && { echo "kiln image: --probe needs an enclave to run in; nitro builds and measures only" >&2; exit 2; }
 case $target in x64-uefi) kernel=generic.efi; qemu=qemu-system-x86_64 ;; zero2w) kernel=kernel8.img; qemu=qemu-system-aarch64 ;; nitro) kernel=modus; qemu="" ;; esac
 say() { echo "[kiln image] $(date +%H:%M:%S) $*"; }
-for tool in sbcl $qemu python3 $([ $target = x64-uefi ] && echo mformat) $([ $target = zero2w ] && echo gdb-multiarch) $([ $target = nitro ] && echo curl); do command -v $tool >/dev/null || { echo "kiln image: needs $tool" >&2; exit 2; }; done
+for tool in sbcl $qemu python3 $([ $target = x64-uefi ] && echo mformat) $([ $target = nitro ] && echo curl); do command -v $tool >/dev/null || { echo "kiln image: needs $tool" >&2; exit 2; }; done
 [ -f "$MODUS/mvm/build-uefi-cl-repl.lisp" ] || { echo "kiln image: no modus checkout at $MODUS (MODUS_SRC=...)" >&2; exit 2; }
 mkdir -p "$out/tars"; out=$(cd "$out" && pwd)
 

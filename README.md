@@ -206,6 +206,30 @@ netboot itself stays a deliberate step
 Folding the core into a measured image is the next step on x64, and a real SNP
 host the one after.
 
+## The Zero
+
+`kiln zero` puts the desk -- with `--media`, the media player -- on a Raspberry Pi
+Zero 2 W running bare-metal modus: its HDMI screen, its USB keyboard and mouse.
+The Zero cannot build, so kiln assembles one system here and the board installs it
+over its link from the machine it is wired to (`--builder`, a Pi 5 at 10.0.0.1).
+Installing compiles everything on the Zero's A53: about half an hour.
+
+A **core** skips that.  `--build-core` installs the same system under QEMU
+raspi3b on the same board image, `jit-eager`s it and saves it (modus's
+`test/run-rpi-core.sh`, ~50 min, no board needed); `--core` then netboots the
+image with the core and only fetches the clips:
+
+```sh
+kiln zero --media --netboot=board.img.gz --build-core=media.core
+kiln zero --media --netboot=board.img.gz --core=media.core --builder=modus@modus-pi   # ~3 min
+```
+
+The core must be native: hot-only JIT promotes a form evaluated twice, never a
+function called often, so a core saved without `jit-eager` restores every DEFUN
+interpreted.  Native, the media core is ~74 MB, and it loads at 0x18000000: it
+fits only with `gpu_mem=32` in the Zero's `config.txt` (480 MiB; the 448 MiB
+default leaves a 64 MB slot).
+
 ## A native window
 
 Two ways, and the difference is the container boundary rather than a preference.

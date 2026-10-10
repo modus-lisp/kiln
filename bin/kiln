@@ -2582,11 +2582,16 @@ EOF
       rm -f "$lock"
       local order; order=$(python3 -c "import json;print(' '.join(n for n in json.load(open('$w/packages.json'))['order'] if n != 'bordeaux-threads'))")
       note "zero: --with ${withs[*]}: $order"
-      for x in $order; do loads+=(--load="$x"); done
-      for x in "${withs[@]}"; do
-        if [[ $x == */* ]]; then
-          mkdir -p "$w/tars/${x%/*}"; cp "$w/tars/${x%%/*}.tar" "$w/tars/$x.tar"; loads+=(--load="$x")
-        fi
+      # an x/test system goes in right after x, before anything heavier: cl-fips/test
+      # installed after cl-marmot stalled for 90 minutes on the board image, and in
+      # 74 s straight after cl-fips
+      for x in $order; do
+        loads+=(--load="$x")
+        local y; for y in "${withs[@]}"; do
+          if [[ $y == "$x"/* ]]; then
+            mkdir -p "$w/tars/${y%/*}"; cp "$w/tars/$x.tar" "$w/tars/$y.tar"; loads+=(--load="$y")
+          fi
+        done
       done
     fi
     # the fonts go past the tarballs (run-rpi-core.sh puts tarball k at 0x1A000000 + 16 MB * k)

@@ -41,7 +41,8 @@ def depends_on(asd_text, system):
     file has one defsystem)."""
     text = re.sub(r";[^\n]*", "", asd_text)
     # isolate the defsystem for this name when there are several
-    blocks = re.split(r"\(defsystem\s+", text, flags=re.I)[1:]
+    # (defsystem ...) or (asdf:defsystem ...): cl-marmot spells it the second way
+    blocks = re.split(r"\((?:asdf:)?defsystem\s+", text, flags=re.I)[1:]
     chosen = [b for b in blocks if re.match(r'"?([^\s")]+)"?', b) and
               re.match(r'"?([^\s")]+)"?', b).group(1).lower().lstrip("#:") == system.lower()]
     if not chosen: chosen = blocks
@@ -107,9 +108,26 @@ def main():
     a = ap.parse_args()
     archives = a.archives + glob.glob(os.path.expanduser("~/quicklisp/dists/*/archives"))
     pins = read_lock(a.lock); os.makedirs(a.out, exist_ok=True)
-    order, info, unresolved, seen = [], {}, [], set()
+    order, info, unresolved, seen, asds = [], {}, [], set(), {}
     def visit(name, via):
-        name = name.lower().split("/")[0]       # seal/http -> the seal repo and its primary .asd
+        # A SUB-SYSTEM (seal/http) lives in its base's repo and .asd: resolve the
+        # base, then the sub-system's own :depends-on, and list it after them with
+        # a copy of the base tarball at <base>/<sub>.tar -- the bare image installs
+        # one SYSTEM per tarball, so cl-nostr's "seal/http" went missing when it
+        # was folded into "seal" (seal.http:get-string, a reader error).
+        full = name.lower(); base = full.split("/")[0]
+        visit_base(base, via)
+        if full == base or full in seen or base not in asds: return
+        seen.add(full)
+        for d in depends_on(asds[base], full):
+            if d.lower() != base: visit(d, full)
+        tar = os.path.join(a.out, full + ".tar")
+        os.makedirs(os.path.dirname(tar), exist_ok=True)
+        with open(os.path.join(a.out, base + ".tar"), "rb") as s, open(tar, "wb") as d: d.write(s.read())
+        info[full] = dict(source=info[base]["source"], commit=info[base]["commit"], subsystem_of=base,
+                          tar=full + ".tar", sha256=sha256(tar), bytes=os.path.getsize(tar))
+        order.append(full)
+    def visit_base(name, via):
         if name in seen or name in BUILTIN: return
         seen.add(name)
         repo = find_repo(a.root, name)
@@ -137,6 +155,7 @@ def main():
                 with gzip.open(arc, "rb") as s, open(tar, "wb") as d: d.write(s.read())
             asd = asd_from_tar(tar, name)
             info[name] = dict(source=os.path.basename(arc), commit=None)
+        asds[name] = asd
         deps = depends_on(asd, name)
         info[name].update(depends_on=deps)
         for d in deps: visit(d, name)

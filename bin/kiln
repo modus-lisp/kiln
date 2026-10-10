@@ -2310,6 +2310,7 @@ cmd_zero() {
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
   local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core=""
+  local -a withs=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -2321,6 +2322,7 @@ cmd_zero() {
       --media) media=1 ;;
       --core)  core=${val:?--core=FILE.core} ;;
       --build-core) build_core=${val:?--build-core=OUT.core} ;;
+      --with)  withs+=("${val:?--with=SYSTEM}") ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2338,6 +2340,10 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
   --build-core=OUT  instead of installing on the board: install this same system under
                     QEMU raspi3b on the --netboot image, jit-eager it, and save-and-die it
                     to OUT (modus test/run-rpi-core.sh; ~50 min, here, no board needed)
+  --with=SYSTEM     with --build-core: also install SYSTEM and its dependency closure (resolved
+                    from this workspace's checkouts at HEAD, else Quicklisp: boot/image-deps.py)
+                    into the core; SYSTEM/test style names install that system from SYSTEM's
+                    tarball.  Repeatable.  bordeaux-threads is the board's one-thread zero-bt
   --core=FILE       with --netboot: boot that image WITH this core (from --build-core on the
                     same image and system) -- the system is already in it, native, so only
                     the RAM-disk clips are fetched: ~3 min, not the half hour of compiling.
@@ -2387,12 +2393,15 @@ EOF
   # nothing decodes sound), reel its packages and the VP8 decoder (cassette names the other
   # codecs' packages), and the files arrive on a cabinet filesystem: pagetree + cabinet +
   # modus's lib/cabinet-fs.lisp, which routes CL's OPEN and DIRECTORY to it.
+  # zero-bt, the one-thread bordeaux-threads, goes in EVERY kiln-zero: --with drops the real
+  # bordeaux-threads from each closure on the promise that the board already has it, and a
+  # library that nicknames bt (cl-nostr) cannot even be READ without the package.
+  cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
   local media_files=""
   if [[ $media == 1 ]]; then
     for r in reed reel cassette warp pagetree cabinet modus; do
       [[ -d $KILN_ROOT/$r ]] || die "kiln zero --media: no $r checkout at $KILN_ROOT/$r"
     done
-    cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
     cp "$KILN_ROOT/reed/src/common/packages.lisp" "$sys/src/reed-packages.lisp"
     cp "$KILN_ROOT/reel/src/packages.lisp" "$sys/src/reel-packages.lisp"
     for f in tables bool transform intra intra-neon loopfilter inter-tables inter inter-neon loopfilter-neon; do
@@ -2410,8 +2419,7 @@ EOF
     for f in packages utf8 codec fs; do
       cp "$KILN_ROOT/cabinet/src/$f.lisp" "$sys/src/cab-$f.lisp"; done
     cp "$KILN_ROOT/modus/lib/cabinet-fs.lisp" "$sys/src/cabinet-fs.lisp"
-    media_files='(:file "zero-bt")
-     (:file "pt-packages") (:file "pt-device") (:file "pt-device-file") (:file "pt-device-sector")
+    media_files='(:file "pt-packages") (:file "pt-device") (:file "pt-device-file") (:file "pt-device-sector")
      (:file "pt-pager") (:file "pt-node") (:file "pt-btree") (:file "pt-store")
      (:file "cab-packages") (:file "cab-utf8") (:file "cab-codec") (:file "cab-fs") (:file "cabinet-fs")
      (:file "reed-packages") (:file "reel-packages")
@@ -2451,6 +2459,7 @@ EOF
                    (:file "otl") (:file "hint") (:file "metrics") (:file "color")))
      (:file "glass-packages") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
+     (:file "zero-bt")
      $media_files
      (:file "zero") (:file "app")))))
 EOF
@@ -2560,11 +2569,34 @@ EOF
     [[ -x $modus/test/run-rpi-core.sh ]] || die "kiln zero: no modus test/run-rpi-core.sh at $modus"
     gunzip -c "$netboot" > "$w/kernel8.img" || die "kiln zero: cannot unzip $netboot"
     mkdir -p "$w/tars"; ln -s "$out/kiln-zero.tar" "$w/tars/kiln-zero.tar"
+    local -a loads=(--load=kiln-zero)
+    if [[ ${#withs[@]} -gt 0 ]]; then
+      # the closure, dependencies first; kiln-zero (installed first) already carries zero-bt,
+      # the one-thread bordeaux-threads, so the real one is left out
+      local base sys_bases=() lock; lock=$(mktemp); local x
+      for x in "${withs[@]}"; do sys_bases+=("${x%%/*}"); done
+      python3 "$ROOT/boot/image-deps.py" --out "$w/tars" --root "$KILN_ROOT" --lock "$lock" \
+        --archives "$modus/test/ladder/tars" $(for a in "$HOME"/quicklisp/dists/*/archives; do printf -- '--archives %s ' "$a"; done) \
+        "${sys_bases[@]}" > "$w/packages.json" \
+        || die "kiln zero: cannot resolve ${withs[*]} (see $w/packages.json)"
+      rm -f "$lock"
+      local order; order=$(python3 -c "import json;print(' '.join(n for n in json.load(open('$w/packages.json'))['order'] if n != 'bordeaux-threads'))")
+      note "zero: --with ${withs[*]}: $order"
+      for x in $order; do loads+=(--load="$x"); done
+      for x in "${withs[@]}"; do
+        if [[ $x == */* ]]; then
+          mkdir -p "$w/tars/${x%/*}"; cp "$w/tars/${x%%/*}.tar" "$w/tars/$x.tar"; loads+=(--load="$x")
+        fi
+      done
+    fi
+    # the fonts go past the tarballs (run-rpi-core.sh puts tarball k at 0x1A000000 + 16 MB * k)
     local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
+    local fa=$(( 0x1A000000 + 16777216 * ${#loads[@]} )) fb
+    fb=$(( fa + 1048576 ))
     note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
-    TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" --load=kiln-zero \
-      --blob="$reg@0x1B000000" --blob="$bold@0x1B100000" \
-      --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv #x1B000000 $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv #x1B100000 $(stat -c %s "$bold")))) :fonts)" \
+    TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
+      --blob="$reg@$fa" --blob="$bold@$fb" \
+      --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)" \
       --form="(jit-eager)" \
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))" \
       --expect="MAIN T FONTS T" | tee "$out/core.log"   # the board prints :MAIN as MAIN

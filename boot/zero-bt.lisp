@@ -10,7 +10,7 @@
   (:use #:cl)
   (:export #:make-lock #:with-lock-held #:acquire-lock #:release-lock
            #:make-recursive-lock #:with-recursive-lock-held
-           #:make-thread #:current-thread #:all-threads #:thread-alive-p #:join-thread
+           #:make-thread #:destroy-thread #:current-thread #:all-threads #:thread-alive-p #:join-thread
            #:make-condition-variable #:condition-wait #:condition-notify))
 
 (in-package #:bordeaux-threads)
@@ -28,6 +28,8 @@
 (defun make-thread (fn &key name)
   (declare (ignore fn))
   (error "bordeaux-threads: this board has one thread; nothing may start another (~a)" name))
+(defun destroy-thread (thread)
+  (error "bordeaux-threads: this board has one thread; there is none to destroy (~a)" thread))
 (defun current-thread () :main)
 (defun all-threads () (list :main))
 (defun thread-alive-p (thread) (eq thread :main))

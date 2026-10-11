@@ -2295,6 +2295,105 @@ USAGE
     note "launched${serial:+ on $serial}"
 }
 
+# The Raspberry Pi firmware a standalone Zero card boots from: the GPU's own
+# bootloader and firmware (closed, Broadcom's licence, shipped beside them), and the
+# Zero 2 W device tree -- pinned by tag and checksum, fetched once into ~/.kiln.
+ZERO_FW_TAG=1.20260915
+ZERO_FW_FILES="
+4245ec23b58158dc3e55f3e065eb4ecc0c0705d76c8db506e9f824941feee32e bootcode.bin
+32f990801e7765bae6fe5cb940ba5eeff02dd0dac8dc5474db5b3fd345281790 start.elf
+7853f2b51e4489f8b3ce6f9c52fd0afdda38c7383961524e0883d34afcb4827b fixup.dat
+ce3ca3176658cddfad2ef6414d858bad61ce5242382eb0755248ea0edfcb0783 bcm2710-rpi-zero-2-w.dtb
+c7283ff51f863d93a275c66e3b4cb08021a5dd4d8c1e7acc47d872fbe52d3d6b LICENCE.broadcom"
+
+zero_firmware() {
+  local d=$HOME/.kiln/firmware/$ZERO_FW_TAG sum f
+  mkdir -p "$d"
+  while read -r sum f; do
+    [[ -n $f ]] || continue
+    if ! echo "$sum  $d/$f" | sha256sum -c --status 2>/dev/null; then
+      curl -sSfL -o "$d/$f.part" "https://github.com/raspberrypi/firmware/raw/$ZERO_FW_TAG/boot/$f" \
+        || die "kiln zero: cannot fetch firmware $f"
+      echo "$sum  $d/$f.part" | sha256sum -c --status || die "kiln zero: firmware $f does not match its pinned checksum"
+      mv "$d/$f.part" "$d/$f"
+    fi
+  done <<< "$ZERO_FW_FILES"
+  echo "$d"
+}
+
+# zero_sd_image BOARD.img.gz CORE OUT.img -- a card the Zero boots from on its own:
+# one FAT32 partition holding the firmware, the kernel, the core and a config.txt.
+# The GPU firmware loads kernel8.img at 0x80000 and, through `initramfs`, the core
+# at 0x18000000 -- exactly where a core netboot puts it, so modus restores it and
+# runs *CORE-RESTART-HOOK* (the desk).  gpu_mem=32 gives the ARM 480 MiB, the room
+# above 0x18000000 a core needs.  Built with mtools: no root, no loop devices.
+zero_sd_image() {
+  local img=$1 core=$2 out=$3 fw w
+  fw=$(zero_firmware)
+  w=$(mktemp -d)
+  gunzip -c "$img" > "$w/kernel8.img" || die "kiln zero: cannot unzip $img"
+  cp "$core" "$w/desk.core"
+  cat > "$w/config.txt" <<'CFG'
+# modus on a Raspberry Pi Zero 2 W -- written by `kiln zero --sd-image`
+arm_64bit=1
+kernel=kernel8.img
+# the saved desk: the firmware places it where modus looks for a core
+initramfs desk.core 0x18000000
+# 480 MiB for the ARM: the core lives in [0x18000000, top)
+gpu_mem=32
+# the serial console (mini UART, GPIO 14/15) needs a fixed core clock
+enable_uart=1
+core_freq=250
+# drive HDMI even when the screen answers late
+hdmi_force_hotplug=1
+disable_overscan=1
+CFG
+  cat > "$w/README.txt" <<'TXT'
+modus on a Raspberry Pi Zero 2 W, written by `kiln zero --sd-image`.
+
+Put the card in, connect HDMI and a USB hub with a keyboard and mouse, power on:
+the desk comes up on the screen (about a minute; the 115200 serial console on
+GPIO 14/15 shows the boot).  A byte on the serial console ends the desk and
+leaves a modus REPL there.
+
+bootcode.bin, start.elf, fixup.dat and the device tree are the Raspberry Pi
+firmware (see LICENCE.broadcom); kernel8.img and desk.core are modus.
+TXT
+  local f total mb
+  total=0
+  for f in "$fw"/* "$w"/*; do total=$(( total + $(stat -c %s "$f") )); done
+  mb=$(( total / 1048576 + 48 ))           # files + room; FAT32 wants >= 33 MB anyway
+  (( mb < 64 )) && mb=64
+  # the partition, as a file: FAT32, then the files
+  dd if=/dev/zero of="$w/part.img" bs=1M count=$mb status=none
+  export MTOOLS_SKIP_CHECK=1
+  # mtools' mformat, not mkfs.vfat: it is in /sbin, often off PATH, and mtools is
+  # needed for the copies anyway.  -H 2048: the partition starts at sector 2048.
+  mformat -i "$w/part.img" -F -v MODUS -T $(( mb * 2048 )) -h 64 -s 32 -H 2048 :: \
+    || die "kiln zero: mformat failed"
+  for f in "$fw"/*; do mcopy -i "$w/part.img" "$f" ::"$(basename "$f")" || die "kiln zero: mcopy $f failed"; done
+  for f in kernel8.img desk.core config.txt README.txt; do
+    mcopy -i "$w/part.img" "$w/$f" ::$f || die "kiln zero: mcopy $f failed"
+  done
+  # the disk: an MBR with one bootable FAT32-LBA partition at sector 2048
+  python3 - "$w/part.img" "$out" <<'PY'
+import sys, struct, os
+part, out = sys.argv[1], sys.argv[2]
+start = 2048; n = os.path.getsize(part) // 512
+mbr = bytearray(512)
+mbr[446:462] = struct.pack('<B3sB3sII', 0x80, b'\xfe\xff\xff', 0x0c, b'\xfe\xff\xff', start, n)
+mbr[510:512] = b'\x55\xaa'
+with open(out, 'wb') as o, open(part, 'rb') as p:
+    o.write(mbr); o.write(b'\0' * (start * 512 - 512))
+    while True:
+        b = p.read(1 << 20)
+        if not b: break
+        o.write(b)
+PY
+  rm -rf "$w"
+  note "zero: $out ($(du -h "$out" | cut -f1)) -- write it with: sudo dd if=$out of=/dev/sdX bs=4M conv=fsync status=progress"
+}
+
 cmd_zero() {
   # THE PHONE APP ON A RASPBERRY PI ZERO 2 W running bare-metal modus: the desk on
   # the Zero's HDMI screen, its USB keyboard and mouse as input (boot/zero.lisp
@@ -2309,7 +2408,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core=""
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image=""
   local -a withs=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -2323,6 +2422,7 @@ cmd_zero() {
       --core)  core=${val:?--core=FILE.core} ;;
       --build-core) build_core=${val:?--build-core=OUT.core} ;;
       --with)  withs+=("${val:?--with=SYSTEM}") ;;
+      --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2349,6 +2449,14 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     the RAM-disk clips are fetched: ~3 min, not the half hour of compiling.
                     A media core is ~74 MB; it fits only with gpu_mem=32 in the Zero's
                     config.txt (480 MiB; the 448 MiB default leaves a 64 MB slot)
+  --sd-image=OUT.img
+                    a STANDALONE card: build the board image from the modus checkout (or
+                    use --netboot=IMG.gz), build the native desk core on it under QEMU
+                    (as --build-core), and write OUT.img -- Raspberry Pi firmware, the
+                    kernel, the core, and a config.txt that has the firmware place the core
+                    at 0x18000000 -- for `dd of=/dev/sdX`.  The Zero boots straight into
+                    the desk; no network, no builder.  Takes --with; not --media (the
+                    clips have no place to come from yet)
 Output in $KILN_STATE/zero.
 USAGE
         return 0 ;;
@@ -2356,9 +2464,15 @@ USAGE
     esac
     shift
   done
-  [[ -n $builder || -n $build_core ]] || die "kiln zero: --builder=USER@HOST is required (the machine wired to the Zero)"
+  if [[ -n $sd_image ]]; then
+    [[ $media == 0 ]] || die "kiln zero: --sd-image does not take --media yet (the clips have nowhere to come from on a standalone card)"
+    [[ -z $core && -z $build_core ]] || die "kiln zero: --sd-image builds its own core"
+    sd_image=$(realpath -m "$sd_image")
+  fi
+  [[ -n $builder || -n $build_core || -n $sd_image ]] || die "kiln zero: --builder=USER@HOST is required (the machine wired to the Zero)"
   [[ -z $core || -n $netboot ]] || die "kiln zero: --core needs --netboot (the image the core was saved on)"
   [[ -z $build_core || -n $netboot ]] || die "kiln zero: --build-core needs --netboot (the image to save the core on)"
+  [[ -z $netboot ]] || netboot=$(realpath "$netboot")
   local r
   for r in brotli-pure cram scribe glass; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln zero: no $r checkout at $KILN_ROOT/$r"
@@ -2366,6 +2480,22 @@ USAGE
   local out=$KILN_STATE/zero sys
   sys=$out/kiln-zero
   rm -rf "$out"; mkdir -p "$sys/src/scribe/tables"
+  if [[ -n $sd_image ]]; then
+    build_core=$out/desk.core
+    if [[ -z $netboot ]]; then
+      # the board image, built here from the modus checkout: the card holds exactly what
+      # the core is saved on (a core only restores on the image that wrote it)
+      local modus=${KILN_MODUS:-$KILN_ROOT/modus}
+      [[ -f $modus/mvm/build-rpi-cl-repl.lisp ]] || die "kiln zero: no modus checkout at $modus"
+      note "zero: building the board image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
+      # the same flags as the rig's board images: the console on the mini UART (GPIO
+      # 14/15), the network and SSH built in but not started
+      (cd "$modus" && MODUS_CL_REPL_OUT=$out/board.img MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_RPI_CHAINLOAD=1 \
+         sbcl --dynamic-space-size 8192 --script mvm/build-rpi-cl-repl.lisp > "$out/board-build.log" 2>&1) \
+        || die "kiln zero: board image build failed (see $out/board-build.log)"
+      gzip -kf "$out/board.img"; netboot=$out/board.img.gz
+    fi
+  fi
   local f
   for f in packages bitio tables huffman dict decompress brotli; do
     cp "$KILN_ROOT/brotli-pure/src/$f.lisp" "$sys/src/brotli-$f.lisp"; done
@@ -2598,15 +2728,23 @@ EOF
     local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
     local fa=$(( 0x1A000000 + 16777216 * ${#loads[@]} )) fb
     fb=$(( fa + 1048576 ))
+    # a standalone card's core starts the desk by itself after the restore
+    local -a hookform=()
+    [[ -n $sd_image ]] && hookform=(--form="(progn (setq *core-restart-hook* (quote kiln-zero-main)) :hook)")
     note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
     TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
       --blob="$reg@$fa" --blob="$bold@$fb" \
       --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)" \
       --form="(jit-eager)" \
+      "${hookform[@]}" \
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))" \
       --expect="MAIN T FONTS T" | tee "$out/core.log"   # the board prints :MAIN as MAIN
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
+    if [[ -n $sd_image ]]; then
+      zero_sd_image "$netboot" "$build_core" "$sd_image"
+      return 0
+    fi
     note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"
     return 0
   fi

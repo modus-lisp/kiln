@@ -275,6 +275,33 @@
     (%zero-pointer-show)
     0))
 
+;;; --- glyphs, rendered before the core is saved -------------------------------------------
+;;;
+;;; Rasterising a glyph from its outline costs ~5 ms at 16 px on the Zero (40 px digits, more),
+;;; and the desk loop is the render loop: the Clock's once-a-second redraw of a digit it had not
+;;; drawn yet took a 20-40 ms frame.  The core build calls this after JIT-EAGER, so glass's glyph
+;;; cache -- heap like everything else -- is saved full and a booted desk never rasterises what it
+;;; shows.  Every glyph at all four of the cache's quarter-pixel pen offsets, since a run's later
+;;; glyphs land on any of them.  Sizes and fonts are the desk's own (app.lisp: titles and menu
+;;; 16, the Clock's 40 digits and 13 caption, Notes' 17 body and bold 22 title).
+
+(defparameter *kz-prerender*
+  '((nil 13 :ascii) (nil 16 :ascii) (nil 17 :ascii) (nil 40 "0123456789:") (t 22 :ascii)))
+
+(defun kiln-zero-prerender-glyphs ()
+  "Fill glass's glyph cache with *KZ-PRERENDER*.  Returns the cache's size."
+  (dolist (spec *kz-prerender*)
+    (destructuring-bind (bold size chars) spec
+      (let ((font (glass:default-font bold))
+            (codes (if (eq chars :ascii)
+                       (loop for c from 32 to 126 collect c)
+                       (map 'list (function char-code) chars))))
+        (dolist (code codes)
+          (let ((gid (scribe:font-glyph-index font code)))
+            (dolist (q '(0d0 0.25d0 0.5d0 0.75d0))
+              (glass::%glyph-entry font gid size q)))))))
+  (hash-table-count glass::*glyph-cache*))
+
 ;;; Breadcrumbs on the serial port: each stage of KILN-ZERO-MAIN, and the FIRST use of each
 ;;; pseudo-syscall (size, fill, event, blit) -- so a start that never reaches the screen says
 ;;; how far it got.  The board is single-threaded: when the app is wedged, serial is the only

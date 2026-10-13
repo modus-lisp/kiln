@@ -2736,6 +2736,7 @@ EOF
       --blob="$reg@$fa" --blob="$bold@$fb" \
       --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)" \
       --form="(jit-eager)" \
+      --form="(list :glyphs (kiln-zero-prerender-glyphs))" \
       "${hookform[@]}" \
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))" \
       --expect="MAIN T FONTS T" | tee "$out/core.log"   # the board prints :MAIN as MAIN

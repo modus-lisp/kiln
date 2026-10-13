@@ -23,17 +23,60 @@ KILN_STATE_DIR=${KILN_STATE:-$HOME/.local/state/kiln}; mkdir -p "$KILN_STATE_DIR
 target=${1:-}; case $target in x64-uefi|zero2w|nitro) shift ;; rpi|pi|zero) target=zero2w; shift ;; x64|uefi) target=x64-uefi; shift ;; aws|enclave) target=nitro; shift ;;
   *) echo "kiln image: the first argument is the TARGET: x64-uefi, zero2w or nitro" >&2; exit 2 ;; esac
 out=$ROOT/kiln-image-$target; withs=(); snp=0; probe=""; expect=""; image=""; ddc=""; strict=""; stage=""; console=ssh; nocore=""; signkey=""; signcert=""; nosign=""
+sshauth=""; sshhost=""; sshauto=""; netip=""; netgw=""   # x64-uefi: a key-only SSH server with a baked key pair at a static address
 for a in "$@"; do
   v=${a#*=}
   case $a in
     --out=*) out=$v ;; --with=*) withs+=("$v") ;; --snp=*) snp=$v ;; --console=*) console=$v ;; --nocore) nocore=1 ;; --sign-key=*) signkey=$v ;; --sign-cert=*) signcert=$v ;; --nosign) nosign=1 ;; --probe=*) probe=$v ;; --expect=*) expect=$v ;;
     --reuse=*) image=$v ;; --ddc) ddc=1 ;; --strict) strict=--strict ;; --stage=*) stage=$v ;;
+    --ssh-auth-key-file=*) sshauth=$v ;; --ssh-host-key-file=*) sshhost=$v ;; --ssh-autostart) sshauto=1 ;;
+    --net-ip=*) netip=$v ;; --net-gw=*) netgw=$v ;;
     *) echo "kiln image: unknown argument $a" >&2; exit 2 ;;
   esac
 done
 [ $target != x64-uefi ] && [ "$snp" != 0 ] && { echo "kiln image: --snp is x64-uefi only" >&2; exit 2; }
 [ $target != x64-uefi ] && [ -n "$ddc" ] && { echo "kiln image: --ddc is x64-uefi only (test/run-uefi-ddc.sh)" >&2; exit 2; }
 [ $target = nitro ] && [ -n "$probe" ] && { echo "kiln image: --probe needs an enclave to run in; nitro builds and measures only" >&2; exit 2; }
+if [ $target != x64-uefi ] && [ -n "$sshauth$sshhost$sshauto$netip$netgw" ]; then
+  echo "kiln image: --ssh-*, --net-* are x64-uefi only" >&2; exit 2; fi
+[ -n "$sshauto" ] && [ -n "$probe" ] && { echo "kiln image: --ssh-autostart gives up the serial REPL, so --probe cannot run; prove the kernel on the box (attested SSH)" >&2; exit 2; }
+if [ -n "$sshauth$sshhost" ]; then
+  [ -n "$sshauth" ] && [ -n "$sshhost" ] || { echo "kiln image: a baked SSH key needs BOTH --ssh-auth-key-file and --ssh-host-key-file" >&2; exit 2; }
+  for f in "$sshauth" "$sshhost"; do
+    [ -r "$f" ] || { echo "kiln image: cannot read $f" >&2; exit 2; }
+    [[ "$(tr -d ' \n' < "$f")" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "kiln image: $f must be 64 hex digits (32 bytes)" >&2; exit 2; }
+  done
+  [ -n "$sshauto" ] || { echo "kiln image: baked keys without --ssh-autostart would be unused; add it" >&2; exit 2; }
+fi
+if [ -n "$netip$netgw" ]; then
+  [ -n "$netip" ] && [ -n "$netgw" ] || { echo "kiln image: --net-ip and --net-gw go together" >&2; exit 2; }
+  for a in "$netip" "$netgw"; do [[ $a =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "kiln image: $a is not a dotted IPv4 address" >&2; exit 2; }; done
+fi
+# The build's environment (x64-uefi).  Read from the files here, so the keys are
+# never on a command line or in a log; `env' passes them to the one sbcl process.
+uefi_env=()
+[ -n "$sshauth" ] && uefi_env+=(MODUS_SSH_AUTH_KEY_HEX="$(tr -d ' \n' < "$sshauth")")
+[ -n "$sshhost" ] && uefi_env+=(MODUS_SSH_HOST_KEY_HEX="$(tr -d ' \n' < "$sshhost")")
+[ -n "$sshauto" ] && uefi_env+=(MODUS_SSH_AUTOSTART=1)
+[ -n "$netip" ] && uefi_env+=(MODUS_NET_IP="$netip" MODUS_NET_GW="$netgw")
+# THE BUILD ID.  The kernel carries a per-build id (%core-build-id) that binds a
+# saved core to the binary that wrote it, and an unset MODUS_BUILD_ID draws a
+# fresh random one on every build -- so no two builds are the same bytes and no
+# launch digest can be computed ahead of time.  Here it is a hash of everything
+# that goes into the kernel: the modus commit, the uncommitted diff, the SNP
+# mode, the settings above.  Same inputs, same kernel.  (The baked host key is
+# hashed, never written anywhere.)
+modus_tree=clean; modus_dirty=0
+if [ $target = x64-uefi ]; then
+  modus_dirty=$(git -C "$MODUS" status --porcelain -- mvm lib boot net 2>/dev/null | wc -l)
+  [ "$modus_dirty" = 0 ] || modus_tree="dirty ($modus_dirty paths)"
+  buildid=$( { git -C "$MODUS" rev-parse HEAD 2>/dev/null; git -C "$MODUS" diff HEAD -- mvm lib boot net 2>/dev/null; \
+               echo "snp=$snp"; printf '%s\n' "${uefi_env[@]}"; } | python3 -c "
+import hashlib, sys
+print(int(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:15], 16) % (2**28 - 1) + 1)")
+  uefi_env+=(MODUS_BUILD_ID="$buildid")
+  echo "[kiln image] build id $buildid (modus tree: $modus_tree)"
+fi
 case $target in x64-uefi) kernel=generic.efi; qemu=qemu-system-x86_64 ;; zero2w) kernel=kernel8.img; qemu=qemu-system-aarch64 ;; nitro) kernel=modus; qemu="" ;; esac
 say() { echo "[kiln image] $(date +%H:%M:%S) $*"; }
 for tool in sbcl $qemu python3 $([ $target = x64-uefi ] && echo mformat) $([ $target = zero2w ] && echo gdb-multiarch) $([ $target = nitro ] && echo curl); do command -v $tool >/dev/null || { echo "kiln image: needs $tool" >&2; exit 2; }; done
@@ -50,7 +93,7 @@ say "   load order: $order"; [ -n "$unres" ] && say "   UNRESOLVED (not in the i
 if [ -n "$image" ]; then say "2. kernel: reusing $image"; cp "$image" "$out/$kernel"
 elif [ $target = x64-uefi ]; then
   say "2. SBCL build of the generic UEFI image (snp=$snp, net+ssh, 4 MB fetch buffer)"
-  ( cd "$MODUS" && MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
+  ( cd "$MODUS" && env "${uefi_env[@]}" MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
       MODUS_CL_REPL_OUT="$out/$kernel" sbcl --dynamic-space-size 12288 --script mvm/build-uefi-cl-repl.lisp ) > "$out/build.log" 2>&1 \
     || { say "FAIL: build (see $out/build.log)"; exit 1; }
 elif [ $target = nitro ]; then
@@ -78,7 +121,7 @@ if [ -n "$ddc" ]; then
   # source; what it proves is THAT file, so generic.efi becomes it (the plain
   # build above is replaced), and the rig below runs on it.
   say "2b. DDC: modus-sh compiles the same source twice and must match SBCL; the match is what ships"
-  ( cd "$MODUS" && MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
+  ( cd "$MODUS" && env "${uefi_env[@]}" MODUS_UEFI_SNP=$snp MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_BUFSZ=4194304 \
       MODUS_DDC_WORK="$out/ddc" test/run-uefi-ddc.sh ) > "$out/ddc.log" 2>&1 && say "   DDC PASS" || { say "FAIL: DDC (see $out/ddc.log)"; exit 1; }
   cp "$out/ddc/sbcl.efi" "$out/$kernel"; say "   $kernel := the DDC'd image, $(stat -c %s "$out/$kernel") bytes md5 $(md5sum "$out/$kernel" | cut -c1-32)"
 fi
@@ -166,6 +209,30 @@ json.dump(pcrs, open(sys.argv[2], "w"), indent=1); print("   " + " ".join(f"{k}=
 PY
   say "   $out/modus.eif $(stat -c %s "$out/modus.eif") bytes"
 else
+if [ -n "$sshauto" ]; then
+  # An autostart image gives its serial console to its SSH server once NETUP
+  # prints, so the REPL-driven core step (install, save-and-die, restore, probe)
+  # cannot run on it.  The deployed image needs no core: it is the kernel, and
+  # the packages it names, if any, are installed by the kernel's own boot path.
+  # What CAN be checked here is that the kernel boots to NETUP.
+  say "3. no core for an --ssh-autostart image (its serial console belongs to the SSH server); smoke boot to NETUP"
+  [ -n "$probe" ] && { say "FAIL: --probe needs the serial REPL, which an --ssh-autostart image gives up"; exit 1; }
+  smk="$out/smoke"; mkdir -p "$smk"
+  dd if=/dev/zero of="$smk/boot.img" bs=1M count=$(( $(stat -c %s "$out/$kernel") / 1048576 + 40 )) status=none
+  mformat -i "$smk/boot.img" -F :: && mmd -i "$smk/boot.img" ::/EFI ::/EFI/BOOT && mcopy -i "$smk/boot.img" "$out/$kernel" ::/EFI/BOOT/BOOTX64.EFI \
+    || { say "FAIL: smoke disk"; exit 1; }
+  cp /usr/share/OVMF/OVMF_VARS_4M.fd "$smk/vars.fd"
+  timeout 400 qemu-system-x86_64 -m 1024 -machine q35 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file="$smk/vars.fd" \
+    -drive format=raw,file="$smk/boot.img" -display none -serial file:"$smk/serial.txt" -no-reboot \
+    -device pcie-root-port,id=rp1,bus=pcie.0 -device virtio-net-pci,bus=rp1,romfile=,netdev=n0 -netdev user,id=n0 > "$smk/qemu.log" 2>&1 &
+  QP=$!
+  for i in $(seq 1 3000); do grep -aq NETUP "$smk/serial.txt" 2>/dev/null && break; kill -0 $QP 2>/dev/null || break; sleep 0.1; done
+  kill $QP 2>/dev/null; wait $QP 2>/dev/null
+  grep -aq NETUP "$smk/serial.txt" 2>/dev/null || { say "FAIL: smoke boot never reached NETUP (see $smk/serial.txt)"; exit 1; }
+  say "   smoke: NETUP reached under QEMU (virtio-net, OVMF)"
+  rm -f "$out/modus.core"
+else
 say "3. install under QEMU, save-and-die, dump the core, restore it"
 loads=(); for n in $order; do loads+=("--load=$n"); done
 rig=test/run-uefi-core.sh; [ $target = zero2w ] && rig=test/run-rpi-core.sh
@@ -174,8 +241,11 @@ rig=test/run-uefi-core.sh; [ $target = zero2w ] && rig=test/run-rpi-core.sh
 grep -a "^   core:\|^   probe reply\|^PASS\|^FAIL" "$out/core.log" | sed 's/^/   /'
 [ $rc = 0 ] || { say "FAIL: core (see $out/core.log)"; exit 1; }
 fi
+fi
 
 say "4. manifest"
+KILN_SSH_AUTH_KEY_HEX="$( [ -n "$sshauth" ] && tr -d ' \n' < "$sshauth")" KILN_SSH_AUTOSTART="$sshauto" KILN_NET_IP="$netip" KILN_NET_GW="$netgw" \
+KILN_BUILD_ID="${buildid:-}" KILN_MODUS_TREE="$modus_tree" \
 NITRO_BLOBS_DIR="${BLOBS:-}" python3 - "$out" "$snp" "$KILN" "$MODUS" "$probe" "$expect" "$ddc" "$target" "$kernel" <<'PY'
 import json, sys, hashlib, subprocess, os, datetime
 out, snp, kiln, modus, probe, expect, ddc, target, kernel = sys.argv[1:10]
@@ -183,7 +253,14 @@ def sha(p):
     h = hashlib.sha256(); h.update(open(p, "rb").read()); return h.hexdigest()
 def rev(d): return subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 if target == "x64-uefi":
-    build = dict(MODUS_UEFI_SNP=snp, MODUS_NET_BUILD="1", MODUS_SSH_BUILD="1", MODUS_NET_BUFSZ="4194304", script="mvm/build-uefi-cl-repl.lisp")
+    build = dict(MODUS_UEFI_SNP=snp, MODUS_NET_BUILD="1", MODUS_SSH_BUILD="1", MODUS_NET_BUFSZ="4194304", script="mvm/build-uefi-cl-repl.lisp",
+                 MODUS_BUILD_ID=os.environ.get("KILN_BUILD_ID", ""), modus_tree=os.environ.get("KILN_MODUS_TREE", ""))
+    # What the image is FOR: key-only SSH at a static address.  The host key is a
+    # private seed, so only its presence is recorded, never its value.
+    if os.environ.get("KILN_SSH_AUTH_KEY_HEX"):
+        build.update(MODUS_SSH_AUTH_KEY_HEX=os.environ["KILN_SSH_AUTH_KEY_HEX"], MODUS_SSH_HOST_KEY="baked from --ssh-host-key-file (value not recorded)")
+    if os.environ.get("KILN_SSH_AUTOSTART"): build["MODUS_SSH_AUTOSTART"] = "1"
+    if os.environ.get("KILN_NET_IP"): build.update(MODUS_NET_IP=os.environ["KILN_NET_IP"], MODUS_NET_GW=os.environ["KILN_NET_GW"])
     core_addr = "0x20000000"
     att = dict(measured_by="AmdSev OVMF -kernel generic.efi (kernel-hashes=on); the core is NOT inside the measured image: it is placed in RAM by the loader and its sha256 is pinned here",
                verify="test/snp/verify-report.py REPORT --measurement <launch digest of generic.efi> --hostkey-b64 <handshake key> --vcek VCEK.pem")
@@ -227,4 +304,4 @@ if [ -n "$stage" ]; then
   scp -q $files "$stage:/home/modus/" && ssh "$stage" 'for f in '"$(for f in $files; do basename $f; done | tr '\n' ' ')"'; do sudo -n cp /home/modus/$f /srv/tftp/ && sudo -n chown modus:modus /srv/tftp/$f; done; ls -la /srv/tftp/modus.core' \
     && say "   staged; netboot with: python3 netboot-core.py --img $kernel.gz --core modus.core" || { say "FAIL: staging"; exit 1; }
 fi
-[ $target = nitro ] && say "done: $out/modus.eif (manifest.json, pcrs.json)" || say "done: $out/$kernel + $out/modus.core (manifest.json)"
+[ $target = nitro ] && say "done: $out/modus.eif (manifest.json, pcrs.json)" || say "done: $out/$kernel$([ -f "$out/modus.core" ] && echo " + $out/modus.core") (manifest.json)"

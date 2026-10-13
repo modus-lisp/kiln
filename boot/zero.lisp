@@ -276,6 +276,9 @@
    --media installs the player, mounts the cabinet and puts the clips there); the player
    decodes on this thread, in the time between events (WARP-MEDIA:*COOPERATIVE*).  AUTOPLAY, a
    file name under /media/, starts it playing once the desk is up."
+  ;; The screen's state block outlives a board reset: trust it only once this boot has
+  ;; brought the console up (the kernel zeroes its ready word at reset).
+  (unless (hcon-ready-p) (hcon-init))
   (let ((ready (hcon-get 0)))
     (setf *zero-events* nil *zero-mouse* nil *zero-under* nil
           *zero-px* (floor (hcon-get #x0C) 2) *zero-py* (floor (hcon-get #x10) 2))

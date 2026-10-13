@@ -253,7 +253,7 @@
          (dw (floor sw k))
          (dh (floor (- sh y0 (* 20 k)) k))
          (x0 (floor (- sw (* dw k)) 2))
-         (big (glass:make-framebuffer (* dw k) (* dh k)))
+         (big (if (= k 1) nil (glass:make-framebuffer (* dw k) (* dh k))))
          ;; SOUND: a mixer whose clock is this loop (see %KILN-PUMP-AUDIO), and a
          ;; speaker at its rate.  No speaker, no mixer -- the player then paces the
          ;; picture by the wall clock, as it did before there was sound.
@@ -313,8 +313,13 @@
                 (when changed
                   (if (eq (glass:fb-format (glass.desk:desk-fb desk)) :xrgb)
                       (progn
-                        (glass:fb-blit-scaled-region big (glass.desk:desk-fb desk) k x y w h)
-                        (%kiln-blit-region big k x0 y0 x y w h)
+                        ;; at 1x the magnified copy IS the desk: show it straight from there
+                        ;; (the copy was a tenth of a Pi Zero's drag frame)
+                        (if (= k 1)
+                            (%kiln-blit-region (glass.desk:desk-fb desk) 1 x0 y0 x y w h)
+                            (progn
+                              (glass:fb-blit-scaled-region big (glass.desk:desk-fb desk) k x y w h)
+                              (%kiln-blit-region big k x0 y0 x y w h)))
                         (%kiln-sys 1003 0 0 0))
                       ;; A Y'CbCr desk (glass :I420) is shown as it is: the platform scans
                       ;; the planes out (pseudo-syscall 1007, the Zero's HVS)

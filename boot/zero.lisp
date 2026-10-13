@@ -230,20 +230,48 @@
 
 ;;; --- screen --------------------------------------------------------------------------------
 
+(defvar *zero-blit-code* nil)             ; the native row copier's exec page, once made
+
+(defun %zero-blit-words (scr)
+  ;; movz/movk x3 = SCR; ldp x0,x1 / x2,x4 / x5,x6 = dst src w h dst-stride src-stride;
+  ;; per row: one odd pixel, then pairs -- ldp two words, lsr #1 each (the fixnum tag),
+  ;; stp them as two u32 pixels; dsb; ret.  (as/objdump on the Pi 5: kiln's asm is not
+  ;; in the image.)
+  (list (logior #xD2800003 (ash (logand scr #xFFFF) 5))
+        (logior #xF2A00003 (ash (logand (ash scr -16) #xFFFF) 5))
+        #xA9400460 #xA9411062 #xA9421865 #xB4000284 #xAA0003E7 #xAA0103E8 #xAA0203E9
+        #x360000A9 #xF840850A #xD341FD4A #xB80044EA #xD1000529 #xB40000E9 #xA8C12D0A
+        #xD341FD4A #xD341FD6B #x28812CEA #xD1000929 #x17FFFFFA #x8B050000 #x8B060021
+        #xD1000484 #x17FFFFED #xD5033F9F #xD65F03C0))
+
+(defun %zero-blit-code ()
+  "The exec page holding the row copier (at 0) and its arguments (at 512)."
+  (or *zero-blit-code*
+      (let ((code (%mmap-exec-page 4096)))
+        (hcon-poke code (%zero-blit-words (+ code 512)))
+        (%jit-icache-flush code 512)
+        (setf *zero-blit-code* code))))
+
 (defun %zero-blit (addr wh xy stride)
-  "Copy a block of tagged pixel words at ADDR (row length STRIDE) to the screen at XY."
+  "Copy a block of tagged pixel words at ADDR (row length STRIDE) to the screen at XY.
+   NATIVE: a pixel at a time in Lisp was 85 ns, a 260x110 window 3.4 ms of every drag
+   frame; the row copier is a few instructions a pixel.  Nothing between taking ADDR and
+   the call allocates, so the vector cannot move under it."
   (let* ((w (logand wh #xFFFF)) (h (floor wh 65536))
          (x0 (logand xy #xFFFF)) (y0 (floor xy 65536))
          (stride (if (zerop stride) w stride))
-         (sw (hcon-get #x0C)) (sh (hcon-get #x10)))
+         (sw (hcon-get #x0C)) (sh (hcon-get #x10))
+         (cols (min w (- sw x0))) (rows (min h (- sh y0))))
     (%zero-pointer-hide)
-    (dotimes (r h)
-      (let ((y (+ y0 r)))
-        (when (< y sh)
-          (let ((src (+ addr (* 8 r stride))) (dst (%zero-pixel-addr x0 y)))
-            (dotimes (c (min w (- sw x0)))
-              ;; a :u64 load hands back the element's fixnum value, i.e. the pixel
-              (setf (mem-ref (+ dst (* 4 c)) :u32) (mem-ref (+ src (* 8 c)) :u64)))))))
+    (when (and (> cols 0) (> rows 0))
+      (let* ((code (%zero-blit-code)) (scr (+ code 512)))
+        (hcon-u64 scr (%zero-pixel-addr x0 y0))
+        (hcon-u64 (+ scr 8) addr)
+        (hcon-u64 (+ scr 16) cols)
+        (hcon-u64 (+ scr 24) rows)
+        (hcon-u64 (+ scr 32) (hcon-get #x08))
+        (hcon-u64 (+ scr 40) (* 8 stride))
+        (%jit-call code)))
     (%zero-pointer-show)
     0))
 

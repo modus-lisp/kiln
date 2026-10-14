@@ -38,7 +38,12 @@
   '("2          " "22         " "212        " "2112       " "21112      "
     "211112     " "2111112    " "21111112   " "211111112  " "2111111112 "
     "21111122222" "2112112    " "212 2112   " "22  2112   " "2    2112  " "     222   "))
-(defvar *zero-under* nil)                 ; (x y . pixels) under the drawn pointer
+(defvar *zero-under* nil)                 ; T while the pointer is drawn, its pixels saved below
+(defvar *zero-under-x* 0)
+(defvar *zero-under-y* 0)
+;; the 16 x 11 pixels under the pointer, row-major: reused, not a fresh list per draw (that was
+;; 5.7 KB of garbage twice a frame -- the collector's pause is what a drag would feel)
+(defvar *zero-under-pixels* (make-array 176 :initial-element 0))
 (defvar *zy* nil)          ; Y'CbCr screen: (bufs back-index old-displist fb dw dh) once set up
 (defvar *zero-px* 0)
 (defvar *zero-py* 0)
@@ -48,32 +53,33 @@
 
 (defun %zero-pointer-hide ()
   (when *zero-under*
-    (destructuring-bind (x y . saved) *zero-under*
+    (let ((x *zero-under-x*) (y *zero-under-y*) (saved *zero-under-pixels*))
       (dotimes (r 16)
         (dotimes (c 11)
-          (let ((v (pop saved)))
-            (when (%zero-on-screen-p (+ x c) (+ y r))
-              (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) v))))))
+          (when (%zero-on-screen-p (+ x c) (+ y r))
+            (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) (svref saved (+ (* r 11) c)))))))
     (setf *zero-under* nil)))
 
 (defun %zero-pointer-show ()
-  (let ((x *zero-px*) (y *zero-py*) (saved nil))
+  (let ((x *zero-px*) (y *zero-py*) (saved *zero-under-pixels*))
     (dotimes (r 16)
       (let ((line (nth r *zero-arrow*)))
         (dotimes (c 11)
-          (if (%zero-on-screen-p (+ x c) (+ y r))
-              (let ((a (%zero-pixel-addr (+ x c) (+ y r))))
-                (push (mem-ref a :u32) saved)
-                (case (char line c)
-                  (#\2 (setf (mem-ref a :u32) #x000000))
-                  (#\1 (setf (mem-ref a :u32) #xffffff))))
-              (push 0 saved)))))
-    (setf *zero-under* (list* x y (nreverse saved)))))
+          (when (%zero-on-screen-p (+ x c) (+ y r))
+            (let ((a (%zero-pixel-addr (+ x c) (+ y r))))
+              (setf (svref saved (+ (* r 11) c)) (mem-ref a :u32))
+              (case (char line c)
+                (#\2 (setf (mem-ref a :u32) #x000000))
+                (#\1 (setf (mem-ref a :u32) #xffffff))))))))
+    (setf *zero-under-x* x *zero-under-y* y *zero-under* t)))
 
 ;;; --- events --------------------------------------------------------------------------------
 
 (defvar *zero-events* nil)                ; queued app events, oldest first
-(defvar *zero-mouse* nil)                 ; (x y buttons) of the mouse counters last seen
+(defvar *zero-mouse* nil)                 ; T once the mouse counters below have been read
+(defvar *zero-mx* 0)                      ; ... the counters last seen (x y buttons): variables,
+(defvar *zero-my* 0)                      ; not a fresh list per poll
+(defvar *zero-mb* 0)
 
 (defun %zero-keysym (c)
   (cond ((= c 13) #xff0d) ((= c 127) #xff08) ((= c 9) #xff09) ((= c 27) #xff1b) (t c)))
@@ -87,7 +93,9 @@
           (when (< c 0) (return))
           (setf *zero-events* (append *zero-events*
                                       (list (+ (* 4 1099511627776) (%zero-keysym c)))))))
-  (destructuring-bind (lx ly lb) (or *zero-mouse* (list (mouse-x) (mouse-y) (mouse-buttons)))
+  (unless *zero-mouse*
+    (setf *zero-mx* (mouse-x) *zero-my* (mouse-y) *zero-mb* (mouse-buttons) *zero-mouse* t))
+  (let ((lx *zero-mx*) (ly *zero-my*) (lb *zero-mb*))
     (let ((nx (mouse-x)) (ny (mouse-y)) (nb (mouse-buttons)))
       (when (or (/= nx lx) (/= ny ly) (/= nb lb))
         (setf *zero-px* (max 0 (min (1- (hcon-get #x0C)) (+ *zero-px* (- nx lx))))
@@ -103,7 +111,27 @@
         (if (and *zy* (fourth *zy*))
             (%zero-present-yuv (fourth *zy*))
             (progn (%zero-pointer-hide) (%zero-pointer-show))))
-      (setf *zero-mouse* (list nx ny nb)))))
+      (setf *zero-mx* nx *zero-my* ny *zero-mb* nb))))
+
+;;; COLLECT WHILE IDLE.  A collection stops everything for as long as copying the live heap
+;;; takes -- ~115 ms on the Zero, its ~20 MB mostly the restored core -- so the desk picks the
+;;; moment: after half a second with no input, if 4 MB or more has been allocated since the last
+;;; collection.  Then the pause lands where nobody is moving anything, and a gesture that
+;;; follows starts with the whole semispace free.
+
+(defparameter *kz-idle-gc-us* 500000)     ; quiet this long first (internal time units: µs)
+(defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
+(defvar *kz-active-at* 0)                 ; GET-INTERNAL-REAL-TIME of the last input event
+(defvar *kz-gc-mark-count* -1)            ; (%GC-COUNT) and (GET-ALLOC-PTR) right after the
+(defvar *kz-gc-mark-ptr* 0)               ; last collection this desk saw
+
+(defun %zero-idle-gc ()
+  (let ((now (get-internal-real-time)))
+    (when (> (- now *kz-active-at*) *kz-idle-gc-us*)
+      (when (or (/= (%gc-count) *kz-gc-mark-count*)       ; one happened anyway: re-mark only
+                (> (- (get-alloc-ptr) *kz-gc-mark-ptr*) *kz-idle-gc-bytes*))
+        (when (= (%gc-count) *kz-gc-mark-count*) (sb-ext:gc))
+        (setf *kz-gc-mark-count* (%gc-count) *kz-gc-mark-ptr* (get-alloc-ptr))))))
 
 (defun %zero-next-event ()
   ;; Ctrl-C or q on the serial port ends the app; any other byte is dropped.  It used to be
@@ -114,7 +142,10 @@
       (when (member (if (characterp c) (char-code c) c) '(3 113))
         (throw 'kiln-zero-exit nil))))
   (unless *zero-events* (%zero-poll))
-  (if *zero-events* (pop *zero-events*) 0))
+  (if *zero-events*
+      (progn (setf *kz-active-at* (get-internal-real-time))
+             (pop *zero-events*))
+      (progn (%zero-idle-gc) 0)))
 
 ;;; --- the screen in Y'CbCr: glass :I420 scanned out by the HVS -----------------------------
 ;;;
@@ -298,9 +329,9 @@
                        (map 'list (function char-code) chars))))
         (dolist (code codes)
           (let ((gid (scribe:font-glyph-index font code)))
-            (dolist (q '(0d0 0.25d0 0.5d0 0.75d0))
-              (glass::%glyph-entry font gid size q)))))))
-  (hash-table-count glass::*glyph-cache*))
+            (dotimes (quarter 4)
+              (glass::%glyph-entry font gid size quarter)))))))
+  (glass::glyph-cache-count))
 
 ;;; Breadcrumbs on the serial port: each stage of KILN-ZERO-MAIN, and the FIRST use of each
 ;;; pseudo-syscall (size, fill, event, blit) -- so a start that never reaches the screen says

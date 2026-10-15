@@ -121,7 +121,8 @@
 
 (defparameter *kz-idle-gc-us* 500000)     ; quiet this long first (internal time units: µs)
 (defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
-(defvar *kz-active-at* 0)                 ; GET-INTERNAL-REAL-TIME of the last input event
+(defvar *kz-active-at* 0)
+(defvar *kz-frame-at* 0)                  ; GET-INTERNAL-REAL-TIME of the last frame %ZERO-NEXT-EVENT let through                 ; GET-INTERNAL-REAL-TIME of the last input event
 (defvar *kz-gc-mark-count* -1)            ; (%GC-COUNT) and (GET-ALLOC-PTR) right after the
 (defvar *kz-gc-mark-ptr* 0)               ; last collection this desk saw
 
@@ -141,11 +142,20 @@
     (let ((c (read-char-serial)))
       (when (member (if (characterp c) (char-code c) c) '(3 113))
         (throw 'kiln-zero-exit nil))))
-  (unless *zero-events* (%zero-poll))
-  (if *zero-events*
-      (progn (setf *kz-active-at* (get-internal-real-time))
-             (pop *zero-events*))
-      (progn (%zero-idle-gc) 0)))
+  ;; A FRAME IS DUE every 16 ms whatever the input is doing.  The app loop handles one event per
+  ;; call and draws only when this answers 0, and a mouse polled faster than its report interval
+  ;; has fresh movement for nearly every poll: a drag delivered ~440 events a second, the desk
+  ;; drew in the gaps, and the window being dragged moved in jumps 150+ ms apart while the
+  ;; pointer (drawn here, from the poll) stayed smooth.
+  (let ((now (get-internal-real-time)))
+    (if (> (- now *kz-frame-at*) 16000)
+        (progn (setf *kz-frame-at* now) 0)
+        (progn
+          (unless *zero-events* (%zero-poll))
+          (if *zero-events*
+              (progn (setf *kz-active-at* now)
+                     (pop *zero-events*))
+              (progn (setf *kz-frame-at* now) (%zero-idle-gc) 0))))))
 
 ;;; --- the screen in Y'CbCr: glass :I420 scanned out by the HVS -----------------------------
 ;;;

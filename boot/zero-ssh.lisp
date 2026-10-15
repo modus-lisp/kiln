@@ -27,7 +27,10 @@
 (defvar *rx-end* 0)
 
 (defun %sym (name pkg) (or (find-symbol name pkg) (error "kiln-zero-ssh: no ~a::~a" pkg name)))
-(defun %kernel (name) (symbol-function (%sym name "COMMON-LISP-USER")))
+(defun %kernel (name)
+  ;; INTERN, not FIND-SYMBOL: a kernel function nobody has typed has no symbol yet, and the
+  ;; symbol, once made, names the image's function by its name.
+  (symbol-function (intern name "COMMON-LISP-USER")))
 
 (defun %ip (host)
   "\"10.0.0.1\" as the big-endian integer net/ip.lisp takes."
@@ -79,10 +82,55 @@
     (incf *rx-start* n)
     out))
 
+;;; ---- the identity ------------------------------------------------------------------------
+;;;
+;;; NSEC=nsec1... on the kernel command line (cmdline.txt; `kiln zero --sd-image --nsec-file')
+;;; gives the board a key that survives reboots: its 32 bytes are the Ed25519 seed.  (An nsec
+;;; is a secp256k1 secret; Ed25519 hashes its seed with SHA-512 before use, so the two keys
+;;; share no algebra.)  Without one, a fresh key from the hardware RNG each boot.
+
+(defun %bech32-polymod (values)
+  (let ((chk 1) (gen '(#x3b6a57b2 #x26508e6d #x1ea119fa #x3d4233dd #x2a1462b3)))
+    (dolist (v values chk)
+      (let ((top (ash chk -25)))
+        (setf chk (logxor (ash (logand chk #x1ffffff) 5) v))
+        (loop for g in gen for i from 0 when (logbitp i top) do (setf chk (logxor chk g)))))))
+
+(defun %bech32-bytes (str)
+  "The data bytes of a bech32 string (checksum checked), and its human-readable part."
+  (let* ((s (string-downcase str))
+         (sep (or (position #\1 s :from-end t) (error "kiln-zero-ssh: not bech32")))
+         (hrp (subseq s 0 sep))
+         (abc "qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+         (data (loop for c across (subseq s (1+ sep))
+                     collect (or (position c abc) (error "kiln-zero-ssh: bad bech32 character ~a" c)))))
+    (unless (= 1 (%bech32-polymod (append (loop for c across hrp collect (ash (char-code c) -5))
+                                          (list 0)
+                                          (loop for c across hrp collect (logand (char-code c) 31))
+                                          data)))
+      (error "kiln-zero-ssh: bech32 checksum mismatch"))
+    (let ((acc 0) (bits 0) (out nil))
+      (dolist (v (butlast data 6))
+        (setf acc (logior (ash acc 5) v) bits (+ bits 5))
+        (when (>= bits 8)
+          (decf bits 8)
+          (push (ldb (byte 8 bits) acc) out)
+          (setf acc (ldb (byte bits 0) acc))))
+      (values (coerce (nreverse out) '(simple-array (unsigned-byte 8) (*))) hrp))))
+
+(defun %bootarg (name)
+  (ignore-errors (funcall (%kernel "%CLI-GETENV") name)))
+
 (defun %identity ()
   (or *ssh-identity*
       (setf *ssh-identity*
-            (multiple-value-list (funcall (%sym "ED25519-KEYPAIR" "NATRIUM"))))))
+            (let ((nsec (%bootarg "NSEC")))
+              (if (and (stringp nsec) (> (length nsec) 4))
+                  (multiple-value-bind (sk hrp) (%bech32-bytes nsec)
+                    (unless (and (string= hrp "nsec") (= (length sk) 32))
+                      (error "kiln-zero-ssh: NSEC is not a 32-byte nsec"))
+                    (list sk (funcall (%sym "ED25519-PUBLIC-KEY" "NATRIUM") sk)))
+                  (multiple-value-list (funcall (%sym "ED25519-KEYPAIR" "NATRIUM"))))))))
 
 (defun ssh-install ()
   "Point conch's transport at the board's TCP client and let it take a key as bytes."
@@ -174,18 +222,30 @@
           for st = (%port-status p)
           when (and (logbitp 0 st) (logbitp 10 st)) do (push p hs))
     (dolist (p hs) (%k "USB-CONTROL-TRANSFER" (%hub) #x23 1 1 p 0 0))   ; CLEAR_FEATURE(PORT_ENABLE)
-    (dolist (p hs)
-      (when (and (%port-up p (+ 40 p)) (equal (%ids (+ 40 p)) '(#x0BDA #x8153)))
-        (setf nic p)))
-    (unless nic (error "kiln-zero-ssh: no RTL8153 on the hub (high-speed ports ~a)" hs))
-    ;; the RTL8153 left the bus after that reset: wait for it, reset it again, address it
-    (let ((a 50))
-      (%k "USB-CONTROL-TRANSFER" (%hub) #x23 3 4 nic 0 0)
-      (%k "DWC2-DELAY-MS" 200)
-      (%k "HID-CLEAR-PORT-CHANGES" (%hub) nic)
-      (unless (%wait-connect nic 4000) (error "kiln-zero-ssh: the Ethernet did not come back"))
-      (%k "DWC2-DELAY-MS" 100)
-      (unless (%port-up nic a) (error "kiln-zero-ssh: the Ethernet did not take an address"))
+    ;; Everything that answers and is not the RTL8153 keeps the address it gets here.  The
+    ;; RTL8153 leaves the bus as soon as it is reset, so it is the port that fails this (or,
+    ;; caught before it drops, the one that names itself).
+    (let ((cands nil) (a 50))
+      (dolist (p hs)
+        (unless (and (%port-up p (+ 40 p)) (not (equal (%ids (+ 40 p)) '(#x0BDA #x8153))))
+          (push p cands)))
+      ;; each candidate, at its own address: reset it, let it drop off and come back, reset
+      ;; and address it, ask who it is -- a few times, since how long it takes to drop varies
+      (dolist (p cands)
+        (unless nic
+          (setf a (+ 50 p))
+          (dotimes (try 4)
+            (unless nic
+              (%k "USB-CONTROL-TRANSFER" (%hub) #x23 3 4 p 0 0)
+              (dotimes (i 150)                     ; up to 1.5 s for it to leave
+                (unless (logbitp 0 (%port-status p)) (return))
+                (%k "DWC2-DELAY-MS" 10))
+              (%k "HID-CLEAR-PORT-CHANGES" (%hub) p)
+              (when (and (%wait-connect p 4000)
+                         (progn (%k "DWC2-DELAY-MS" 150) (%port-up p a))
+                         (equal (%ids a) '(#x0BDA #x8153)))
+                (setf nic p))))))
+      (unless nic (error "kiln-zero-ssh: no RTL8153 on the hub (high-speed ports ~a, candidates ~a)" hs cands))
       (unless (and (> (%k "USB-CONTROL-TRANSFER" a #x00 9 2 0 0 0) 0)        ; config 2: CDC-ECM
                    (> (%k "USB-CONTROL-TRANSFER" a #x01 11 1 1 0 0) 0)       ; data iface, alt 1
                    (> (%k "USB-CONTROL-TRANSFER" a #x21 #x43 #x0E 0 0 0) 0)) ; packet filter

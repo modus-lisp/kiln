@@ -2328,7 +2328,7 @@ zero_firmware() {
 # runs *CORE-RESTART-HOOK* (the desk).  gpu_mem=32 gives the ARM 480 MiB, the room
 # above 0x18000000 a core needs.  Built with mtools: no root, no loop devices.
 zero_sd_image() {
-  local img=$1 core=$2 out=$3 fw w
+  local img=$1 core=$2 out=$3 nsec_file=${4:-} fw w
   fw=$(zero_firmware)
   w=$(mktemp -d)
   gunzip -c "$img" > "$w/kernel8.img" || die "kiln zero: cannot unzip $img"
@@ -2359,6 +2359,15 @@ leaves a modus REPL there.
 bootcode.bin, start.elf, fixup.dat and the device tree are the Raspberry Pi
 firmware (see LICENCE.broadcom); kernel8.img and desk.core are modus.
 TXT
+  # the board's identity, from the kernel command line: the firmware hands cmdline.txt to
+  # modus as bootargs, and kiln-zero-ssh (boot/zero-ssh.lisp) derives the SSH key from it.
+  # From a FILE, so the secret is never in argv or a log; the card holds it in the clear.
+  local boot_files="kernel8.img desk.core config.txt README.txt"
+  if [[ -n $nsec_file ]]; then
+    local nsec; nsec=$(tr -d ' \n\r' < "$nsec_file")
+    [[ $nsec == nsec1* ]] || die "kiln zero: $nsec_file does not hold an nsec1... key"
+    printf 'NSEC=%s\n' "$nsec" > "$w/cmdline.txt"; boot_files+=" cmdline.txt"
+  fi
   local f total mb
   total=0
   for f in "$fw"/* "$w"/*; do total=$(( total + $(stat -c %s "$f") )); done
@@ -2372,7 +2381,7 @@ TXT
   mformat -i "$w/part.img" -F -v MODUS -T $(( mb * 2048 )) -h 64 -s 32 -H 2048 :: \
     || die "kiln zero: mformat failed"
   for f in "$fw"/*; do mcopy -i "$w/part.img" "$f" ::"$(basename "$f")" || die "kiln zero: mcopy $f failed"; done
-  for f in kernel8.img desk.core config.txt README.txt; do
+  for f in $boot_files; do
     mcopy -i "$w/part.img" "$w/$f" ::$f || die "kiln zero: mcopy $f failed"
   done
   # the disk: an MBR with one bootable FAT32-LBA partition at sector 2048
@@ -2408,7 +2417,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image=""
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file=""
   local -a withs=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -2423,6 +2432,7 @@ cmd_zero() {
       --build-core) build_core=${val:?--build-core=OUT.core} ;;
       --with)  withs+=("${val:?--with=SYSTEM}") ;;
       --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
+      --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2457,6 +2467,9 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     at 0x18000000 -- for `dd of=/dev/sdX`.  The Zero boots straight into
                     the desk; no network, no builder.  Takes --with; not --media (the
                     clips have no place to come from yet)
+  --nsec-file=PATH  with --sd-image: the board's identity -- an nsec1... key, written to the
+                    card's cmdline.txt as NSEC=; kiln-zero-ssh derives the board's SSH key
+                    from it (with --with=conch), so the key survives reboots
 Output in $KILN_STATE/zero.
 USAGE
         return 0 ;;
@@ -2764,7 +2777,7 @@ EOF
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
     if [[ -n $sd_image ]]; then
-      zero_sd_image "$netboot" "$build_core" "$sd_image"
+      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file"
       return 0
     fi
     note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"

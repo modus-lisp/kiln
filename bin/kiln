@@ -2417,7 +2417,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file=""
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=0
   local -a withs=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -2433,6 +2433,7 @@ cmd_zero() {
       --with)  withs+=("${val:?--with=SYSTEM}") ;;
       --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
       --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
+      --threads) threads=1 ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2467,6 +2468,10 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     at 0x18000000 -- for `dd of=/dev/sdX`.  The Zero boots straight into
                     the desk; no network, no builder.  Takes --with; not --media (the
                     clips have no place to come from yet)
+  --threads         build the board image with SMP: threads on cores 1-3 (SB-THREAD and
+                    MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md).  Their heaps
+                    live where the saved core is loaded, so a threaded board runs threads only
+                    once the core is restored
   --nsec-file=PATH  with --sd-image: the board's identity -- an nsec1... key, written to the
                     card's cmdline.txt as NSEC=; kiln-zero-ssh derives the board's SSH key
                     from it (with --with=conch), so the key survives reboots
@@ -2503,7 +2508,7 @@ USAGE
       note "zero: building the board image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
       # the same flags as the rig's board images: the console on the mini UART (GPIO
       # 14/15), the network and SSH built in but not started
-      (cd "$modus" && MODUS_CL_REPL_OUT=$out/board.img MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_RPI_CHAINLOAD=1 \
+      (cd "$modus" && MODUS_RPI_THREADS=$threads MODUS_CL_REPL_OUT=$out/board.img MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_RPI_CHAINLOAD=1 \
          sbcl --dynamic-space-size 8192 --script mvm/build-rpi-cl-repl.lisp > "$out/board-build.log" 2>&1) \
         || die "kiln zero: board image build failed (see $out/board-build.log)"
       gzip -kf "$out/board.img"; netboot=$out/board.img.gz

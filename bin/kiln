@@ -2527,6 +2527,8 @@ EOF
   # bordeaux-threads from each closure on the promise that the board already has it, and a
   # library that nicknames bt (cl-nostr) cannot even be READ without the package.
   cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
+  # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
+  cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
   local media_files=""
   if [[ $media == 1 ]]; then
     for r in reed reel cassette warp pagetree cabinet modus; do
@@ -2591,7 +2593,7 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "zero-bt")
      $media_files
-     (:file "zero") (:file "app")))))
+     (:file "zero") (:file "app") (:file "zero-ssh")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)
@@ -2732,14 +2734,33 @@ EOF
     local -a hookform=()
     [[ -n $sd_image ]] && hookform=(--form="(progn (setq *core-restart-hook* (quote kiln-zero-main)) :hook)")
     note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
-    TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
-      --blob="$reg@$fa" --blob="$bold@$fb" \
-      --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)" \
-      --form="(jit-eager)" \
-      --form="(list :glyphs (kiln-zero-prerender-glyphs))" \
-      "${hookform[@]}" \
-      --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))" \
-      --expect="MAIN T FONTS T" | tee "$out/core.log"   # the board prints :MAIN as MAIN
+    local -a coreargs=(
+      --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)"
+      --form="(jit-eager)"
+      --form="(list :glyphs (kiln-zero-prerender-glyphs))"
+      "${hookform[@]}"
+      --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))"
+      --expect="MAIN T FONTS T")                       # the board prints :MAIN as MAIN
+    if [[ -n $builder ]]; then
+      # ON THE BUILDER: QEMU's raspi3b under TCG runs far faster on an aarch64 host (the
+      # Pi 5) than here.  The same script, its driver, the kernel, the tarballs and the
+      # fonts go to a scratch directory there; the core comes back.
+      local rdir=${KILN_BUILDER_DIR:-kiln-core}-$$   # KILN_BUILDER_DIR: a roomy scratch path on the builder
+      note "zero: building the core on $builder"
+      ssh "$builder" "mkdir -p $rdir/test $rdir/tars" || die "kiln zero: cannot reach $builder"
+      scp -q "$w/kernel8.img" "$reg" "$bold" "$builder:$rdir/" \
+        && scp -q "$modus/test/run-rpi-core.sh" "$modus/test/rpi-core-driver.py" "$builder:$rdir/test/" \
+        && scp -q "$w"/tars/*.tar "$builder:$rdir/tars/" || die "kiln zero: cannot copy the build to $builder"
+      local cmd; cmd="cd $rdir && TARS=tars ./test/run-rpi-core.sh kernel8.img out.core"
+      local x; for x in "${loads[@]}" "--blob=$(basename "$reg")@$fa" "--blob=$(basename "$bold")@$fb" "${coreargs[@]}"; do
+        cmd+=" $(printf '%q' "$x")"; done
+      ssh "$builder" "$cmd" | tee "$out/core.log"
+      grep -q "^PASS" "$out/core.log" && scp -q "$builder:$rdir/out.core" "$build_core"
+      ssh "$builder" "rm -rf $rdir"
+    else
+      TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
+        --blob="$reg@$fa" --blob="$bold@$fb" "${coreargs[@]}" | tee "$out/core.log"
+    fi
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
     if [[ -n $sd_image ]]; then

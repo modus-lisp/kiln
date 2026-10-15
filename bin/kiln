@@ -2347,6 +2347,8 @@ core_freq=250
 # drive HDMI even when the screen answers late
 hdmi_force_hotplug=1
 disable_overscan=1
+# HDMI, not DVI: the link carries audio (modus net/hdmi-audio.lisp, the desk's audio thread)
+hdmi_drive=2
 CFG
   cat > "$w/README.txt" <<'TXT'
 modus on a Raspberry Pi Zero 2 W, written by `kiln zero --sd-image`.

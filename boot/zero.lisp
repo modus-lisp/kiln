@@ -73,6 +73,30 @@
                 (#\1 (setf (mem-ref a :u32) #xffffff))))))))
     (setf *zero-under-x* x *zero-under-y* y *zero-under* t)))
 
+;;; --- the USB thread (a board image built with kiln zero --threads) ---------------------------
+;;;
+;;; The DWC2 host controller is one device, and its channels are shared (channel 2 carries both
+;;; the HID split engine and the NIC's bulk OUT), so with threads exactly one thread drives it: an
+;;; EXECUTOR pinned to core 1 (modus net/bare-threads.lisp) that polls the keyboard and mouse
+;;; continuously -- into the raw key ring and pointer counters the desk already reads -- and runs
+;;; whatever USB work another thread hands it (kiln-zero-ssh's net-up and TCP).  Once it has
+;;; claimed the controller, HID-SPLIT-POLL anywhere else is a no-op and the desk only drains.
+
+(defvar *kz-usb* nil)
+
+(defun %kz-usb-idle () (hid-split-poll))
+
+(defun kz-usb-start ()
+  "Start the USB thread on core 1 and give it the controller.  Its handle, or NIL on an image
+   without threads."
+  (when (and (null *kz-usb*) (fboundp 'bt-start-executor) (fboundp 'hid-claim-usb))
+    (let ((ex (bt-start-executor 1 #'%kz-usb-idle)))
+      (bt-call ex #'hid-claim-usb)
+      (setf *kz-usb* ex)
+      (let ((s (find-symbol "*USB-EXECUTOR*" "KILN-ZERO-SSH")))
+        (when s (setf (symbol-value s) ex)))))
+  *kz-usb*)
+
 ;;; --- events --------------------------------------------------------------------------------
 
 (defvar *zero-events* nil)                ; queued app events, oldest first
@@ -93,6 +117,22 @@
           (when (< c 0) (return))
           (setf *zero-events* (append *zero-events*
                                       (list (+ (* 4 1099511627776) (%zero-keysym c)))))))
+  (when *kz-scr*
+    ;; THE SCREEN THREAD MOVES THE POINTER (*ZERO-PX*/*ZERO-PY*); here only its events
+    (unless *zero-mouse*
+      (setf *zero-mx* *zero-px* *zero-my* *zero-py* *zero-mb* (mouse-buttons) *zero-mouse* t))
+    (let ((px *zero-px*) (py *zero-py*) (nb (mouse-buttons)) (lb *zero-mb*))
+      (when (or (/= px *zero-mx*) (/= py *zero-my*) (/= nb lb))
+        (let ((down (logbitp 0 nb)) (was (logbitp 0 lb)))
+          (setf *zero-events*
+                (append *zero-events*
+                        (list (%zero-event (cond ((and down (not was)) 1)
+                                                 ((and was (not down)) 3)
+                                                 (down 2)
+                                                 (t 5))
+                                           px py)))))
+        (setf *zero-mx* px *zero-my* py *zero-mb* nb)))
+    (return-from %zero-poll nil))
   (unless *zero-mouse*
     (setf *zero-mx* (mouse-x) *zero-my* (mouse-y) *zero-mb* (mouse-buttons) *zero-mouse* t))
   (let ((lx *zero-mx*) (ly *zero-my*) (lb *zero-mb*))
@@ -122,7 +162,8 @@
 (defparameter *kz-idle-gc-us* 500000)     ; quiet this long first (internal time units: µs)
 (defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
 (defvar *kz-active-at* 0)
-(defvar *kz-frame-at* 0)                  ; GET-INTERNAL-REAL-TIME of the last frame %ZERO-NEXT-EVENT let through                 ; GET-INTERNAL-REAL-TIME of the last input event
+(defvar *kz-frame-at* 0)
+(defvar *kz-frame-limit* nil)             ; frames left before the desk ends itself (tests), or NIL                  ; GET-INTERNAL-REAL-TIME of the last frame %ZERO-NEXT-EVENT let through                 ; GET-INTERNAL-REAL-TIME of the last input event
 (defvar *kz-gc-mark-count* -1)            ; (%GC-COUNT) and (GET-ALLOC-PTR) right after the
 (defvar *kz-gc-mark-ptr* 0)               ; last collection this desk saw
 
@@ -148,8 +189,12 @@
   ;; drew in the gaps, and the window being dragged moved in jumps 150+ ms apart while the
   ;; pointer (drawn here, from the poll) stayed smooth.
   (let ((now (get-internal-real-time)))
+    (when *kz-frame-limit*                ; a test's bounded run: end after that many frames
+      (when (<= *kz-frame-limit* 0) (throw 'kiln-zero-exit nil)))
     (if (> (- now *kz-frame-at*) 16000)
-        (progn (setf *kz-frame-at* now) 0)
+        (progn (setf *kz-frame-at* now)
+               (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))
+               0)
         (progn
           (unless *zero-events* (%zero-poll))
           (if *zero-events*
@@ -269,6 +314,114 @@
               (/ (* 1000.0 (- *zy-presents* 1)) ms))))
   (setq *zy-first* nil *zy-last* nil *zy-presents* 0))
 
+;;; --- the screen thread (kiln zero --threads) ----------------------------------------------
+;;;
+;;; Everything that writes the screen runs on one thread, an executor pinned to core 2: the
+;;; desk's blits and presents (main hands them over with BT-CALL) and the POINTER, which it
+;;; moves itself whenever the mouse counters (kept by the USB thread) change -- so the arrow
+;;; follows the mouse at the poll rate however long the desk takes over a frame, and main never
+;;; redraws or re-presents for it.  It owns *ZERO-PX*/*ZERO-PY*; main only reads them to make
+;;; its pointer events.  On the Y'CbCr path a present copies the desk's planes once into a
+;;; CLEAN buffer (cacheable, at 0x10900000) and every frame shown -- a present or a pointer move
+;;; -- is built from it, so a pointer move never reads planes the desk may be drawing into.
+
+(defvar *kz-scr* nil)
+(defvar *kz-scr-mx* 0)                    ; the mouse counters this thread last applied
+(defvar *kz-scr-my* 0)
+(defun %kz-clean () #x10900000)           ; 512 KB, free RAM (modus test/rpi-smp/README.md map)
+
+(defun %kz-zy-show (fb)
+  "Build the back scanout buffer from the clean copy of FB's planes, draw the pointer, flip."
+  (destructuring-bind (bufs back old last dw dh) *zy*
+    (declare (ignore old last dw dh))
+    (let* ((buf (nth back bufs))
+           (bytes (+ (* (glass:fb-width fb) (glass:fb-height fb))
+                     (* 2 (glass:fb-chroma-width fb) (glass:fb-chroma-height fb))))
+           (ptrs (%zy-ptrs buf fb)))
+      (%zy-copy buf (%kz-clean) bytes)
+      (%zy-pointer buf fb)
+      (%zy-slot-wr (+ (%zy-slot) 5) (logior #xC0000000 (first ptrs)))
+      (%zy-slot-wr (+ (%zy-slot) 6) (logior #xC0000000 (second ptrs)))
+      (%zy-slot-wr (+ (%zy-slot) 7) (logior #xC0000000 (third ptrs)))
+      (setf (second *zy*) (- 1 back))
+      (setq *zy-presents* (+ *zy-presents* 1))
+      (setq *zy-last* (get-internal-real-time))
+      (unless *zy-first* (setq *zy-first* *zy-last* *zy-presents* 1)))))
+
+(defun %kz-present-yuv (fb)
+  "On the screen thread: FB's planes into the clean buffer, then show it.  The first present
+   (the display-list entry, the scaling kernel) is the ordinary one."
+  (if (or (null *zy*) (null (fourth *zy*)))
+      (progn (%zero-present-yuv fb)
+             (let ((ysz (* (glass:fb-width fb) (glass:fb-height fb)))
+                   (csz (* (glass:fb-chroma-width fb) (glass:fb-chroma-height fb))))
+               (%zy-copy (%kz-clean) (+ (%val->word (glass:fb-y fb)) 7) ysz)
+               (%zy-copy (+ (%kz-clean) ysz) (+ (%val->word (glass:fb-u fb)) 7) csz)
+               (%zy-copy (+ (%kz-clean) ysz csz) (+ (%val->word (glass:fb-v fb)) 7) csz)))
+      (let ((ysz (* (glass:fb-width fb) (glass:fb-height fb)))
+            (csz (* (glass:fb-chroma-width fb) (glass:fb-chroma-height fb))))
+        (%zy-copy (%kz-clean) (+ (%val->word (glass:fb-y fb)) 7) ysz)
+        (%zy-copy (+ (%kz-clean) ysz) (+ (%val->word (glass:fb-u fb)) 7) csz)
+        (%zy-copy (+ (%kz-clean) ysz csz) (+ (%val->word (glass:fb-v fb)) 7) csz)
+        (setf (fourth *zy*) fb)
+        (%kz-zy-show fb)))
+  0)
+
+(defun %kz-scr-idle ()
+  "The screen thread between calls: follow the mouse."
+  (when *kz-scr-paused* (return-from %kz-scr-idle nil))
+  (let ((nx (mouse-x)) (ny (mouse-y)))
+    (when (or (/= nx *kz-scr-mx*) (/= ny *kz-scr-my*))
+      (setf *zero-px* (max 0 (min (1- (hcon-get #x0C)) (+ *zero-px* (- nx *kz-scr-mx*))))
+            *zero-py* (max 0 (min (1- (hcon-get #x10)) (+ *zero-py* (- ny *kz-scr-my*))))
+            *kz-scr-mx* nx *kz-scr-my* ny)
+      (if (and *zy* (fourth *zy*))
+          (%kz-zy-show (fourth *zy*))
+          (progn (%zero-pointer-hide) (%zero-pointer-show))))))
+
+(defvar *kz-scr-paused* nil)              ; T: the screen thread leaves the pointer alone
+
+(defun %kz-on-screen (fn)
+  "FN on the screen thread when there is one, else here."
+  (if *kz-scr* (bt-call *kz-scr* fn) (funcall fn)))
+
+(defun kz-scr-start ()
+  "Start the screen thread on core 2 (after the USB thread).  Its handle, or NIL without threads."
+  (when (and (null *kz-scr*) *kz-usb* (fboundp 'bt-start-executor))
+    (%zero-blit-code)                     ; the exec page, made here: the JIT's bump is main's
+    (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y))
+    (setf *kz-scr* (bt-start-executor 2 #'%kz-scr-idle)))
+  (when *kz-scr*
+    (bt-call *kz-scr* (lambda () (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y)
+                                       *kz-scr-paused* nil) 0)))
+  *kz-scr*)
+
+;;; --- the audio thread (kiln zero --threads) -----------------------------------------------
+;;;
+;;; Sound goes out over HDMI (modus net/hdmi-audio.lisp: LPCM into the firmware's HDMI link,
+;;; config.txt hdmi_drive=2).  Its FIFO is fed by a polled pump, so an executor on core 3 runs
+;;; HDMI-AUDIO-PUMP over and over; anything that makes sound fills the ring with
+;;; HDMI-AUDIO-WRITE / -WRITE-FRAMES (48 kHz stereo 16-bit).  (kz-beep) is the smoke test.
+
+(defvar *kz-audio* nil)
+(defvar *kz-audio-start* nil)             ; what HDMI-AUDIO-START answered: T or why not
+
+(defun %kz-audio-idle () (hdmi-audio-pump))
+
+(defun kz-audio-start ()
+  "Bring HDMI audio up and start the audio thread on core 3.  Its handle, or NIL (no threads,
+   or the link has no audio: *KZ-AUDIO-START* says why)."
+  (when (and (null *kz-audio*) *kz-usb* (fboundp 'bt-start-executor) (fboundp 'hdmi-audio-start))
+    (setf *kz-audio-start* (hdmi-audio-start 48000))
+    (when (eq *kz-audio-start* t)
+      (setf *kz-audio* (bt-start-executor 3 #'%kz-audio-idle))))
+  *kz-audio*)
+
+(defun kz-beep (&optional (hz 440) (ms 300))
+  "A triangle-wave tone through HDMI (starts the audio thread if need be)."
+  (kz-audio-start)
+  (if *kz-audio* (hdmi-audio-tone hz ms) *kz-audio-start*))
+
 ;;; --- screen --------------------------------------------------------------------------------
 
 (defvar *zero-blit-code* nil)             ; the native row copier's exec page, once made
@@ -357,16 +510,22 @@
       (%kz-say (case n (1001 "KZ:size") (1002 "KZ:fill") (1004 "KZ:event") (t "KZ:blit")))))
   (case n
     (1001 (case a (0 (hcon-get #x0C)) (1 (hcon-get #x10)) (t 1)))
-    (1002 (%zero-pointer-hide)
-          (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) c)
-          (%zero-pointer-show) 0)
+    (1002 (%kz-on-screen (lambda ()
+                           (%zero-pointer-hide)
+                           (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) c)
+                           (%zero-pointer-show) 0)))
     (1004 (%zero-next-event))
-    (1005 (%zero-blit a b c d))
-    (1007 (%zero-present-yuv a) 0)
+    (1005 (%kz-on-screen (lambda () (%zero-blit a b c d))))
+    ;; the FIRST present makes *ZY* (a list: main's, since a thread may not store its own
+    ;; objects in a global); every later one is the screen thread's
+    (1007 (cond ((null *kz-scr*) (%zero-present-yuv a))
+                ((and *zy* (fourth *zy*)) (bt-call *kz-scr* (lambda () (%kz-present-yuv a))))
+                (t (%kz-present-yuv a)))
+          0)
     (1010 1)
     (t 0)))
 
-(defun kiln-zero-main (&key media autoplay (yuv t))
+(defun kiln-zero-main (&key media autoplay (yuv t) frames)
   "The phone app on the Zero's screen, until a character arrives on the serial port.  MEDIA
    opens the media player on the files under /media/ of the mounted cabinet (kiln zero
    --media installs the player, mounts the cabinet and puts the clips there); the player
@@ -375,6 +534,10 @@
   ;; The screen's state block outlives a board reset: trust it only once this boot has
   ;; brought the console up (the kernel zeroes its ready word at reset).
   (unless (hcon-ready-p) (hcon-init))
+  (setq *kz-frame-limit* frames)
+  (kz-usb-start)                          ; threads: input on core 1 from here on
+  (kz-scr-start)                          ; ... and the screen on core 2
+  (kz-audio-start)                        ; ... and HDMI audio on core 3
   (let ((ready (hcon-get 0)))
     (setf *zero-events* nil *zero-mouse* nil *zero-under* nil
           *zero-px* (floor (hcon-get #x0C) 2) *zero-py* (floor (hcon-get #x10) 2))
@@ -398,8 +561,11 @@
                  (setf (symbol-value (find-symbol "*FRAME-FORMAT*" "WARP-MEDIA")) :i420)
                  (kiln-app-main :top 0 :media media :autoplay autoplay))
                (kiln-app-main :top 0 :media media :autoplay (and media autoplay))))
-      (%zero-yuv-restore)
-      (%zero-pointer-hide)
+      (%kz-on-screen (lambda ()
+                       (setf *kz-scr-paused* t)
+                       (%zero-yuv-restore)
+                       (%zero-pointer-hide)
+                       0))
       (hcon-put 0 ready)
       (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) (hcon-get #x28))
       (hcon-put #x1C 0) (hcon-put #x20 0))))

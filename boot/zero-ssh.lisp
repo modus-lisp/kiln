@@ -25,6 +25,15 @@
 (defvar *rx* (make-array 65536 :element-type '(unsigned-byte 8)))
 (defvar *rx-start* 0)
 (defvar *rx-end* 0)
+(defvar *usb-executor* nil
+  "With threads (kiln zero --threads), the USB thread (kz-usb-start): every USB operation here
+   runs on it, through BT-CALL, because only that thread may drive the host controller.")
+
+(defun %on-usb (fn)
+  "FN (no arguments) on the USB thread when there is one, else here."
+  (if *usb-executor*
+      (funcall (%kernel "BT-CALL") *usb-executor* fn)
+      (funcall fn)))
 
 (defun %sym (name pkg) (or (find-symbol name pkg) (error "kiln-zero-ssh: no ~a::~a" pkg name)))
 (defun %kernel (name)
@@ -42,7 +51,8 @@
 
 (defun %connect (host port)
   (setf *rx-start* 0 *rx-end* 0)
-  (unless (eql 1 (funcall (%kernel "TCP-CONNECT") (%ip host) port))
+  (unless (eql 1 (let ((f (%kernel "TCP-CONNECT")) (ip (%ip host)))
+                   (%on-usb (lambda () (funcall f ip port)))))
     (error "kiln-zero-ssh: TCP connect to ~a:~d failed" host port))
   (values :modus-tcp :modus-tcp))
 
@@ -54,13 +64,16 @@
       (let* ((len (min 1024 (- n off)))
              (chunk (make-array len)))
         (dotimes (i len) (setf (aref chunk i) (aref bytes (+ off i))))
-        (funcall send chunk len)))))
+        (%on-usb (lambda () (funcall send chunk len) 0))))))
 
 (defun %fill ()
   "Wait for the next in-order TCP segment and append its payload to *RX*."
   (let ((t0 (get-internal-real-time)) (recv (%kernel "TCP-RECEIVE")) (rxbuf (%kernel "E1000-RX-BUF")))
     (loop
-      (let ((n (funcall recv 2000)))
+      ;; ONE receive attempt per call: between calls the USB thread polls the keyboard and
+      ;; mouse.  The segment stays in the NIC's buffer until the next receive, and only a
+      ;; call makes one, so it is copied here, after the call.
+      (let ((n (%on-usb (lambda () (funcall recv 2000)))))
         (when (> n 0)
           (let* ((buf (funcall rxbuf))
                  (hdr (ash (logand (cl-user::mem-ref (+ buf 46) :u8) #xF0) -2))
@@ -215,7 +228,12 @@
     (%k "DWC2-DELAY-MS" 10)))
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
-  "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals."
+  "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.
+   With threads, all of it runs on the USB thread."
+  (%on-usb (lambda () (%net-up-1 ip gateway)))
+  (setf *net-up* t))
+
+(defun %net-up-1 (ip gateway)
   (let ((hs nil) (nic nil))
     ;; every connected high-speed port (wPortStatus bit 10), disabled, then addressed one by one
     (loop for p from 1 to 7
@@ -263,7 +281,7 @@
         (%k "DWC2-START-BULK-IN" 1 a 1 (%k "CDC-RX-BUF-ADDR") 2048 512)))
     (unless (loop repeat 5 thereis (eql 1 (%k "ARP-RESOLVE")))
       (error "kiln-zero-ssh: no ARP reply from the gateway"))
-    (setf *net-up* t)))
+    t))
 
 (defun ssh-run (host command &key (user "modus") (port 22))
   "Run COMMAND on HOST over SSH.  Returns (values STDOUT EXIT-STATUS STDERR)."

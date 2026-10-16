@@ -716,12 +716,17 @@
            (when media
              (setf *kiln-bundle-dir* "/")
              (flet ((wm (name v) (setf (symbol-value (find-symbol name "WARP-MEDIA")) v)))
-               (if *kz-usb*
-                   ;; THREADS: the decoder on core 3 (zero-bt places "warp-media-decode" there),
-                   ;; copying each picture into frames this thread made (*FRAME-POOL*), its
-                   ;; :STARTED / :ENDED fired here (*EVENTS-ON-MAIN*); the file read here
-                   (progn (wm "*COOPERATIVE*" nil) (wm "*EVENTS-ON-MAIN*" t) (wm "*FRAME-POOL*" t))
-                   (wm "*COOPERATIVE*" t))))
+               ;; the library lists audio only by default; a board with its own screen plays
+               ;; films too -- the containers warp-media's engine opens
+               (wm "*EXTENSIONS*" (append '("webm" "mkv" "mp4" "mpg" "mpeg" "ts")
+                                          (symbol-value (find-symbol "*EXTENSIONS*" "WARP-MEDIA"))))
+               ;; COOPERATIVE even on a threaded board: the decoder runs here, between events,
+               ;; while USB, the screen and audio keep their cores.  Measured under QEMU on the
+               ;; merged stack (2026-10-16): cooperative 3.57 fps; the decoder on its own thread
+               ;; (warp-media's LINK, *FRAME-POOL*, *READ-ON-UI*) stalls -- under 40 presents in
+               ;; 15 minutes -- for a reason not yet found.  Threaded decoding comes back when it
+               ;; is: (wm "*COOPERATIVE*" nil) (wm "*READ-ON-UI*" t) (wm "*FRAME-POOL*" t).
+               (wm "*COOPERATIVE*" t)))
            (if (and media yuv)
                ;; the screen in Y'CbCr: every framebuffer :I420, pictures stay planes
                (let ((glass:*default-fb-format* :i420))

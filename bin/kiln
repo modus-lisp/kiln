@@ -2549,6 +2549,7 @@ EOF
   cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
   # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
   cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
+  cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
   local media_files=""
   if [[ $media == 1 ]]; then
     for r in reed reel cassette warp pagetree cabinet modus; do
@@ -2613,7 +2614,7 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "zero-bt")
      $media_files
-     (:file "zero") (:file "app") (:file "zero-ssh")))))
+     (:file "zero") (:file "app") (:file "zero-ssh") (:file "zero-rfb")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)

@@ -88,7 +88,14 @@
 
 (defvar *kz-usb* nil)
 
-(defun %kz-usb-idle () (hid-split-poll))
+;;; Hooks for what else runs on the USB thread and feeds the desk: the RFB server
+;;; (boot/zero-rfb.lisp, loaded after this file) sets them when it starts serving.
+(defvar *kz-usb-idle-hook* nil)    ; a function of no arguments, run on the USB thread each round
+(defvar *kz-event-source* nil)     ; a function returning events (the desk's encoding), main thread
+
+(defun %kz-usb-idle ()
+  (hid-split-poll)
+  (let ((h *kz-usb-idle-hook*)) (when h (funcall h))))
 
 (defun kz-usb-start ()
   "Start the USB thread on core 1 and give it the controller.  Its handle, or NIL on an image
@@ -117,6 +124,8 @@
 (defun %zero-poll ()
   "Turn what the keyboard and mouse did since the last call into queued events."
   (hid-split-poll)
+  (let ((src *kz-event-source*))
+    (when src (setf *zero-events* (append *zero-events* (funcall src)))))
   (loop (let ((c (hid-ring-pop)))
           (when (< c 0) (return))
           (setf *zero-events* (append *zero-events*

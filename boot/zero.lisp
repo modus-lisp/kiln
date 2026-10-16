@@ -51,7 +51,10 @@
 (defun %zero-pixel-addr (x y) (+ (hcon-get #x04) (* y (hcon-get #x08)) (* x 4)))
 (defun %zero-on-screen-p (x y) (and (< -1 x (hcon-get #x0C)) (< -1 y (hcon-get #x10))))
 
+(defvar *kz-hw-cursor* nil)               ; T: the pointer is an HVS plane (the screen thread's)
+
 (defun %zero-pointer-hide ()
+  (when *kz-hw-cursor* (return-from %zero-pointer-hide nil))
   (when *zero-under*
     (let ((x *zero-under-x*) (y *zero-under-y*) (saved *zero-under-pixels*))
       (dotimes (r 16)
@@ -61,6 +64,7 @@
     (setf *zero-under* nil)))
 
 (defun %zero-pointer-show ()
+  (when *kz-hw-cursor* (return-from %zero-pointer-show nil))
   (let ((x *zero-px*) (y *zero-py*) (saved *zero-under-pixels*))
     (dotimes (r 16)
       (let ((line (nth r *zero-arrow*)))
@@ -249,7 +253,9 @@
     (list buf (+ buf ysz) (+ buf ysz csz))))
 
 (defun %zy-pointer (buf fb)
-  "The arrow into BUF's luma at the pointer's place (black outline, white body)."
+  "The arrow into BUF's luma at the pointer's place (black outline, white body) -- unless the
+   pointer is the hardware cursor."
+  (when *kz-hw-cursor* (return-from %zy-pointer nil))
   (let ((fw (glass:fb-width fb)) (fh (glass:fb-height fb)))
     (dotimes (r 16)
       (let ((line (nth r *zero-arrow*)) (y (+ *zero-py* r)))
@@ -294,8 +300,14 @@
                  (%zy-slot-wr (+ (%zy-slot) 6) (logior #xC0000000 (second ptrs)))
                  (%zy-slot-wr (+ (%zy-slot) 7) (logior #xC0000000 (third ptrs))))
           ;; the display's width, and the height that keeps the desk's aspect
-          (let ((i 0) (sh (min dh (floor (* dw (glass:fb-height fb)) (glass:fb-width fb)))))
-            (dolist (w (%zy-words (glass:fb-width fb) (glass:fb-height fb) ptrs dw sh))
+          (let* ((i 0) (sh (min dh (floor (* dw (glass:fb-height fb)) (glass:fb-width fb))))
+                 (words (%zy-words (glass:fb-width fb) (glass:fb-height fb) ptrs dw sh)))
+            ;; THE HARDWARE CURSOR rides after the picture, before END (threaded desks)
+            (when *kz-hw-cursor*
+              (setq words (append (butlast words)
+                                  (%kz-cur-yuv-words (glass:fb-width fb) (glass:fb-height fb) dw sh)
+                                  (last words))))
+            (dolist (w words)
               (%zy-slot-wr (+ (%zy-slot) i) w) (setq i (+ i 1)))
             (setf (mem-ref (+ (%zy-hvs) #x24) :u32) (%zy-slot))))
       (setf (second *zy*) (- 1 back) (fourth *zy*) fb)
@@ -313,6 +325,126 @@
       (format t "~&KZ: ~d presents in ~d ms = ~,2f fps~%" *zy-presents* ms
               (/ (* 1000.0 (- *zy-presents* 1)) ms))))
   (setq *zy-first* nil *zy-last* nil *zy-presents* 0))
+
+;;; --- the hardware cursor and vsync (HVS) ---------------------------------------------------
+;;;
+;;; The pointer is a plane of its own in the HVS display list: a small unscaled RGBA image above
+;;; the desk's plane (Linux vc4_plane.c GEN_4, 7 words: CTL0 POS0 POS2 POS3 PTR0 PTR0-context
+;;; PITCH0; the first entry in a list is the bottom).  Moving it is one word, POS0, rewritten
+;;; when the HVS has finished compositing a frame (DISPSTAT1 MODE = EOF) -- no pixels copied,
+;;; never torn, at most once a frame.  The desk's own plane: on the Y'CbCr path the entry this
+;;; file builds (%ZY-WORDS); on the RGB path the FIRMWARE's console entry, copied into slots of
+;;; ours with the cursor appended, DISPLIST1 pointed at the copy (and back on leaving).
+;;;
+;;; VSYNC: DISPSTAT1 (HVS + 0x58) -- MODE 31:30 (3 = end of frame), FRCNT 17:12 (a frame counter)
+;;; -- polled, read only, so nothing races the firmware for it.  A Y'CbCr present swaps its
+;;; plane pointers at end of frame too.
+;;;
+;;; The image (11 x 16 arrow, scaled by the desk's own scale to the display) is ARGB8888 --
+;;; a :u32 #xAARRGGBB, transparent 0 -- in the non-cacheable scanout block at 0x117F0000.
+
+(defvar *kz-cur* nil)   ; (pos0-slot pos2-slot w h x0 y0 dstw dsth fbw fbh dw dh old-list) once on
+(defun %kz-cur-image () #x117F0000)
+(defun %kz-dispstat () (mem-ref (+ (%zy-hvs) #x58) :u32))
+(defun %kz-frcnt () (logand (ash (%kz-dispstat) -12) 63))
+
+(defun %kz-wait-eof ()
+  "Until the HVS has finished this frame (MODE = EOF); at most 50 ms (a disabled channel)."
+  (let ((dl (+ (rdtsc) (floor (cntfrq) 20))))
+    (loop (when (or (= (ash (%kz-dispstat) -30) 3) (>= (rdtsc) dl)) (return nil)))))
+
+(defun %kz-wait-vsync ()
+  "Until the next frame has been composited: the frame counter moves, then end of frame."
+  (let ((f (%kz-frcnt)) (dl (+ (rdtsc) (floor (cntfrq) 20))))
+    (loop (when (or (/= (%kz-frcnt) f) (>= (rdtsc) dl)) (return nil)))
+    (%kz-wait-eof)))
+
+(defun %kz-cur-make-image (k)
+  "The arrow at K x into the image page; (values w h)."
+  (let ((w (* 11 k)) (h (* 16 k)) (img (%kz-cur-image)))
+    (dotimes (y h)
+      (let ((line (nth (floor y k) *zero-arrow*)))
+        (dotimes (x w)
+          (setf (mem-ref (+ img (* 4 (+ (* y w) x))) :u32)
+                (case (char line (floor x k)) (#\2 #xFF000000) (#\1 #xFFFFFFFF) (t 0))))))
+    (mfence)
+    (values w h)))
+
+(defun %kz-cur-words (x y w h)
+  (list #x47007817 (logior #xFF000000 (ash y 12) x) (logior (ash h 16) w) #xC0C0C0C0
+        (logior #xC0000000 (%kz-cur-image)) #xC0C0C0C0 (* 4 w)))
+
+(defun %kz-cur-pos (px py)
+  "Display position of desk pixel (PX, PY) and the plane's clipped size: (values x y w h)."
+  (destructuring-bind (s0 s2 w h x0 y0 dstw dsth fbw fbh dw dh old) *kz-cur*
+    (declare (ignore s0 s2 old))
+    (let ((x (min (1- dw) (+ x0 (floor (* px dstw) fbw))))
+          (y (min (1- dh) (+ y0 (floor (* py dsth) fbh)))))
+      (values x y (max 1 (min w (- dw x))) (max 1 (min h (- dh y)))))))
+
+(defun %kz-cur-move (px py)
+  "Put the cursor plane at desk pixel (PX, PY): at end of frame, POS0 (and POS2 at an edge)."
+  (when *kz-cur*
+    (multiple-value-bind (x y w h) (%kz-cur-pos px py)
+      (%kz-wait-eof)
+      (%zy-slot-wr (first *kz-cur*) (logior #xFF000000 (ash y 12) x))
+      (%zy-slot-wr (second *kz-cur*) (logior (ash h 16) w))
+      (mfence))))
+
+(defun %kz-display-size ()
+  (let* ((ctl (mem-ref (+ (%zy-hvs) #x50) :u32))
+         (dw (logand (ash ctl -12) 4095)) (dh (logand ctl 4095)))
+    (values (if (plusp dw) dw 1920) (if (plusp dh) dh 1080))))
+
+(defun %kz-cur-install-rgb ()
+  "RGB desk: copy the firmware's display-list entry for the console framebuffer into slots
+   2200.., append the cursor plane, point DISPLIST1 at the copy.  NIL if the entry is not a
+   single plane this understands."
+  (let* ((old (mem-ref (+ (%zy-hvs) #x24) :u32))
+         (words nil) (n 0))
+    (loop (let ((w (mem-ref (+ (%zy-hvs) #x2000 (* (+ old n) 4)) :u32)))
+            (when (or (= w #x80000000) (> n 64)) (return nil))
+            (push w words) (setq n (+ n 1))))
+    (setq words (nreverse words))
+    (when (or (> n 64) (< n 4) (/= n (logand (ash (first words) -24) 63)))
+      (return-from %kz-cur-install-rgb nil))     ; not exactly one plane entry
+    (multiple-value-bind (dw dh) (%kz-display-size)
+      (let* ((unity (logbitp 4 (first words)))
+             (pos0 (second words))
+             (x0 (logand pos0 4095)) (y0 (logand (ash pos0 -12) 4095))
+             (fbw (hcon-get #x0C)) (fbh (hcon-get #x10))
+             (dst (if unity nil (third words)))
+             (dstw (if dst (logand dst #xFFF) fbw)) (dsth (if dst (logand (ash dst -16) #xFFF) fbh))
+             (k (max 1 (round dstw fbw))))
+        (hcon-map-nc (%zy-buf-base) #x200000)
+        (multiple-value-bind (w h) (%kz-cur-make-image k)
+          (let ((slot 2200) (i 0))
+            (dolist (wd words) (%zy-slot-wr (+ slot i) wd) (setq i (+ i 1)))
+            (setf *kz-cur* (list (+ slot i 1) (+ slot i 2) w h x0 y0 dstw dsth fbw fbh dw dh old))
+            (multiple-value-bind (cx cy cw ch) (%kz-cur-pos *zero-px* *zero-py*)
+              (dolist (wd (%kz-cur-words cx cy cw ch)) (%zy-slot-wr (+ slot i) wd) (setq i (+ i 1))))
+            (%zy-slot-wr (+ slot i) #x80000000)
+            (mfence)
+            (%kz-wait-eof)
+            (setf (mem-ref (+ (%zy-hvs) #x24) :u32) slot)
+            t))))))
+
+(defun %kz-cur-yuv-words (fbw fbh dw sh)
+  "The cursor entry for the Y'CbCr desk (scaled to DW x SH at 0,0), and *KZ-CUR* for it; the
+   POS0 slot is fixed by where %ZERO-PRESENT-YUV writes it (after the 28-word picture entry)."
+  (let ((k (max 1 (round dw fbw))))
+    (multiple-value-bind (w h) (%kz-cur-make-image k)
+      (multiple-value-bind (dw2 dh2) (%kz-display-size)
+        (declare (ignore dw2))
+        (setf *kz-cur* (list (+ (%zy-slot) 29) (+ (%zy-slot) 30) w h 0 0 dw sh fbw fbh dw dh2 nil))
+        (multiple-value-bind (cx cy cw ch) (%kz-cur-pos *zero-px* *zero-py*)
+          (%kz-cur-words cx cy cw ch))))))
+
+(defun %kz-cur-uninstall ()
+  (when *kz-cur*
+    (let ((old (car (last *kz-cur*))))
+      (when old (%kz-wait-eof) (setf (mem-ref (+ (%zy-hvs) #x24) :u32) old)))
+    (setf *kz-cur* nil)))
 
 ;;; --- the screen thread (kiln zero --threads) ----------------------------------------------
 ;;;
@@ -358,13 +490,31 @@
                (%zy-copy (%kz-clean) (+ (%val->word (glass:fb-y fb)) 7) ysz)
                (%zy-copy (+ (%kz-clean) ysz) (+ (%val->word (glass:fb-u fb)) 7) csz)
                (%zy-copy (+ (%kz-clean) ysz csz) (+ (%val->word (glass:fb-v fb)) 7) csz)))
+      (if *kz-hw-cursor*
+          ;; no arrow to keep out of the picture: straight into the back buffer, then the
+          ;; plane pointers swapped at END OF FRAME (vsync -- a swap mid-frame can tear)
+          (destructuring-bind (bufs back old last dw dh) *zy*
+            (declare (ignore old last dw dh))
+            (let* ((buf (nth back bufs)) (ptrs (%zy-ptrs buf fb))
+                   (ysz (* (glass:fb-width fb) (glass:fb-height fb)))
+                   (csz (* (glass:fb-chroma-width fb) (glass:fb-chroma-height fb))))
+              (%zy-copy (first ptrs) (+ (%val->word (glass:fb-y fb)) 7) ysz)
+              (%zy-copy (second ptrs) (+ (%val->word (glass:fb-u fb)) 7) csz)
+              (%zy-copy (third ptrs) (+ (%val->word (glass:fb-v fb)) 7) csz)
+              (%kz-wait-eof)
+              (%zy-slot-wr (+ (%zy-slot) 5) (logior #xC0000000 (first ptrs)))
+              (%zy-slot-wr (+ (%zy-slot) 6) (logior #xC0000000 (second ptrs)))
+              (%zy-slot-wr (+ (%zy-slot) 7) (logior #xC0000000 (third ptrs)))
+              (setf (second *zy*) (- 1 back) (fourth *zy*) fb)
+              (setq *zy-presents* (+ *zy-presents* 1) *zy-last* (get-internal-real-time))
+              (unless *zy-first* (setq *zy-first* *zy-last* *zy-presents* 1))))
       (let ((ysz (* (glass:fb-width fb) (glass:fb-height fb)))
             (csz (* (glass:fb-chroma-width fb) (glass:fb-chroma-height fb))))
         (%zy-copy (%kz-clean) (+ (%val->word (glass:fb-y fb)) 7) ysz)
         (%zy-copy (+ (%kz-clean) ysz) (+ (%val->word (glass:fb-u fb)) 7) csz)
         (%zy-copy (+ (%kz-clean) ysz csz) (+ (%val->word (glass:fb-v fb)) 7) csz)
         (setf (fourth *zy*) fb)
-        (%kz-zy-show fb)))
+        (%kz-zy-show fb))))
   0)
 
 (defun %kz-scr-idle ()
@@ -375,9 +525,9 @@
       (setf *zero-px* (max 0 (min (1- (hcon-get #x0C)) (+ *zero-px* (- nx *kz-scr-mx*))))
             *zero-py* (max 0 (min (1- (hcon-get #x10)) (+ *zero-py* (- ny *kz-scr-my*))))
             *kz-scr-mx* nx *kz-scr-my* ny)
-      (if (and *zy* (fourth *zy*))
-          (%kz-zy-show (fourth *zy*))
-          (progn (%zero-pointer-hide) (%zero-pointer-show))))))
+      (cond (*kz-hw-cursor* (%kz-cur-move *zero-px* *zero-py*))   ; one word, at end of frame
+            ((and *zy* (fourth *zy*)) (%kz-zy-show (fourth *zy*)))
+            (t (%zero-pointer-hide) (%zero-pointer-show))))))
 
 (defvar *kz-scr-paused* nil)              ; T: the screen thread leaves the pointer alone
 
@@ -385,12 +535,21 @@
   "FN on the screen thread when there is one, else here."
   (if *kz-scr* (bt-call *kz-scr* fn) (funcall fn)))
 
-(defun kz-scr-start ()
-  "Start the screen thread on core 2 (after the USB thread).  Its handle, or NIL without threads."
+(defun kz-scr-start (&optional yuv)
+  "Start the screen thread on core 2 (after the USB thread).  YUV: the desk will be Y'CbCr
+   (its first present puts the cursor in its own display list).  The handle, or NIL without
+   threads."
   (when (and (null *kz-scr*) *kz-usb* (fboundp 'bt-start-executor))
     (%zero-blit-code)                     ; the exec page, made here: the JIT's bump is main's
     (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y))
+    ;; THE HARDWARE CURSOR, on main (its state is main's): on the RGB desk now, over the
+    ;; firmware's plane; on the Y'CbCr desk with the first present.  The software arrow stays
+    ;; if the firmware's entry is not one plane this understands.
     (setf *kz-scr* (bt-start-executor 2 #'%kz-scr-idle)))
+  (when (and *kz-scr* (null *kz-cur*))
+    (setf *kz-hw-cursor* t)
+    (unless (or yuv (%kz-cur-install-rgb))
+      (setf *kz-hw-cursor* nil)))
   (when *kz-scr*
     (bt-call *kz-scr* (lambda () (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y)
                                        *kz-scr-paused* nil) 0)))
@@ -536,8 +695,10 @@
   (unless (hcon-ready-p) (hcon-init))
   (setq *kz-frame-limit* frames)
   (kz-usb-start)                          ; threads: input on core 1 from here on
-  (kz-scr-start)                          ; ... and the screen on core 2
-  (kz-audio-start)                        ; ... and HDMI audio on core 3
+  (kz-scr-start (and media yuv))          ; ... and the screen on core 2
+  ;; ... and HDMI audio on core 3 -- except for media: there core 3 decodes (and with no mixer
+  ;; on the Zero yet, a film plays silent anyway)
+  (unless media (kz-audio-start))
   (let ((ready (hcon-get 0)))
     (setf *zero-events* nil *zero-mouse* nil *zero-under* nil
           *zero-px* (floor (hcon-get #x0C) 2) *zero-py* (floor (hcon-get #x10) 2))
@@ -554,7 +715,13 @@
            (%kz-say "KZ:app")
            (when media
              (setf *kiln-bundle-dir* "/")
-             (setf (symbol-value (find-symbol "*COOPERATIVE*" "WARP-MEDIA")) t))
+             (flet ((wm (name v) (setf (symbol-value (find-symbol name "WARP-MEDIA")) v)))
+               (if *kz-usb*
+                   ;; THREADS: the decoder on core 3 (zero-bt places "warp-media-decode" there),
+                   ;; copying each picture into frames this thread made (*FRAME-POOL*), its
+                   ;; :STARTED / :ENDED fired here (*EVENTS-ON-MAIN*); the file read here
+                   (progn (wm "*COOPERATIVE*" nil) (wm "*EVENTS-ON-MAIN*" t) (wm "*FRAME-POOL*" t))
+                   (wm "*COOPERATIVE*" t))))
            (if (and media yuv)
                ;; the screen in Y'CbCr: every framebuffer :I420, pictures stay planes
                (let ((glass:*default-fb-format* :i420))
@@ -563,9 +730,11 @@
                (kiln-app-main :top 0 :media media :autoplay (and media autoplay))))
       (%kz-on-screen (lambda ()
                        (setf *kz-scr-paused* t)
+                       (%kz-cur-uninstall)
                        (%zero-yuv-restore)
                        (%zero-pointer-hide)
                        0))
+      (setf *kz-hw-cursor* nil)
       (hcon-put 0 ready)
       (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) (hcon-get #x28))
       (hcon-put #x1C 0) (hcon-put #x20 0))))

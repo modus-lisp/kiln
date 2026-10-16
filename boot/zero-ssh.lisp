@@ -279,8 +279,14 @@
               (cl-user::mem-ref (+ s #x1C) :u32) gateway)
         (%k "USB-NETDEV-SET" 1)
         (%k "DWC2-START-BULK-IN" 1 a 1 (%k "CDC-RX-BUF-ADDR") 2048 512)))
-    (unless (loop repeat 5 thereis (eql 1 (%k "ARP-RESOLVE")))
-      (error "kiln-zero-ssh: no ARP reply from the gateway"))
+    ;; Up to 10 s, by the clock: resetting the RTL8153 drops the link, and a gigabit link
+    ;; takes ~3 s to come back.  Five tries of ARP-RESOLVE's own wait used to cover that by
+    ;; accident; with faster code they are over in milliseconds, before the link is up.
+    (let ((deadline (+ (get-internal-real-time) (* 10 internal-time-units-per-second))))
+      (loop until (eql 1 (%k "ARP-RESOLVE"))
+            do (when (> (get-internal-real-time) deadline)
+                 (error "kiln-zero-ssh: no ARP reply from the gateway"))
+               (%k "DWC2-DELAY-MS" 200)))
     t))
 
 (defun ssh-run (host command &key (user "modus") (port 22))

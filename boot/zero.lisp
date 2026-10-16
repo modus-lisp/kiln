@@ -92,10 +92,13 @@
 ;;; (boot/zero-rfb.lisp, loaded after this file) sets them when it starts serving.
 (defvar *kz-usb-idle-hook* nil)    ; a function of no arguments, run on the USB thread each round
 (defvar *kz-event-source* nil)     ; a function returning events (the desk's encoding), main thread
+(defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
   (hid-split-poll)
-  (let ((h *kz-usb-idle-hook*)) (when h (funcall h))))
+  (let ((n *kz-net-service*) (h *kz-usb-idle-hook*))
+    (when n (funcall n))                ; first: nothing may leave the NIC unread
+    (when h (funcall h))))
 
 (defun kz-usb-start ()
   "Start the USB thread on core 1 and give it the controller.  Its handle, or NIL on an image

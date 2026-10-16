@@ -866,7 +866,7 @@ cmd_local() {
   # SBCL's REPL on stdin and stdout, the whole workspace loaded, not a byte
   # leaving the process.  That is the useful shape of useless — you can reach
   # anything from a REPL, and nothing reaches you.
-  local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id="" nostr=""
+  local vnc="" vnc_sock="" view="" control="" audio="" apps="" gateway="" gateway_id="" nostr="" rfb=""
   local mic="off" speaker="off"
   local size="" wallpaper="" voice="" ears="" config="" expose="" sshd="" policy=""
   local display=${GLASS_DISPLAY:-1}
@@ -934,6 +934,8 @@ cmd_local() {
       --ears)       ears=${val:?--ears=PATH} ;;
       --gateway)    gateway=${val:-auto} ;;
       --nostr)      nostr=${val:-1} ;;
+      --rfb)        rfb=${val:?--rfb=HOST:PORT}
+                    [[ $rfb =~ ^[^:]+:[0-9]+$ ]] || die "--rfb wants HOST:PORT (got $rfb)" ;;
       --gateway-id) gateway_id=${val:?--gateway-id=ID} ;;
       --policy)     policy=${val:?--policy=FILE} ;;
       --config)     config=${val:?--config=FILE} ;;
@@ -1242,7 +1244,17 @@ cmd_local() {
       printf '  (t\n'
       printf '   (sb-posix:setenv "NOSTR_SEC" *kiln-session-sec* 1)\n'
       printf '   (sb-posix:setenv "GLASS_NOSTR_SEC" *kiln-session-sec* 1)\n'
-      if [[ -n $vnc_sock ]]; then
+      if [[ -n $rfb ]]; then
+        # SOMEBODY ELSE'S SCREEN: an RFB server this image did not start (a board, another
+        # machine).  The gateway is its client exactly as it is of our own desktop; what that
+        # server cannot do is answer admission, so this image answers it, on loopback, beside
+        # the display's own ports -- and tells the gateway where, since "beside the screen"
+        # would be on the other machine.
+        printf '   (sb-posix:setenv "GLASS_HOST" "%s" 1)\n' "${rfb%:*}"
+        printf '   (sb-posix:setenv "GLASS_PORT" "%s" 1)\n' "${rfb##*:}"
+        printf '   (sb-posix:setenv "GLASS_ADMISSION_HOST" "127.0.0.1" 1)\n'
+        printf '   (sb-posix:setenv "GLASS_ADMISSION_PORT" "%s" 1)\n' "$((5912 + display))"
+      elif [[ -n $vnc_sock ]]; then
         local sp=$vnc_sock
         [[ $sp == auto ]] \
           && printf '   (sb-posix:setenv "GLASS_HOST" (format nil "unix:~a" (glass:socket-path "kiln-%s.rfb")) 1)\n' "$display" \
@@ -1275,8 +1287,12 @@ cmd_local() {
       printf '           (format t "~&kiln: payload  ~a is UNBUNDLED SOURCE — it imports ./novnc/ and~%%" p)\n'
       printf '           (format t "~&kiln: payload  will fail in the browser.  Build it: see~%%")\n'
       printf '           (format t "~&kiln: payload  glass-webrtc/DEPLOY.md (sbcl --script tools/mksplit.lisp)~%%")))))\n'
+      # VIDEO NEEDS A SECOND RFB CONNECTION (the encoder's), and a remote screen may serve
+      # only one -- the Zero's does.  The gateway reads any value as on, so it is not set.
+      [[ -z $rfb ]] && {
       printf '   (unless (sb-ext:posix-getenv "VIDEO_PRIMARY")\n'
       printf '     (sb-posix:setenv "VIDEO_PRIMARY" "1" 1))\n'
+      }
       # WARP: the overlay UI (device panel, menus) on data channel 102.  The gateway
       # reads WARP_CHANNEL when warp-channel.lisp LOADS, so it has to be set before
       # START-SESSION-NOSTR below, not after.  Default ON -- it rides an already
@@ -1289,6 +1305,10 @@ cmd_local() {
       # image.  It is loaded at the FIRST message naming the app, never at startup and
       # never at all when this is unset, so arming it costs nothing until somebody taps
       # Files.  It grants nothing either -- the desktop it sits beside has a terminal.
+      # NOT FOR SOMEBODY ELSE'S SCREEN (--rfb): Files, Chat and Media run in THIS image, so
+      # beside a board's desktop they would be this machine's files and agent wearing the
+      # board's name.  The environment can still turn any of them on.
+      if [[ -z $rfb ]]; then
       printf '   (unless (sb-ext:posix-getenv "WARP_FILES")\n'
       printf '     (sb-posix:setenv "WARP_FILES" "1" 1))\n'
       # ...and the operandi chat.  Its own variable again, and the loudest of the three:
@@ -1304,6 +1324,7 @@ cmd_local() {
       # have: the sound goes to the session mixer, which every listener already hears.
       printf '   (unless (sb-ext:posix-getenv "WARP_MEDIA")\n'
       printf '     (sb-posix:setenv "WARP_MEDIA" "1" 1))\n'
+      fi
       # ADMISSION: the desktop answers it, the gateway only asks.  serve-desktop.lisp does
       # this in the container; here the boot file calls RUN-WM directly, so without it the
       # gateway starts perfectly and refuses every offer.
@@ -1311,7 +1332,11 @@ cmd_local() {
       printf '         (sv (find-symbol "*BOX-SECRET*" :glass)))\n'
       printf '     (when sv (setf (symbol-value sv) *kiln-session-sec*))\n'
       printf '     (when (and mk (fboundp mk))\n'
-      printf '       (handler-case (funcall mk :path %s)\n' "$admit_path"
+      if [[ -n $rfb ]]; then
+        printf '       (handler-case (funcall mk :port %s)\n' "$((5912 + display))"
+      else
+        printf '       (handler-case (funcall mk :path %s)\n' "$admit_path"
+      fi
       printf '         (error (e) (format t "~&kiln: nostr    admission failed: ~a~%%" e)))))\n'
       printf '   (sb-thread:make-thread\n'
       printf '     (lambda ()\n'
@@ -1420,7 +1445,10 @@ cmd_local() {
     else
       # Nothing blocking was asked for.  If services are running, park; if not,
       # fall off the end into the REPL, which is the whole point of the default.
-      if [[ -n $control || -n $audio || -n $gateway || -n $sshd ]]; then
+      if [[ -n $rfb ]]; then
+        printf '(format t "~&kiln: screen   %s (not this image'"'"'s) — parking (^C to stop)~%%")\n' "$rfb"
+        printf '(loop (sleep 5))\n'
+      elif [[ -n $control || -n $audio || -n $gateway || -n $sshd ]]; then
         printf '(format t "~&kiln: no screen — parking (^C to stop)~%%")\n'
         printf '(loop (sleep 5))\n'
       fi
@@ -1430,11 +1458,14 @@ cmd_local() {
   # nostr is an RFB CLIENT of this desktop, so it needs a wire to reach it.  --view is
   # a desktop with NO wire, which is its whole point -- so it cannot carry nostr, and
   # saying so here beats a gateway that starts and then cannot find a screen.
-  if [[ -n $nostr && -z $vnc && -z $vnc_sock ]]; then
+  [[ -n $rfb && -z $nostr ]] && die "--rfb is a screen for the nostr gateway: add --nostr"
+  [[ -n $rfb && ( -n $vnc || -n $vnc_sock || -n $view ) ]] &&
+    die "--rfb is somebody else's screen: it does not go with --vnc, --vnc-socket or --view"
+  if [[ -n $nostr && -z $vnc && -z $vnc_sock && -z $rfb ]]; then
     die "--nostr needs a wire to the screen: add --vnc-socket (or --vnc). --view has none by design."
   fi
 
-  if [[ -z $vnc && -z $vnc_sock && -z $view && -z $control && -z $audio && -z $gateway && -z $nostr && -z $sshd ]]; then
+  if [[ -z $vnc && -z $vnc_sock && -z $view && -z $control && -z $audio && -z $gateway && -z $nostr && -z $sshd && -z $rfb ]]; then
     note "nothing enabled — the image and a REPL on stdin/stdout"
     note "ask for something:  --view  --vnc  --vnc-socket  --control  --audio"
     note "                    --gateway  --nostr"
@@ -1446,6 +1477,8 @@ cmd_local() {
     note "desktop :$display — one image, no container, no wire: a window on this screen"
   elif [[ -n $vnc || -n $vnc_sock ]]; then
     note "desktop :$display — one image, no container, no isolation"
+  elif [[ -n $rfb ]]; then
+    note "no desktop here — the gateway serves the screen at $rfb"
   else
     note "no screen — services only, on display :$display"
   fi
@@ -1499,6 +1532,12 @@ kiln local [flags] — run the desktop on this machine, no container.
                        local' has none of the container's isolation, and a session is
                        an identity — two of them on one npub is the thing --resume
                        exists to avoid.
+  --rfb=HOST:PORT      with --nostr: the screen is an RFB server this image did not start
+                       (a board -- `kiln zero' serves one on :5900).  No desktop runs
+                       here; this image answers admission on loopback and the gateway
+                       is the server's client.  No video channel (it needs a second
+                       RFB connection) and no Files/Chat/Media (they would be this
+                       machine's, wearing the board's name).
   --gateway-id=ID      gateway identity
   --display=N          display number (ports derive from it)
   --expose             bind 0.0.0.0 instead of loopback

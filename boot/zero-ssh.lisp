@@ -227,10 +227,77 @@
     (when (logbitp 0 (%port-status p)) (return t))
     (%k "DWC2-DELAY-MS" 10)))
 
+;;; WITH THE NETWORK UP, SOMETHING MUST KEEP RECEIVING.  NET-UP leaves the NIC's bulk-IN
+;;; transfer armed, and an armed transfer nobody drains while frames arrive gets the controller
+;;; to DISABLE ITS ROOT PORT -- the hub, the NIC, the keyboard and the mouse all go at once, and
+;;; the USB thread then waits on channels that can never halt.  Measured on the Zero: HPRT0
+;;; 0x1005 -> 0x1809 within ~90 s of idle after NET-UP, on main alone too (no threads); halting
+;;; the channel, or polling it, keeps the port up for the whole 90 s.  Earlier boards used the
+;;; network only continuously (a fetch, a session), so they never sat idle long enough.
+;;;
+;;; So the USB thread's idle round is THE reader of the NIC: it drains what has arrived into a
+;;; RING of frames (buffers the main thread made at load: the USB thread stores only bytes and
+;;; fixnums into them), answering ARP for our address on the way -- a peer, kiln's gateway at
+;;; the other end of the cable, cannot find us otherwise.  E1000-RECEIVE is redefined to hand
+;;; out the ring's frames first (through the NIC's own RX buffer, where callers look), and a
+;;; kernel redefinition reaches the kernel's own callers, so TCP-RECEIVE, TCP-CONNECT and the
+;;; RFB server read the ring unchanged.  Nothing waits with the NIC unread any more.
+
+(defvar *nic-receive* (symbol-function (intern "E1000-RECEIVE" "COMMON-LISP-USER"))
+  "The NIC's own receive (net/usb-netdev's), taken before E1000-RECEIVE is redefined below.")
+(defvar *ring-bufs* (let ((v (make-array 32)))
+                      (dotimes (i 32 v)
+                        (setf (svref v i) (make-array 2048 :element-type '(unsigned-byte 8))))))
+(defvar *ring-lens* (make-array 32 :initial-element 0))
+(defvar *ring-idx* (make-array 4 :initial-element 0) "head, tail, dropped, frames")
+
+;; The hot path names kernel functions directly (CL-USER::NAME, interned when this file is
+;; READ), not through %K: %K INTERNs on every call, and on the USB thread an INTERN takes the
+;; runtime lock -- an idle round of the USB thread took SECONDS that way.
+(defun %arp-answer (b)
+  "B a received frame: reply when it is an ARP request for our address.  T when it was ARP."
+  (flet ((u8 (o) (cl-user::mem-ref (+ b o) :u8)))
+    (when (and (= (u8 12) 8) (= (u8 13) 6))
+      (let ((st (cl-user::e1000-state-base)))
+        (when (and (= (u8 21) 1)
+                   (loop for i below 4 always (= (u8 (+ 38 i)) (cl-user::mem-ref (+ st #x18 i) :u8))))
+          (cl-user::arp-reply b)))
+      t)))
+
+(defun %net-service ()
+  "On the USB thread, each idle round: drain the NIC into the ring; answer ARP."
+  (let ((idx *ring-idx*))
+    (dotimes (i 8)
+      (let ((len (funcall *nic-receive*)))
+        (unless (and len (> len 0)) (return))
+        (let ((b (cl-user::e1000-rx-buf)))
+          (unless (%arp-answer b)
+            (let* ((tail (svref idx 1)) (next (mod (1+ tail) 32)))
+              (if (= next (svref idx 0))
+                  (incf (svref idx 2))                            ; full: drop the frame
+                  (let ((buf (svref *ring-bufs* tail)) (n (min len 2048)))
+                    (dotimes (k n) (setf (aref buf k) (cl-user::mem-ref (+ b k) :u8)))
+                    (setf (svref *ring-lens* tail) n
+                          (svref idx 1) next)
+                    (incf (svref idx 3)))))))))))
+
+(defun cl-user::e1000-receive ()
+  "The ring's oldest frame, copied into the NIC's RX buffer (where every caller looks), or
+   straight from the NIC when the ring is empty.  Its length, or 0."
+  (let* ((idx *ring-idx*) (head (svref idx 0)))
+    (if (= head (svref idx 1))
+        (funcall *nic-receive*)
+        (let ((buf (svref *ring-bufs* head)) (n (svref *ring-lens* head))
+              (b (cl-user::e1000-rx-buf)))
+          (dotimes (k n) (setf (cl-user::mem-ref (+ b k) :u8) (aref buf k)))
+          (setf (svref idx 0) (mod (1+ head) 32))
+          n))))
+
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.
    With threads, all of it runs on the USB thread."
   (%on-usb (lambda () (%net-up-1 ip gateway)))
+  (setf (symbol-value (find-symbol "*KZ-NET-SERVICE*" "COMMON-LISP-USER")) #'%net-service)
   (setf *net-up* t))
 
 (defun %net-up-1 (ip gateway)

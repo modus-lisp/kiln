@@ -132,6 +132,7 @@
     (when (and len (> len 0))
       (incf (sv s :rx-frames))
       (let ((b (cl-user::e1000-rx-buf)) (st (%st)))
+        (kiln-zero-ssh::%arp-answer b)                    ; so the gateway can find us
         (flet ((u8 (o) (cl-user::mem-ref (+ b o) :u8))
                (u16 (o) (cl-user::buf-read-u16-mem b o))
                (u32 (o) (cl-user::buf-read-u32-mem b o)))

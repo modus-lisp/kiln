@@ -42,7 +42,7 @@
 ;;;   :acked last moved; :ev-head written by the main thread, :ev-tail by the USB thread;
 ;;;   :rxbuf the client's unparsed bytes; :ring the events; :seg the payload being sent.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defparameter *slots* '((:phase 0) (:rx-len 1) (:swap 2) (:want 3) (:sending 4) (:snd-base 5) (:msg-len 6) (:sent 7) (:acked 8) (:window 9) (:progress-at 10) (:ev-head 11) (:ev-tail 12) (:fb 13) (:pitch 14) (:w 15) (:h 16) (:frames 17) (:resends 18) (:mask 19) (:conns 20) (:rx-frames 21) (:rx-tcp 22) (:rx-syn 23) (:rxbuf 24) (:ring 25) (:seg 26) (:steps 27))))
+  (defparameter *slots* '((:phase 0) (:rx-len 1) (:swap 2) (:want 3) (:sending 4) (:snd-base 5) (:msg-len 6) (:sent 7) (:acked 8) (:window 9) (:progress-at 10) (:ev-head 11) (:ev-tail 12) (:fb 13) (:pitch 14) (:w 15) (:h 16) (:frames 17) (:resends 18) (:mask 19) (:conns 20) (:rx-frames 21) (:rx-tcp 22) (:rx-syn 23) (:rxbuf 24) (:ring 25) (:seg 26) (:steps 27) (:tcb 28))))
 (defmacro sv (s name)
   (let ((e (assoc name *slots*)))
     (unless e (error "zero-rfb: no slot ~s" name))
@@ -68,8 +68,9 @@
           (sv s :seg) (make-array (seg-max) :element-type '(unsigned-byte 8) :initial-element 0)
           (sv s :fb) (cl-user::hcon-get #x04) (sv s :pitch) (cl-user::hcon-get #x08)
           (sv s :w) (cl-user::hcon-get #x0C) (sv s :h) (cl-user::hcon-get #x10)
-          (sv s :window) 8192)
-    (setf (cl-user::mem-ref (+ (%st) #x34) :u16) port)
+          (sv s :window) 8192
+          (sv s :tcb) (make-array 4 :initial-element 0))
+    (setf (svref (sv s :tcb) 0) port)
     (setf (sv s :phase) 1)
     (setf *rfb* s)
     ;; the desk's hooks (boot/zero.lisp): serve from the USB thread, take input on this one
@@ -241,20 +242,24 @@
             (t (return))))))))
 
 (defun %fill (s off n)
-  "Bytes OFF .. OFF+N of the current update into the segment buffer."
+  "Bytes OFF .. OFF+N of the current update into the segment buffer.  One FLOOR per
+   segment, not per byte: the row and column then advance by counting."
   (let* ((seg (sv s :seg)) (w (sv s :w)) (h (sv s :h)) (row-bytes (* 4 w))
-         (fb (sv s :fb)) (pitch (sv s :pitch)) (swap (= (sv s :swap) 1)))
-    (dotimes (i n)
-      (let ((o (+ off i)))
-        (setf (aref seg i)
-              (if (< o 16)
-                  (case o (3 1) (8 (ash w -8)) (9 (logand w 255)) (10 (ash h -8)) (11 (logand h 255))
-                    (t 0))
-                  (multiple-value-bind (row col) (floor (- o 16) row-bytes)
-                    (let ((k (logand col 3)))
-                      (cl-user::mem-ref (+ fb (* row pitch)
-                                           (if (and swap (/= k 1) (/= k 3)) (logxor col 2) col))
-                                        :u8)))))))))
+         (fb (sv s :fb)) (pitch (sv s :pitch)) (swap (= (sv s :swap) 1))
+         (i 0))
+    (loop while (and (< i n) (< (+ off i) 16))
+          do (setf (aref seg i)
+                   (case (+ off i) (3 1) (8 (ash w -8)) (9 (logand w 255)) (10 (ash h -8))
+                     (11 (logand h 255)) (t 0)))
+             (incf i))
+    (when (< i n)
+      (multiple-value-bind (row col) (floor (- (+ off i) 16) row-bytes)
+        (let ((base (+ fb (* row pitch))))
+          (loop while (< i n)
+                do (setf (aref seg i)
+                         (cl-user::mem-ref (+ base (if (and swap (evenp col)) (logxor col 2) col)) :u8))
+                   (incf i) (incf col)
+                   (when (= col row-bytes) (setf col 0 base (+ base pitch)))))))))
 
 (defun %send-step (s)
   (when (and (= (sv s :sending) 0) (= (sv s :want) 1) (= (sv s :phase) 6))
@@ -285,11 +290,33 @@
     ;; keep our sequence at the end of what is out, for ACKs we send in between
     (setf (cl-user::mem-ref (+ (%st) #x3C) :u32) (%u32 (+ (sv s :snd-base) (sv s :sent))))))
 
+;;; THE KERNEL HAS ONE TCP STATE BLOCK (net/ip.lisp, e1000-state-base +0x34..+0x43: our port,
+;;; the peer's port and address, both sequence numbers), and the HTTP client uses it too: one
+;;; fetch between two rounds left our port reading as the fetch's, and every SYN after it was
+;;; somebody else's.  So the connection's words live in the state vector (:TCB, numbers in a
+;;; vector the main thread made) and are put in the block for the round and taken back after
+;;; it.  A fetch runs whole inside a BT-CALL, between rounds, so the two never interleave.
+(defun %tcb-in (s)
+  (let ((st (%st)) (v (sv s :tcb)))
+    (setf (cl-user::mem-ref (+ st #x34) :u32) (svref v 0)
+          (cl-user::mem-ref (+ st #x38) :u32) (svref v 1)
+          (cl-user::mem-ref (+ st #x3C) :u32) (svref v 2)
+          (cl-user::mem-ref (+ st #x40) :u32) (svref v 3))))
+
+(defun %tcb-out (s)
+  (let ((st (%st)) (v (sv s :tcb)))
+    (setf (svref v 0) (cl-user::mem-ref (+ st #x34) :u32)
+          (svref v 1) (cl-user::mem-ref (+ st #x38) :u32)
+          (svref v 2) (cl-user::mem-ref (+ st #x3C) :u32)
+          (svref v 3) (cl-user::mem-ref (+ st #x40) :u32))))
+
 (defun rfb-step ()
   "One round of serving, on the USB thread (kiln-zero calls it from the USB thread's idle)."
   (let ((s *rfb*))
     (when (and s (> (sv s :phase) 0))
       (incf (sv s :steps))
+      (%tcb-in s)
       (dotimes (i 16) (unless (%rx s) (return)))
       (%parse s)
-      (%send-step s))))
+      (%send-step s)
+      (%tcb-out s))))

@@ -300,12 +300,20 @@
   (setf (symbol-value (find-symbol "*KZ-NET-SERVICE*" "COMMON-LISP-USER")) #'%net-service)
   (setf *net-up* t))
 
+(defun %reserve-port (port on)
+  (let ((f (find-symbol (if on "HID-RESERVE-PORT" "HID-RELEASE-PORT") "COMMON-LISP-USER")))
+    (when (and f (fboundp f)) (funcall f port))))
+
 (defun %net-up-1 (ip gateway)
   (let ((hs nil) (nic nil))
     ;; every connected high-speed port (wPortStatus bit 10), disabled, then addressed one by one
     (loop for p from 1 to 7
           for st = (%port-status p)
           when (and (logbitp 0 st) (logbitp 10 st)) do (push p hs))
+    ;; RESERVED FIRST, so the HID hotplug scan leaves them alone while they are reset (it
+    ;; took the RTL8153 coming back for a keyboard, reset it again and wedged control
+    ;; channel 0).  A core older than HID-RESERVE-PORT has no such scan guard: skipped.
+    (dolist (p hs) (%reserve-port p t))
     (dolist (p hs) (%k "USB-CONTROL-TRANSFER" (%hub) #x23 1 1 p 0 0))   ; CLEAR_FEATURE(PORT_ENABLE)
     ;; Everything that answers and is not the RTL8153 keeps the address it gets here.  The
     ;; RTL8153 leaves the bus as soon as it is reset, so it is the port that fails this (or,
@@ -330,6 +338,7 @@
                          (progn (%k "DWC2-DELAY-MS" 150) (%port-up p a))
                          (equal (%ids a) '(#x0BDA #x8153)))
                 (setf nic p))))))
+      (dolist (p hs) (unless (eql p nic) (%reserve-port p nil)))
       (unless nic (error "kiln-zero-ssh: no RTL8153 on the hub (high-speed ports ~a, candidates ~a)" hs cands))
       (unless (and (> (%k "USB-CONTROL-TRANSFER" a #x00 9 2 0 0 0) 0)        ; config 2: CDC-ECM
                    (> (%k "USB-CONTROL-TRANSFER" a #x01 11 1 1 0 0) 0)       ; data iface, alt 1

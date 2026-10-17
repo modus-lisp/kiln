@@ -243,8 +243,13 @@
 ;;; kernel redefinition reaches the kernel's own callers, so TCP-RECEIVE, TCP-CONNECT and the
 ;;; RFB server read the ring unchanged.  Nothing waits with the NIC unread any more.
 
-(defvar *nic-receive* (symbol-function (intern "E1000-RECEIVE" "COMMON-LISP-USER"))
-  "The NIC's own receive (net/usb-netdev's), taken before E1000-RECEIVE is redefined below.")
+;; The NIC's own receive (net/usb-netdev's), taken before E1000-RECEIVE is redefined below --
+;; ONCE.  Taken again on a second load it would be the redefinition, which calls it: a
+;; recursion that ends the USB thread.  Not with a DEFVAR initform: modus before d53ddb6 re-ran
+;; those on every load.  A DEFVAR without one never assigns; BOUNDP decides.
+(defvar *nic-receive*)
+(unless (boundp '*nic-receive*)
+  (setq *nic-receive* (symbol-function (intern "E1000-RECEIVE" "COMMON-LISP-USER"))))
 (defvar *ring-bufs* (let ((v (make-array 32)))
                       (dotimes (i 32 v)
                         (setf (svref v i) (make-array 2048 :element-type '(unsigned-byte 8))))))

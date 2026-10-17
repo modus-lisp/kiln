@@ -11,6 +11,7 @@ chord           master  fc5260fddb7d0d8fece924d53e27047e69f53a15
 cl-consensus    master  b08415f08963ca56b7d6e28f1d2dcde11d6637f0
 cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
 cl-nostr        master  000a352acc3972e60ca4c41ddf9efcb000be63eb
+cl-sev-snp      main    b89b0cb20c0943bdbcbe9a34e2994ef57e5ba992
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
 cl-transport    master  f5c230ee181f3c9de623152bad3a063ed8c623e2
 conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
@@ -21,6 +22,7 @@ gesso           master  6981f2d1fc5c0af7ffd2ea97666387226df08fb0
 glass           master  54b90de821cbc50fc910480c7fcb48a9849b2c25
 glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61
 glass-webrtc    master  e9545bb2f4579a3cc4ce3a74c27810db5b383f2e
+json-simple     master  3b99a79e05e633aedb9679df3a51fc876979fb34
 loom            master  9fd14de7d980aebfacb2aeaa2b73612412579621
 mill            master  3a3f8c91688b1738efd8991a604eea55c7a95ea7
 modus           main    414dd3c917a107a171f8ece6d24baaff3e9cb189
@@ -28,6 +30,8 @@ natrium         master  58712c87400931b7b6f3c343de1f32ddfc54f89e
 operandi        main    d13e6eb064e85a50974a100ea44ae527881b411e
 pagetree        master  89d19e19f0b08dd58e5ac1cefff337f1ae9ab520
 pigment         master  f86a838b4829c0ecb052729ff0dd03615c7bd0bc
+png-pure        main    074357cd479638960faf07fb45d0199a9d440e4b
+quill           master  d31302fd18d21d1ef0703165b8c1e6834ae0e29e
 reed            master  32e1c5ea0896c4e62ab86d28652797e3ad87aa86
 reel            master  d53f12880e06233079003a73b6762eabaab94caa
 scribe          master  f68299a132744f25f0c9eb49eab9293b3aa72a4f

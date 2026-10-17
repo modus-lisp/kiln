@@ -191,14 +191,62 @@
         (when (= (%gc-count) *kz-gc-mark-count*) (sb-ext:gc))
         (setf *kz-gc-mark-count* (%gc-count) *kz-gc-mark-ptr* (get-alloc-ptr))))))
 
+;;; THE SERIAL LINE STAYS A REPL WHILE THE DESK RUNS.  The desk owns the main thread, and the
+;;; REPL is that thread's reader loop, so running the desk used to mean losing the console: bytes
+;;; were dropped except Ctrl-C/q, and finding out why something on the board had stopped meant
+;;; resetting it.  Now the bytes are collected into a line; a line that completes a form is
+;;; READ and EVALuated here, between frames, its values printed back, then a DESK> prompt.
+;;; Ctrl-C still ends the desk.  A form runs ON the desk's thread, so a long one holds the
+;;; screen still while it runs -- and an error is printed, never thrown into the app.
+
+(defvar *zero-repl-buf* (make-array 256 :element-type 'character :fill-pointer 0 :adjustable t))
+
+(defun %zero-repl-complete-p (s)
+  "S holds at least one whole form: parentheses balanced outside strings, characters and
+   comments, and something other than whitespace."
+  (let ((depth 0) (in-string nil) (any nil) (i 0) (n (length s)))
+    (loop while (< i n)
+          do (let ((c (char s i)))
+               (cond (in-string (cond ((char= c #\\) (incf i))
+                                      ((char= c #\") (setf in-string nil))))
+                     ((char= c #\") (setf in-string t any t))
+                     ((char= c #\;) (loop while (and (< i n) (char/= (char s i) #\Newline)) do (incf i)))
+                     ((and (char= c #\#) (< (1+ i) n) (char= (char s (1+ i)) #\\)) (incf i 2) (setf any t))
+                     ((char= c #\() (incf depth) (setf any t))
+                     ((char= c #\)) (decf depth))
+                     ((not (member c '(#\Space #\Tab #\Newline #\Return))) (setf any t))))
+             (incf i))
+    (and any (<= depth 0) (not in-string))))
+
+(defun %zero-repl-eval (s)
+  (let ((out (handler-case
+                 (let ((vals (multiple-value-list (eval (read-from-string s)))))
+                   (format nil "~{~s~^~%~}" vals))
+               (error (e) (handler-case (format nil ";; error: ~a" e)
+                            (error () ";; error (unprintable)"))))))
+    (format t "~&~a~%DESK> " out)
+    (finish-output)))
+
+(defun %zero-repl-char (c)
+  (let ((code (if (characterp c) (char-code c) c)) (buf *zero-repl-buf*))
+    (cond ((= code 3) (throw 'kiln-zero-exit nil))          ; Ctrl-C: leave the desk
+          ((member code '(8 127))                            ; backspace
+           (when (> (fill-pointer buf) 0) (decf (fill-pointer buf))))
+          ((member code '(10 13))
+           (vector-push-extend #\Newline buf)
+           (cond ((%zero-repl-complete-p buf)
+                  (let ((form (copy-seq buf)))
+                    (setf (fill-pointer buf) 0)
+                    (%zero-repl-eval form)))
+                 ((not (find-if-not (lambda (ch) (member ch '(#\Space #\Tab #\Newline))) buf))
+                  (setf (fill-pointer buf) 0))))             ; blank line: a stray, dropped
+          ((< code 256) (vector-push-extend (code-char code) buf)))))
+
 (defun %zero-next-event ()
-  ;; Ctrl-C or q on the serial port ends the app; any other byte is dropped.  It used to be
-  ;; ANY byte, and the line carries strays (netboot's trailing LF, a reader opening the port):
-  ;; the media app's first start ended itself before it had painted.
-  (when (hid-serial-ready-p)
-    (let ((c (read-char-serial)))
-      (when (member (if (characterp c) (char-code c) c) '(3 113))
-        (throw 'kiln-zero-exit nil))))
+  ;; The serial line: a REPL (above).  At most 64 bytes a call, so a paste cannot hold a frame.
+  (dotimes (i 64)
+    (unless (hid-serial-ready-p) (return))
+    (%zero-repl-char (read-char-serial)))
   ;; A FRAME IS DUE every 16 ms whatever the input is doing.  The app loop handles one event per
   ;; call and draws only when this answers 0, and a mouse polled faster than its report interval
   ;; has fresh movement for nearly every poll: a drag delivered ~440 events a second, the desk
@@ -725,6 +773,8 @@
     (unwind-protect
          (catch 'kiln-zero-exit
            (%kz-say "KZ:app")
+           (setf (fill-pointer *zero-repl-buf*) 0)
+           (format t "~&DESK> ") (finish-output)       ; the serial line is a REPL from here
            (when media
              (setf *kiln-bundle-dir* "/")
              (flet ((wm (name v) (setf (symbol-value (find-symbol name "WARP-MEDIA")) v)))

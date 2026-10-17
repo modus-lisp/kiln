@@ -354,6 +354,10 @@
         (setf (cl-user::mem-ref (+ s #x18) :u32) ip
               (cl-user::mem-ref (+ s #x1C) :u32) gateway)
         (%k "USB-NETDEV-SET" 1)
+        ;; USB-BULK-RECEIVE's re-arm flag and arm time (usb-state +0xA0/+0xA4): cold RAM
+        ;; holds neither 0 nor 1 there, and its stale-channel watchdog only runs on 0.
+        (setf (cl-user::mem-ref (+ (%k "USB-STATE-ADDR") #xA0) :u32) 0
+              (cl-user::mem-ref (+ (%k "USB-STATE-ADDR") #xA4) :u32) (cl-user::mem-ref #x3F003004 :u32))
         (%k "DWC2-START-BULK-IN" 1 a 1 (%k "CDC-RX-BUF-ADDR") 2048 512)))
     ;; Up to 10 s, by the clock: resetting the RTL8153 drops the link, and a gigabit link
     ;; takes ~3 s to come back.  Five tries of ARP-RESOLVE's own wait used to cover that by

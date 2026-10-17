@@ -173,12 +173,19 @@
                        (when (and (<= a (sv s :sent)) (> a (sv s :acked)))
                          (setf (sv s :acked) a (sv s :progress-at) (%now))))))
                  (when (> dlen 0)
-                   (if (= seq (cl-user::mem-ref (+ st #x40) :u32))
-                       (let ((rx (sv s :rxbuf)) (n (sv s :rx-len)) (at (+ 14 20 doff)))
-                         (when (> (+ n dlen) (length rx)) (setf n 0))  ; overrun: drop what we had
-                         (dotimes (i dlen) (setf (aref rx (+ n i)) (u8 (+ at i))))
-                         (setf (sv s :rx-len) (+ n dlen)
-                               (cl-user::mem-ref (+ st #x40) :u32) (%u32 (+ seq dlen)))))
+                   ;; IN ORDER, OR OVERLAPPING WHAT WE HAVE: a retransmission after a lost ACK
+                   ;; (or several segments coalesced into one) starts BEFORE the next byte we
+                   ;; want, and refusing it for not starting exactly there left the peer
+                   ;; retransmitting the same bytes with exponential backoff -- the viewer's
+                   ;; update requests stopped arriving for minutes.  Take the new part.
+                   (let ((skip (%u32 (- (cl-user::mem-ref (+ st #x40) :u32) seq))))
+                     (when (< skip dlen)
+                       (let ((rx (sv s :rxbuf)) (n (sv s :rx-len)) (at (+ 14 20 doff skip))
+                             (new (- dlen skip)))
+                         (when (> (+ n new) (length rx)) (setf n 0))  ; overrun: drop what we had
+                         (dotimes (i new) (setf (aref rx (+ n i)) (u8 (+ at i))))
+                         (setf (sv s :rx-len) (+ n new)
+                               (cl-user::mem-ref (+ st #x40) :u32) (%u32 (+ seq dlen))))))
                    (cl-user::tcp-send-segment 16 (make-array 0) 0))  ; ACK (or re-ACK)
                  (when (logtest flags 1)                            ; FIN
                    (setf (cl-user::mem-ref (+ st #x40) :u32) (%u32 (+ seq dlen 1)))

@@ -261,8 +261,12 @@
 ;;; (0x11010000: inside the E1000 RX-buffer block, of which CDC uses the first 2 KB) and
 ;;; E1000-RX-BUF says where the current frame is.
 (defun %stage () #x11010000)
-(defvar *nic-rx-buf* (symbol-function (intern "E1000-RX-BUF" "COMMON-LISP-USER"))
-  "The NIC's own RX-buffer address, taken before E1000-RX-BUF is redefined below.")
+;; The NIC's own RX buffer, by a name nothing redefines.  NOT the old definition of
+;; E1000-RX-BUF saved with SYMBOL-FUNCTION before redefining it: that object resolved LATE,
+;; to the new definition, which called itself until the USB thread's stack was gone -- and an
+;; error in an executor's idle round ends the executor, so the USB thread stopped dead (found
+;; under QEMU: "this thread's stack is exhausted (512 KB)").  NET-UP brings the NIC up CDC-ECM.
+(defun %nic-rx-buf () (cl-user::cdcether-rx-buf))
 (defvar *rx-staged* (make-array 1 :initial-element 0) "1: the current frame is in %STAGE")
 
 ;; The hot path names kernel functions directly (CL-USER::NAME, interned when this file is
@@ -284,7 +288,7 @@
     (dotimes (i 8)
       (let ((len (funcall *nic-receive*)))
         (unless (and len (> len 0)) (return))
-        (let ((b (funcall *nic-rx-buf*)))
+        (let ((b (%nic-rx-buf)))
           (unless (%arp-answer b)
             (let* ((tail (svref idx 1)) (next (mod (1+ tail) 32)))
               (if (= next (svref idx 0))
@@ -312,7 +316,7 @@
 (defun cl-user::e1000-rx-buf ()
   "Where the frame E1000-RECEIVE last handed out is: the staging buffer for a ring frame,
    the NIC's RX buffer for one read straight from the NIC."
-  (if (= (svref *rx-staged* 0) 1) (%stage) (funcall *nic-rx-buf*)))
+  (if (= (svref *rx-staged* 0) 1) (%stage) (%nic-rx-buf)))
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.

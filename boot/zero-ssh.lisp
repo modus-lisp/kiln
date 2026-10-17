@@ -251,6 +251,20 @@
 (defvar *ring-lens* (make-array 32 :initial-element 0))
 (defvar *ring-idx* (make-array 4 :initial-element 0) "head, tail, dropped, frames")
 
+;;; A FRAME FROM THE RING IS HANDED OUT FROM ITS OWN BUFFER, NOT THE NIC'S.  The NIC's RX buffer
+;;; is where the bulk-IN transfer DMAs, and once the ring has taken a frame the transfer is
+;;; armed into it again (USB-BULK-RECEIVE re-arms on the call after a completion).  Copying a
+;;; ring frame back there raced the next arrival: a frame landing during the copy was
+;;; overwritten, and its completion then handed up the stale copy -- on the board, the
+;;; viewer's update request, every time it followed a burst of ACKs, lost until the peer's
+;;; retransmission had backed off for a minute.  So ring frames go to a staging buffer
+;;; (0x11010000: inside the E1000 RX-buffer block, of which CDC uses the first 2 KB) and
+;;; E1000-RX-BUF says where the current frame is.
+(defun %stage () #x11010000)
+(defvar *nic-rx-buf* (symbol-function (intern "E1000-RX-BUF" "COMMON-LISP-USER"))
+  "The NIC's own RX-buffer address, taken before E1000-RX-BUF is redefined below.")
+(defvar *rx-staged* (make-array 1 :initial-element 0) "1: the current frame is in %STAGE")
+
 ;; The hot path names kernel functions directly (CL-USER::NAME, interned when this file is
 ;; READ), not through %K: %K INTERNs on every call, and on the USB thread an INTERN takes the
 ;; runtime lock -- an idle round of the USB thread took SECONDS that way.
@@ -270,7 +284,7 @@
     (dotimes (i 8)
       (let ((len (funcall *nic-receive*)))
         (unless (and len (> len 0)) (return))
-        (let ((b (cl-user::e1000-rx-buf)))
+        (let ((b (funcall *nic-rx-buf*)))
           (unless (%arp-answer b)
             (let* ((tail (svref idx 1)) (next (mod (1+ tail) 32)))
               (if (= next (svref idx 0))
@@ -286,12 +300,19 @@
    straight from the NIC when the ring is empty.  Its length, or 0."
   (let* ((idx *ring-idx*) (head (svref idx 0)))
     (if (= head (svref idx 1))
-        (funcall *nic-receive*)
-        (let ((buf (svref *ring-bufs* head)) (n (svref *ring-lens* head))
-              (b (cl-user::e1000-rx-buf)))
+        (progn (setf (svref *rx-staged* 0) 0)
+               (funcall *nic-receive*))
+        (let ((buf (svref *ring-bufs* head)) (n (svref *ring-lens* head)) (b (%stage)))
           (dotimes (k n) (setf (cl-user::mem-ref (+ b k) :u8) (aref buf k)))
-          (setf (svref idx 0) (mod (1+ head) 32))
+          (setf (svref idx 0) (mod (1+ head) 32)
+                (svref *rx-staged* 0) 1
+                (cl-user::mem-ref (+ (cl-user::e1000-state-base) #x44) :u32) n)
           n))))
+
+(defun cl-user::e1000-rx-buf ()
+  "Where the frame E1000-RECEIVE last handed out is: the staging buffer for a ring frame,
+   the NIC's RX buffer for one read straight from the NIC."
+  (if (= (svref *rx-staged* 0) 1) (%stage) (funcall *nic-rx-buf*)))
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.

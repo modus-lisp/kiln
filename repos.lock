@@ -13,7 +13,7 @@ cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
 cl-nostr        master  000a352acc3972e60ca4c41ddf9efcb000be63eb
 cl-sev-snp      main    b89b0cb20c0943bdbcbe9a34e2994ef57e5ba992
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
-cl-transport    master  281d02b9c77e2b5042c88e3ff3f4c26b9ddf8b5e
+cl-transport    master  d5832a00e279c521732dbad5ddd056d375d8a271
 conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
 cram            master  f878dae6a8302c4c2fae6779816dcdd395328543
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc

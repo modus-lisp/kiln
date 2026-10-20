@@ -179,6 +179,7 @@
 (defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
 (defvar *kz-active-at* 0)
 (defvar *kz-frame-at* 0)
+(defvar *kz-just-drew* nil)      ; the last answer was a frame: input goes next
 (defvar *kz-frame-limit* nil)             ; frames left before the desk ends itself (tests), or NIL                  ; GET-INTERNAL-REAL-TIME of the last frame %ZERO-NEXT-EVENT let through                 ; GET-INTERNAL-REAL-TIME of the last input event
 (defvar *kz-gc-mark-count* -1)            ; (%GC-COUNT) and (GET-ALLOC-PTR) right after the
 (defvar *kz-gc-mark-ptr* 0)               ; last collection this desk saw
@@ -255,8 +256,14 @@
   (let ((now (get-internal-real-time)))
     (when *kz-frame-limit*                ; a test's bounded run: end after that many frames
       (when (<= *kz-frame-limit* 0) (throw 'kiln-zero-exit nil)))
+    ;; THE FIRST CALL AFTER A FRAME IS INPUT'S TURN.  The app draws and then sleeps out the rest
+    ;; of its 16 ms, so by the next call a frame is always due again: without this window the
+    ;; branch that hands out events never ran, and every click queued up unread.
+    (when *kz-just-drew*
+      (setf *kz-just-drew* nil *kz-frame-at* now)
+      (unless *zero-events* (%zero-poll)))
     (if (> (- now *kz-frame-at*) 16000)
-        (progn (setf *kz-frame-at* now)
+        (progn (setf *kz-frame-at* now *kz-just-drew* t)
                (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))
                0)
         (progn

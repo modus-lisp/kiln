@@ -18,9 +18,12 @@
 # CURL_CA_BUNDLE rather than --cacert, so every curl in the RUN trusts the same
 # bundle -- including the one Quicklisp shells out to for its own downloads.
 
+# KILN_EXTRA_CA_SECRET moves the secret's path, for t/extra-ca-trust.sh; in a build it is
+# always the mount point.
 kiln_ca() {
-  if [ -s /run/secrets/extra_ca ]; then
-    cat /etc/ssl/certs/ca-certificates.crt /run/secrets/extra_ca > /tmp/kiln-ca.pem
+  secret=${KILN_EXTRA_CA_SECRET:-/run/secrets/extra_ca}
+  if [ -s "$secret" ]; then
+    cat /etc/ssl/certs/ca-certificates.crt "$secret" > /tmp/kiln-ca.pem
     echo /tmp/kiln-ca.pem
   else
     echo /etc/ssl/certs/ca-certificates.crt

@@ -56,6 +56,19 @@ the image's system bundle, so the desktop does not trust it. The build logs the
 fingerprint of every extra certificate it trusted (`@@ trust extra-ca …`). Without
 the flag, the build trusts only the public roots, as it always has.
 
+**If the network has no direct route out, only a proxy.** Name it — an HTTP proxy
+that tunnels with CONNECT, with credentials in the URL if it wants them:
+
+```sh
+bin/kiln container --https-proxy=http://user:pass@proxy.example:3128
+```
+
+It reaches the build as docker's predefined proxy build args, which every step sees
+and which docker keeps out of the image's history; curl uses it, and the clones go
+through it on cl-transport. The build logs `@@ proxy http-connect host:port`, never
+the URL. If the proxy also intercepts TLS, give `--extra-ca` as well. Quicklisp's
+dists are plain HTTP and still go direct.
+
 A kiln is where you fire what you've shaped — the step that turns worked clay
 into something that holds its form. The workspace is the clay; this is the
 firing.

@@ -15,7 +15,9 @@
 ;;;;   sbcl --script boot/clone-org.lisp
 ;;;;
 ;;;; Env: MODUS_ORG (modus-lisp), MODUS_ROOT (/opt/modus-lisp),
-;;;;      KILN_SEED (/opt/kiln-seed), KILN_LOCK (/kiln/repos.lock), KILN_JOBS (4)
+;;;;      KILN_SEED (/opt/kiln-seed), KILN_LOCK (/kiln/repos.lock), KILN_JOBS (4),
+;;;;      KILN_EXTRA_CA (unset: a PEM file of CAs to trust in addition to the system
+;;;;      bundle -- see INSTALL-TRUST)
 
 (require :asdf)
 (require :sb-posix)
@@ -28,6 +30,7 @@
 (defvar *seed* (env "KILN_SEED"  "/opt/kiln-seed"))
 (defvar *lock* (env "KILN_LOCK"  "/kiln/repos.lock"))
 (defvar *jobs* (max 1 (or (ignore-errors (parse-integer (env "KILN_JOBS" "4"))) 4)))
+(defvar *extra-ca* (let ((p (env "KILN_EXTRA_CA" nil))) (and p (plusp (length p)) p)))
 
 ;;; Load cairn out of the seed tree — the only time anything is read from there.
 (asdf:initialize-source-registry
@@ -128,7 +131,44 @@
       (handler-case (clone-one name branch commit)
         (error (e2) (say "  ✗ ~a FAILED: ~a~%" name e2) nil)))))
 
+;;; -------------------------------------------------------------------- trust
+
+;;; A network that intercepts TLS presents its own CA, which the system bundle does
+;;; not hold.  KILN_EXTRA_CA names a PEM file of CAs to trust IN ADDITION, and it is
+;;; applied here and nowhere else: seal's *trust-store* is set for this process
+;;; before any thread starts, so only the build's own fetches trust it.  The system
+;;; bundle is not touched, and the runtime is a different process that never sees
+;;; this setting.  Each extra certificate is logged by fingerprint, so the build's
+;;; output says exactly which CA it trusted.
+;;;
+;;; Trusting an interceptor is safe for this step and only this step: every clone is
+;;; checked out at a commit named in repos.lock, and git names content by hash, so
+;;; an interceptor can observe the bytes but cannot change them.
+
+(defun hex (bytes)
+  (format nil "~{~(~2,'0x~)~}" (coerce bytes 'list)))
+
+(defun install-trust ()
+  (if (null *extra-ca*)
+      (say "kiln: trust: system roots only~%")
+      (let ((extra (progn
+                     (unless (probe-file *extra-ca*)
+                       (error "KILN_EXTRA_CA=~a does not exist" *extra-ca*))
+                     (uiop:read-file-string *extra-ca*)))
+            (system (uiop:read-file-string "/etc/ssl/certs/ca-certificates.crt")))
+        (let ((ders (seal:pem-certificates extra)))
+          (unless ders (error "KILN_EXTRA_CA=~a holds no certificates" *extra-ca*))
+          (dolist (der ders)
+            (say "@@ trust extra-ca ~a~%" (hex (seal:sha256 der)))))
+        ;; One store: the system roots and the extra ones.  Parsed here, once, and
+        ;; handed to seal as an object, so nothing reads the extra file again.
+        (setf seal.http:*trust-store*
+              (seal:make-trust-store-from-pem
+               (concatenate 'string system (string #\Newline) extra))))))
+
 ;;; -------------------------------------------------------------------- main
+
+(install-trust)
 
 (let* ((repos (parse-lock *lock*))
        (queue (copy-list repos))

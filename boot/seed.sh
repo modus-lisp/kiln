@@ -14,6 +14,11 @@
 # Commits come from repos.lock, so the seed is pinned exactly like the rest.
 set -eu
 
+# Every fetch here trusts the system bundle, plus --extra-ca when the build was
+# given one.  See ca.sh for why this is a CURL_CA_BUNDLE and not a --cacert.
+. "$(dirname "$0")/ca.sh"
+export CURL_CA_BUNDLE="$(kiln_ca)"
+
 ORG=${MODUS_ORG:-modus-lisp}
 DEST=${KILN_SEED:-/opt/kiln-seed}
 LOCK=${KILN_LOCK:-/kiln/repos.lock}
@@ -82,4 +87,5 @@ for repo in $SEED; do
   mv "$DEST/$repo-$commit" "$DEST/$repo"
 done
 
+rm -f /tmp/kiln-ca.pem
 echo "seed: cairn closure in $DEST (discarded once cairn has cloned the org)"

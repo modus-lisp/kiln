@@ -105,12 +105,15 @@ case $hist in *"$PASSWORD"*|*"$PRX_IP"*) fail "the proxy URL is in the image his
 envs=$(docker inspect -f '{{json .Config.Env}}' "$TAG")
 case $envs in *PROXY*|*proxy*) fail "a proxy variable is in the image environment: $envs" ;;
   *) ok "no proxy variable in the image environment" ;; esac
-grep -c "$PASSWORD" "$WORK/build.log" | grep -qx 0 \
-  && ok "the password does not appear in the build log" || fail "the build log shows the password"
+if grep -q "$PASSWORD" "$WORK/build.log"; then
+  fail "the build log shows the password, here (masked):"
+  grep -n "$PASSWORD" "$WORK/build.log" | sed "s/$PASSWORD/****/g" | cut -c1-240 | head -20
+else ok "the password does not appear in the build log"; fi
 line=$(sed -n 2p "$WORK/ca.pem")
 hits=$(docker run --rm --entrypoint sh "$TAG" -c "grep -cF '$line' /etc/ssl/certs/ca-certificates.crt")
 [ "$hits" = 0 ] && ok "the throwaway CA is absent from the system bundle" || fail "the CA is in the bundle"
 
+[ $rc = 0 ] || { KEEP=1; echo "  (logs kept in $WORK)"; }
 echo
 [ $rc = 0 ] && echo "https-proxy-image: all checks passed" || echo "https-proxy-image: FAILED"
 exit $rc

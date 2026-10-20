@@ -79,7 +79,9 @@ else
 fi
 
 group "2. with --extra-ca: the whole image builds and logs the fingerprint"
-if docker build --progress=plain --secret "id=extra_ca,src=$WORK/ca.pem" "${build_hosts[@]}" \
+# --no-cache: BuildKit does not key a cached RUN on its secret, so a cached layer from
+# an earlier build would skip the very fetches this step is testing.
+if docker build --no-cache --progress=plain --secret "id=extra_ca,src=$WORK/ca.pem" "${build_hosts[@]}" \
      -t "$TAG" "$ROOT" > "$WORK/build.log" 2>&1; then
   ok "image $TAG built"
 else

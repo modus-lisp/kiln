@@ -42,6 +42,20 @@ container system stop && container system start
 
 Then `bin/kiln container` again; the cached layers make the retry cheap.
 
+**If the build dies at the SBCL download with a certificate error.** The network
+is intercepting TLS, and its CA is not in the image's bundle. Give the build the
+CA, as a PEM file:
+
+```sh
+bin/kiln container --extra-ca=/path/to/intercepting-ca.pem
+```
+
+The CA is trusted by the build's fetches and by the clones, and by nothing else:
+it is passed as a build secret, never written to a layer, and not installed into
+the image's system bundle, so the desktop does not trust it. The build logs the
+fingerprint of every extra certificate it trusted (`@@ trust extra-ca …`). Without
+the flag, the build trusts only the public roots, as it always has.
+
 A kiln is where you fire what you've shaped — the step that turns worked clay
 into something that holds its form. The workspace is the clay; this is the
 firing.

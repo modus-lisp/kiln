@@ -70,7 +70,9 @@ build_hosts=(--add-host "github.com:$IP" --add-host "codeload.github.com:$IP" --
 ok "interceptor on $IP"
 
 group "1. without --extra-ca: the SBCL download must be refused"
-if docker build --target sbcl "${build_hosts[@]}" -t "$TAG-nosecret" "$ROOT" > "$WORK/nosecret.log" 2>&1; then
+# --no-cache, as in step 2: the cache ignores secrets, so a cached sbcl stage from a
+# build that had the CA would pass here without ever being refused.
+if docker build --no-cache --target sbcl "${build_hosts[@]}" -t "$TAG-nosecret" "$ROOT" > "$WORK/nosecret.log" 2>&1; then
   fail "the build succeeded through an interceptor it should not trust"
 elif grep -q "certificate problem" "$WORK/nosecret.log"; then
   ok "refused with a certificate error, as the interceptor should cause"

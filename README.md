@@ -20,7 +20,7 @@ bin/kiln container     # once (first run compiles McCLIM — get a coffee)
 bin/kiln vnc           # desktop on vnc://127.0.0.1:5901
 ```
 
-Both do the same three things — seed five repos as tarballs, let cairn clone the
+Both do the same three things — seed six repos as tarballs, let cairn clone the
 other 33, dump a core with the whole world in it. The only difference is where
 they land.
 
@@ -90,9 +90,9 @@ TLS 1.3, which runs on [natrium](https://github.com/modus-lisp/natrium)'s
 crypto. So the clone travels `cairn → seal → natrium` and never leaves Lisp.
 **There is no `git` binary in this image.**
 
-cairn can't clone itself into existence, so exactly five repos arrive as
-tarballs first — cairn, seal, conch, cram, natrium, a closure with no
-third-party dependencies at all. From there Lisp takes over and clones the other
+cairn can't clone itself into existence, so exactly six repos arrive as
+tarballs first — cairn, seal, conch, cram, natrium, and cl-transport (for a
+build behind a proxy), a closure with no third-party dependencies at all. From there Lisp takes over and clones the other
 33, including a real checkout of cairn replacing the seed, each pinned to the
 commit in [`repos.lock`](repos.lock):
 

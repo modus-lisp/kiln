@@ -3,12 +3,13 @@
 #
 # cairn is a git implementation in Common Lisp, and it is what clones the other
 # 33 repos (see clone-org.lisp).  But cairn has to arrive somehow, and it cannot
-# clone itself, so exactly five repos are seeded here as plain tarballs:
+# clone itself, so exactly six repos are seeded here as plain tarballs:
 #
 #     cairn -> seal, conch, cram, natrium
+#     cl-transport, for a build behind an HTTPS_PROXY (see clone-org.lisp)
 #
 # That closure has no third-party dependencies at all — no Quicklisp, no FFI,
-# nothing outside SBCL's own sb-bsd-sockets/sb-posix.  Everything after this
+# nothing outside SBCL's own sb-bsd-sockets/sb-posix/sb-thread.  Everything after this
 # point travels over cairn's own smart-HTTP client on seal's TLS.
 #
 # Commits come from repos.lock, so the seed is pinned exactly like the rest.
@@ -22,7 +23,9 @@ export CURL_CA_BUNDLE="$(kiln_ca)"
 ORG=${MODUS_ORG:-modus-lisp}
 DEST=${KILN_SEED:-/opt/kiln-seed}
 LOCK=${KILN_LOCK:-/kiln/repos.lock}
-SEED="cairn seal conch cram natrium"
+# cl-transport rides along for HTTPS_PROXY: it is how cairn's clones reach a proxy that
+# tunnels with CONNECT, and it needs nothing beyond SBCL, so it seeds like the rest.
+SEED="cairn seal conch cram natrium cl-transport"
 
 mkdir -p "$DEST"
 

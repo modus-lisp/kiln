@@ -1,7 +1,7 @@
 # kiln — the modus-lisp personal desktop, fired into a container image.
 #
 # The interesting part of this build is that almost none of it is this file.
-# After apt and Quicklisp, the image assembles itself in Common Lisp: five
+# After apt and Quicklisp, the image assembles itself in Common Lisp: six
 # seed repos arrive as tarballs, and then *cairn* — the org's own from-scratch
 # git implementation — clones the other 33 out of GitHub over seal's TLS.
 # There is no `git` binary in this image.
@@ -154,8 +154,8 @@ COPY repos.lock ./
 COPY boot/seed.sh boot/
 
 # The seed: cairn + seal + conch + cram + natrium, as tarballs, because cairn
-# cannot clone itself into existence.  Five repos with no third-party
-# dependencies at all.
+# cannot clone itself into existence, plus cl-transport for a build behind an
+# HTTPS_PROXY.  Six repos with no third-party dependencies at all.
 RUN --mount=type=secret,id=extra_ca,required=false sh boot/seed.sh
 
 # And then Lisp takes over.  cairn clones all 38 repos — including a real

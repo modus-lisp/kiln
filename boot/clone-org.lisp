@@ -17,7 +17,8 @@
 ;;;; Env: MODUS_ORG (modus-lisp), MODUS_ROOT (/opt/modus-lisp),
 ;;;;      KILN_SEED (/opt/kiln-seed), KILN_LOCK (/kiln/repos.lock), KILN_JOBS (4),
 ;;;;      KILN_EXTRA_CA (unset: a PEM file of CAs to trust in addition to the system
-;;;;      bundle -- see INSTALL-TRUST)
+;;;;      bundle -- see INSTALL-TRUST), HTTPS_PROXY / https_proxy (unset: an
+;;;;      http://host:port proxy that tunnels with CONNECT -- see INSTALL-PROXY)
 
 (require :asdf)
 (require :sb-posix)
@@ -166,9 +167,86 @@
               (seal:make-trust-store-from-pem
                (concatenate 'string system (string #\Newline) extra))))))
 
+;;; -------------------------------------------------------------------- proxy
+
+;;; A network that allows no direct connection out names an HTTP proxy that tunnels
+;;; with CONNECT, in HTTPS_PROXY.  The clones then go cairn -> seal -> cl-transport's
+;;; :http-connect carrier -> the proxy, and seal's TLS runs end to end inside the tunnel,
+;;; so the proxy sees only ciphertext unless it also intercepts -- which is what
+;;; KILN_EXTRA_CA is for, and the two compose.
+;;;
+;;; cl-transport is in the seed for this, and is loaded only when a proxy is named, so a
+;;; build without one does exactly what it did before.  Its symbols are looked up after
+;;; it loads, because this file is read before it exists.
+;;;
+;;; A proxy URL can carry credentials.  They go to the proxy as Proxy-Authorization and
+;;; nowhere else: the log names host and port, and no error message quotes the URL.
+;;; NO_PROXY is not consulted -- every fetch here goes to the one forge.
+
+(defvar *https-proxy*
+  (let ((p (or (env "https_proxy" nil) (env "HTTPS_PROXY" nil))))
+    (and p (plusp (length p)) p)))
+
+(defun %percent-decode (s)
+  (with-output-to-string (out)
+    (loop with i = 0 while (< i (length s))
+          do (let ((c (char s i)))
+               (if (and (char= c #\%) (<= (+ i 3) (length s))
+                        (digit-char-p (char s (+ i 1)) 16) (digit-char-p (char s (+ i 2)) 16))
+                   (progn (write-char (code-char (parse-integer s :start (1+ i) :end (+ i 3) :radix 16)) out)
+                          (incf i 3))
+                   (progn (write-char c out) (incf i)))))))
+
+(defun %parse-proxy-url (url)
+  "(values HOST PORT USERINFO) for http://[user[:pass]@]host:port[/].  Signals, without
+   quoting URL, if it is not that shape."
+  (let ((prefix "http://"))
+    (unless (and (> (length url) (length prefix))
+                 (string-equal prefix url :end2 (length prefix)))
+      (error "HTTPS_PROXY must be an http:// URL (the proxy is spoken to in plain HTTP, with CONNECT)"))
+    (let* ((rest (subseq url (length prefix)))
+           (rest (subseq rest 0 (or (position #\/ rest) (length rest))))
+           (at (position #\@ rest :from-end t))
+           (userinfo (and at (subseq rest 0 at)))
+           (hostport (if at (subseq rest (1+ at)) rest))
+           (colon (position #\: hostport :from-end t))
+           (port (and colon (ignore-errors (parse-integer hostport :start (1+ colon))))))
+      (unless (and colon (plusp colon) port (< 0 port 65536))
+        (error "HTTPS_PROXY must name a host and a port, as http://host:port"))
+      (values (subseq hostport 0 colon) port userinfo))))
+
+(defun install-proxy ()
+  (if (null *https-proxy*)
+      (say "kiln: proxy: none, connecting directly~%")
+      (multiple-value-bind (host port userinfo)
+          ;; NOT LEFT TO THE DEBUGGER: --script prints a backtrace on an unhandled error,
+          ;; and the backtrace shows %PARSE-PROXY-URL's argument -- the URL, password and
+          ;; all.  The message alone says what is wrong.
+          (handler-case (%parse-proxy-url *https-proxy*)
+            (error (e)
+              (say "kiln: ~a~%" e)
+              (sb-ext:quit :unix-status 1)))
+        (handler-bind ((warning #'muffle-warning))
+          (let ((*standard-output* (make-broadcast-stream)))
+            (asdf:load-system :cl-transport)))
+        (let ((dial (find-symbol "DIAL" "CL-TRANSPORT"))
+              (proxy (cons host port)))
+          (when userinfo
+            (setf (symbol-value (find-symbol "*HTTP-PROXY-AUTHORIZATION*" "CL-TRANSPORT"))
+                  (format nil "Basic ~a"
+                          (seal:base64-encode
+                           (sb-ext:string-to-octets (%percent-decode userinfo)
+                                                    :external-format :utf-8)))))
+          ;; Set before any thread starts, like *trust-store*, so every clone sees it.
+          (setf seal.http:*dial*
+                (lambda (h p tm)
+                  (funcall dial h p :transport :http-connect :proxy proxy :timeout tm)))
+          (say "@@ proxy http-connect ~a:~d~:[~; (with credentials)~]~%" host port userinfo)))))
+
 ;;; -------------------------------------------------------------------- main
 
 (install-trust)
+(install-proxy)
 
 (let* ((repos (parse-lock *lock*))
        (queue (copy-list repos))

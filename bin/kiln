@@ -10,10 +10,11 @@
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
 #   kiln desktop          the works, here: a window, a terminal, voice and ears
 #   kiln build [DIR]      set THIS machine up: fetch the workspace, dump a core
-#   kiln container [--extra-ca=PATH]
+#   kiln container [--extra-ca=PATH] [--https-proxy=URL]
 #                         build the container image instead (first run: coffee);
 #                         PATH is a PEM of CAs to trust beyond the system bundle,
-#                         for a network that intercepts TLS
+#                         for a network that intercepts TLS; URL is an http://
+#                         proxy that tunnels with CONNECT, for one with no direct route
 #   kiln local            run on THIS machine, no container (no isolation either)
 #   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
 #   kiln view             a NATIVE window onto the desktop (glass-sdl)
@@ -261,35 +262,48 @@ cmd_container() {
   # `extra_ca' -- mounted only into the RUNs that fetch, never written to a layer,
   # and not installed into the image's system bundle.  Everything else is passed
   # through to the engine unchanged.
-  local extra_ca="" arg
+  local extra_ca="" proxy="" arg
   local -a pass=()
   while (( $# )); do
     arg=$1; shift
     case $arg in
       --extra-ca=*) extra_ca=${arg#*=} ;;
       --extra-ca)   (( $# )) || die "--extra-ca needs a PATH"; extra_ca=$1; shift ;;
+      --https-proxy=*) proxy=${arg#*=} ;;
+      --https-proxy)   (( $# )) || die "--https-proxy needs a URL"; proxy=$1; shift ;;
       *)            pass+=("$arg") ;;
     esac
   done
-  local -a secret=()
+  local -a build_opts=()
   if [[ -n $extra_ca ]]; then
     [[ -s $extra_ca ]] || die "--extra-ca: $extra_ca is not a non-empty file"
     grep -q 'BEGIN CERTIFICATE' "$extra_ca" || die "--extra-ca: $extra_ca holds no PEM certificate"
     extra_ca=$(cd "$(dirname "$extra_ca")" && pwd)/$(basename "$extra_ca")
-    secret=(--secret "id=extra_ca,src=$extra_ca")
+    build_opts=(--secret "id=extra_ca,src=$extra_ca")
     note "extra CA: $extra_ca — this build's fetches trust it; the image's system bundle does not change"
+  fi
+  # --https-proxy=http://[user:pass@]host:port: a proxy that tunnels with CONNECT, for a
+  # network with no direct route out.  It goes in as docker's PREDEFINED proxy build
+  # args, which every RUN sees as its environment and which are kept out of the image's
+  # history -- curl honours them, and clone-org routes the clones through cl-transport.
+  # The URL can hold credentials, so nothing here prints it whole.
+  if [[ -n $proxy ]]; then
+    [[ $proxy =~ ^http://([^/@]*@)?([^/@:]+):([0-9]+)/?$ ]] \
+      || die "--https-proxy: expected http://[user:pass@]host:port (the proxy is spoken to in plain HTTP)"
+    build_opts+=(--build-arg "HTTPS_PROXY=$proxy" --build-arg "https_proxy=$proxy")
+    note "https proxy: ${BASH_REMATCH[2]}:${BASH_REMATCH[3]}${BASH_REMATCH[1]:+ (with credentials, not shown)}"
   fi
 
   ensure_engine_up
   note "building $IMAGE with $ENGINE (this compiles McCLIM once; expect several minutes)"
   set_dns_args
   if [[ $ENGINE == container ]]; then
-    with_kernel container build ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} ${secret[@]+"${secret[@]}"} \
+    with_kernel container build ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} ${build_opts[@]+"${build_opts[@]}"} \
       -t "$IMAGE" ${pass[@]+"${pass[@]}"} "$ROOT"
   else
     # BuildKit, because the Dockerfile's RUN --mount needs it, and not every docker
     # install defaults to it.  podman and buildah take the variable as is.
-    DOCKER_BUILDKIT=1 "$ENGINE" build ${secret[@]+"${secret[@]}"} -t "$IMAGE" ${pass[@]+"${pass[@]}"} "$ROOT"
+    DOCKER_BUILDKIT=1 "$ENGINE" build ${build_opts[@]+"${build_opts[@]}"} -t "$IMAGE" ${pass[@]+"${pass[@]}"} "$ROOT"
   fi
   note "built $IMAGE"
 }

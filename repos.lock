@@ -13,7 +13,7 @@ cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
 cl-nostr        master  000a352acc3972e60ca4c41ddf9efcb000be63eb
 cl-sev-snp      main    b89b0cb20c0943bdbcbe9a34e2994ef57e5ba992
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
-cl-transport    http-connect-carrier  281d02b9c77e2b5042c88e3ff3f4c26b9ddf8b5e
+cl-transport    master  281d02b9c77e2b5042c88e3ff3f4c26b9ddf8b5e
 conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
 cram            master  f878dae6a8302c4c2fae6779816dcdd395328543
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc
@@ -35,7 +35,7 @@ quill           master  d31302fd18d21d1ef0703165b8c1e6834ae0e29e
 reed            master  32e1c5ea0896c4e62ab86d28652797e3ad87aa86
 reel            master  d53f12880e06233079003a73b6762eabaab94caa
 scribe          master  f68299a132744f25f0c9eb49eab9293b3aa72a4f
-seal            extra-ca-trust  3ed21304ee7caa409d596ee46fc41cc24f9060ab
+seal            master  3ed21304ee7caa409d596ee46fc41cc24f9060ab
 secp256k1-fast  master  854c6ea434410d0a29e8a90ba199cfaeb70b11cb
 shuttle         master  51b368afd8d5eea7cc7b76792ae463ea0d88a759
 skep            main    8c035963bc0875d56413fb8b16053e65273f5e58

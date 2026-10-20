@@ -35,7 +35,7 @@ quill           master  d31302fd18d21d1ef0703165b8c1e6834ae0e29e
 reed            master  32e1c5ea0896c4e62ab86d28652797e3ad87aa86
 reel            master  d53f12880e06233079003a73b6762eabaab94caa
 scribe          master  f68299a132744f25f0c9eb49eab9293b3aa72a4f
-seal            master  0f99272f451374ab37b715c4938f27cc57f74fcf
+seal            extra-ca-trust  dcbba380988d09f1526fbfa29c8a40ebdc791cbd
 secp256k1-fast  master  854c6ea434410d0a29e8a90ba199cfaeb70b11cb
 shuttle         master  51b368afd8d5eea7cc7b76792ae463ea0d88a759
 skep            main    8c035963bc0875d56413fb8b16053e65273f5e58

@@ -30,6 +30,19 @@ import argparse, gzip, hashlib, io, json, os, re, subprocess, sys, tarfile, glob
 BUILTIN = {"sb-bsd-sockets", "sb-posix", "sb-rotate-byte", "sb-concurrency", "sb-introspect",
            "asdf", "uiop"}
 
+# The board's installer holds a whole tarball in its heap, so a repo's fonts and pictures
+# (glass ships 3 MB of TTFs) exhaust it before one source file loads.  None of them is source.
+MEDIA = (".ttf", ".otf", ".woff", ".woff2", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+         ".wav", ".mp3", ".ogg", ".opus", ".flac", ".mp4", ".webm", ".mkv", ".pdf")
+
+def strip_media(tar):
+    with tarfile.open(tar) as t:
+        keep = [(m, t.extractfile(m).read() if m.isfile() else None)
+                for m in t.getmembers() if not m.name.lower().endswith(MEDIA)]
+    with tarfile.open(tar, "w", format=tarfile.USTAR_FORMAT) as t:
+        for m, data in keep:
+            t.addfile(m, io.BytesIO(data) if data is not None else None)
+
 def sha256(p):
     h = hashlib.sha256()
     with open(p, "rb") as f:
@@ -142,6 +155,7 @@ def main():
             tar = os.path.join(a.out, name + ".tar")
             with open(tar, "wb") as f:
                 subprocess.check_call(["git", "-C", repo, "archive", "--format=tar", "--prefix=%s/" % name, commit], stdout=f)
+            strip_media(tar)
             asd = open(os.path.join(repo, name + ".asd")).read()
             info[name] = dict(source="modus-lisp/" + os.path.basename(repo), commit=commit, note=note)
         else:

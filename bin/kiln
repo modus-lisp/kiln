@@ -2589,6 +2589,14 @@ EOF
   # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
   cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
   cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
+  # many TCP connections, UDP, and SB-BSD-SOCKETS over them: modus's bare-metal network layer,
+  # taken from the modus checkout (its source of truth) -- the main thread's connections ride
+  # zero-ssh's TX/RX rings
+  local mnet=${KILN_MODUS:-$KILN_ROOT/modus}/net
+  for f in tcp-conns sb-bsd-sockets-shim bare-sockets; do
+    [[ -f $mnet/$f.lisp ]] || die "kiln zero: no $mnet/$f.lisp (KILN_MODUS is a modus checkout with it)"
+    cp "$mnet/$f.lisp" "$sys/src/$f.lisp"
+  done
   local media_files=""
   if [[ $media == 1 ]]; then
     for r in reed reel cassette warp pagetree cabinet modus; do
@@ -2653,7 +2661,8 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "zero-bt")
      $media_files
-     (:file "zero") (:file "app") (:file "zero-ssh") (:file "zero-rfb")))))
+     (:file "zero") (:file "app") (:file "zero-ssh") (:file "zero-rfb")
+     (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)

@@ -75,6 +75,9 @@ bash "$HERE/extra-ca-trust.sh" || rc=1
 group "--https-proxy: what reaches the engine, and where clone-org sends the clones"
 bash "$HERE/https-proxy.sh" || rc=1
 
+group "kiln sync: what it clones, moves, and leaves alone"
+bash "$HERE/sync-test.sh" || rc=1
+
 group "boot decisions (flags, identity file, payload)"
 if command -v sbcl >/dev/null; then
   sbcl --script "$HERE/one-test.lisp" || rc=1

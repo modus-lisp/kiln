@@ -126,6 +126,25 @@ SBCL_VERSION=` moves it.
 `info/refs` through cairn, one HTTPS GET apiece. No GitHub API, no token, no
 rate limit.
 
+## Working on the whole org
+
+`kiln build` fetches the pinned set to make a core. To *work* on modus-lisp you
+want every repo as a live checkout, beside kiln, and current:
+
+```sh
+bin/kiln sync            # into kiln's parent directory
+bin/kiln sync ~/src      # or anywhere
+bin/kiln sync --locked   # only the repos in repos.lock
+```
+
+A missing repo is cloned. A present one is fetched and fast-forwarded only when
+nothing can be lost: it is on a branch that tracks an upstream, nothing tracked
+is modified, and the upstream contains every local commit. Anything else is
+left as it is and listed with the reason — uncommitted changes, diverged, a
+branch with no upstream. It never resets, stashes, switches a branch or
+deletes. The repo list is the org's, from GitHub's API (`GITHUB_TOKEN` is sent
+if set); `--ssh` clones over SSH, `--jobs=N` sets the parallelism (8).
+
 ## Commands
 
 | | |
@@ -144,6 +163,7 @@ rate limit.
 | `kiln eval '(form)'` | evaluate in the **running** desktop, live |
 | `kiln test` | glass's RFB self-test in a throwaway container |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
+| `kiln sync [DIR]` | every org repo beside kiln: clone what's missing, fast-forward what's safe |
 | `kiln clean` | remove the container and the image |
 
 The engine is auto-detected — Apple's `container` on macOS, else docker, else

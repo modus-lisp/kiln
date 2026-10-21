@@ -33,6 +33,8 @@
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
 #   kiln lock             refresh repos.lock from the org's live refs
+#   kiln sync [DIR]       every org repo beside kiln: clone what is missing,
+#                         fast-forward what is safe to (--locked: only repos.lock's)
 #   kiln clean            remove the container and the image
 #
 # Env: KILN_ENGINE, KILN_IMAGE, KILN_NAME, KILN_DNS, KILN_HEAP,
@@ -2233,6 +2235,28 @@ USAGE
     -p "${PUBLISH_ON}${port}:${port}" "$IMAGE" modus-rfb "$port"
 }
 
+# ---- the whole org, as a workspace ---------------------------------------------------
+#
+# `kiln build' fetches the PINNED set into a fresh tree to make a core.  This is the other
+# thing a person working on the org needs: every repo it has, as a live checkout beside
+# kiln, brought up to date -- cloned when missing, fast-forwarded when that cannot lose
+# anything, and otherwise left alone with the reason printed.  It never resets, stashes,
+# switches a branch or deletes.  See boot/sync.sh.
+cmd_sync() {
+  local dest="" a
+  local -a flags=()
+  for a in "$@"; do
+    case $a in
+      -*) flags+=("$a") ;;
+      *)  [[ -z $dest ]] || die "sync: one directory, not two"; dest=$a ;;
+    esac
+  done
+  dest=${dest:-$KILN_ROOT}
+  note "syncing github.com/${MODUS_ORG:-modus-lisp} into $dest"
+  MODUS_ORG="${MODUS_ORG:-modus-lisp}" KILN_LOCK="$ROOT/repos.lock" \
+    bash "$ROOT/boot/sync.sh" "$dest" ${flags[@]+"${flags[@]}"}
+}
+
 cmd_lock() {
   # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
   # Lisp git over seal's TLS, one HTTPS GET apiece, no GitHub API and so no token
@@ -2303,6 +2327,7 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   speech) shift; cmd_speech "$@" ;;
   lock)  shift; cmd_lock ;;
+  sync)  shift; cmd_sync "$@" ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try --help)" ;;

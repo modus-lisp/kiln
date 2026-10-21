@@ -92,6 +92,7 @@
 ;;; (boot/zero-rfb.lisp, loaded after this file) sets them when it starts serving.
 (defvar *kz-usb-idle-hook* nil)    ; a function of no arguments, run on the USB thread each round
 (defvar *kz-event-source* nil)     ; a function returning events (the desk's encoding), main thread
+(defvar *kz-main-net* nil)         ; with sockets on the main thread: pump them while the desk idles
 (defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
@@ -271,7 +272,9 @@
           (if *zero-events*
               (progn (setf *kz-active-at* now)
                      (pop *zero-events*))
-              (progn (setf *kz-frame-at* now) (%zero-idle-gc) 0))))))
+              (progn (setf *kz-frame-at* now)
+                     (when *kz-main-net* (funcall *kz-main-net*))
+                     (%zero-idle-gc) 0))))))
 
 ;;; --- the screen in Y'CbCr: glass :I420 scanned out by the HVS -----------------------------
 ;;;

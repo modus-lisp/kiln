@@ -288,7 +288,9 @@
       t)))
 
 (defun %net-service ()
-  "On the USB thread, each idle round: drain the NIC into the ring; answer ARP."
+  "On the USB thread, each idle round: send what the main thread queued; drain the NIC into
+   the ring; answer ARP."
+  (%tx-drain)
   (let ((idx *ring-idx*))
     (dotimes (i 8)
       (let ((len (funcall *nic-receive*)))
@@ -310,7 +312,8 @@
   (let* ((idx *ring-idx*) (head (svref idx 0)))
     (if (= head (svref idx 1))
         (progn (setf (svref *rx-staged* 0) 0)
-               (funcall *nic-receive*))
+               ;; the main thread never touches the NIC: with an empty ring it has nothing
+               (if (%main-with-usb-thread-p) 0 (funcall *nic-receive*)))
         (let ((buf (svref *ring-bufs* head)) (n (svref *ring-lens* head)) (b (%stage)))
           (dotimes (k n) (setf (cl-user::mem-ref (+ b k) :u8) (aref buf k)))
           (setf (svref idx 0) (mod (1+ head) 32)
@@ -322,6 +325,52 @@
   "Where the frame E1000-RECEIVE last handed out is: the staging buffer for a ring frame,
    the NIC's RX buffer for one read straight from the NIC."
   (if (= (svref *rx-staged* 0) 1) (%stage) (%nic-rx-buf)))
+
+;;; ---- transmitting from the main thread ------------------------------------------------------
+;;;
+;;; Connections that live on the MAIN thread (modus net/tcp-conns.lisp, net/bare-sockets.lisp)
+;;; send from there, but only the USB thread may drive the host controller.  So E1000-SEND on
+;;; the main thread queues the frame in a TX ring of buffers the main thread made (the USB
+;;; thread reads them and stores only fixnums: the threads share no objects), and the USB
+;;; thread's idle round sends the queue before it drains the NIC.  Without threads, or on the
+;;; USB thread itself, it sends at once, as before.
+(defvar *nic-send*)
+(unless (boundp '*nic-send*)
+  (setq *nic-send* (symbol-function (intern "E1000-SEND" "COMMON-LISP-USER"))))
+(defvar *tx-bufs* (let ((v (make-array 32)))
+                    (dotimes (i 32 v)
+                      (setf (svref v i) (make-array 1536 :element-type '(unsigned-byte 8))))))
+(defvar *tx-lens* (make-array 32 :initial-element 0))
+(defvar *tx-idx* (make-array 3 :initial-element 0) "head, tail, dropped")
+
+(defun %main-with-usb-thread-p ()
+  (and *usb-executor* (cl-user::%mvm-on-main-thread-p)))
+
+(defun %tx-drain ()
+  "On the USB thread: send every frame the main thread has queued, oldest first."
+  (let ((idx *tx-idx*))
+    (loop
+      (let ((head (svref idx 0)))
+        (when (= head (svref idx 1)) (return))
+        (funcall *nic-send* (svref *tx-bufs* head) (svref *tx-lens* head))
+        (setf (svref idx 0) (mod (1+ head) 32))))))
+
+(defun cl-user::e1000-send (buf len)
+  "Send a frame: at once on the USB thread (or with no threads), queued from the main thread.
+   A full queue gets 200 ms to drain, then the frame is dropped -- TCP retransmits it."
+  (if (not (%main-with-usb-thread-p))
+      (funcall *nic-send* buf len)
+      (let* ((idx *tx-idx*) (tail (svref idx 1)) (next (mod (1+ tail) 32)) (n (min len 1536)))
+        (dotimes (w 200)
+          (unless (= next (svref idx 0)) (return))
+          (cl-user::%sleep-ms 1))
+        (if (= next (svref idx 0))
+            (progn (incf (svref idx 2)) 0)
+            (let ((b (svref *tx-bufs* tail)))
+              (dotimes (k n) (setf (aref b k) (aref buf k)))
+              (setf (svref *tx-lens* tail) n
+                    (svref idx 1) next)
+              len)))))
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.

@@ -270,8 +270,14 @@
 ;; E1000-RX-BUF saved with SYMBOL-FUNCTION before redefining it: that object resolved LATE,
 ;; to the new definition, which called itself until the USB thread's stack was gone -- and an
 ;; error in an executor's idle round ends the executor, so the USB thread stopped dead (found
-;; under QEMU: "this thread's stack is exhausted (512 KB)").  NET-UP brings the NIC up CDC-ECM.
-(defun %nic-rx-buf () (cl-user::cdcether-rx-buf))
+;; under QEMU: "this thread's stack is exhausted (512 KB)").  BY DRIVER, as the kernel's own
+;; E1000-RX-BUF does: NET-UP brings a cold RTL8153 up CDC-ECM, but after U-Boot (every netboot)
+;; it is vendor-initialised, CDC mangles its frames, and NET-USB-PROBE binds modus's r8152.
+(defun %nic-rx-buf ()
+  (case (cl-user::usb-netdev-get)
+    (2 (cl-user::r8152-rx-buf))
+    (1 (cl-user::cdcether-rx-buf))
+    (t (cl-user::cdc-rx-buf-addr))))
 (defvar *rx-staged* (make-array 1 :initial-element 0) "1: the current frame is in %STAGE")
 
 ;; The hot path names kernel functions directly (CL-USER::NAME, interned when this file is

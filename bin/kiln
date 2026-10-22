@@ -2459,7 +2459,7 @@ cmd_zero() {
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
   local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=0
-  local -a withs=()
+  local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -2475,6 +2475,7 @@ cmd_zero() {
       --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
       --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
       --threads) threads=1 ;;
+      --jit-skip) IFS=, read -ra jit_skip <<< "${val:?--jit-skip=PKG,PKG,...}" ;;
       -h|--help)
         cat >&2 <<'USAGE'
 kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-start]
@@ -2513,6 +2514,12 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md).  Their heaps
                     live where the saved core is loaded, so a threaded board runs threads only
                     once the core is restored
+  --jit-skip=P,...  with --build-core: leave functions whose names start with these
+                    package prefixes as bytecode (jit-eager skips them; Quicklisp's
+                    loader is always skipped).  The board's JIT arena is 64 MB and the
+                    core slot 96 MB: a desk+network core compiled whole fills both, so
+                    e.g. --jit-skip=GLASS,SCRIBE,CRAM,BROTLI-PURE,KILN-ZERO-RFB keeps
+                    the desk interpreted and the network stack native
   --nsec-file=PATH  with --sd-image: the board's identity -- an nsec1... key, written to the
                     card's cmdline.txt as NSEC=; kiln-zero-ssh derives the board's SSH key
                     from it (with --with=conch), so the key survives reboots
@@ -2800,11 +2807,17 @@ EOF
     local fa=$(( 0x1A000000 + 16777216 * ${#loads[@]} )) fb
     fb=$(( fa + 1048576 ))
     # a standalone card's core starts the desk by itself after the restore
-    local -a hookform=()
+    local -a hookform=() skipform=()
+    if [[ ${#jit_skip[@]} -gt 0 ]]; then
+      local sk="(setq *jit-skip-prefixes* (list \"QL-\" \"QUICKLISP\"" p
+      for p in "${jit_skip[@]}"; do sk+=" \"$p\""; done
+      skipform=(--form="$sk) :skip)")
+    fi
     [[ -n $sd_image ]] && hookform=(--form="(progn (setq *core-restart-hook* (quote kiln-zero-main)) :hook)")
     note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
     local -a coreargs=(
       --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)"
+      "${skipform[@]}"
       --form="(jit-eager)"
       --form="(list :glyphs (kiln-zero-prerender-glyphs))"
       "${hookform[@]}"

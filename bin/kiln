@@ -2821,6 +2821,9 @@ EOF
       --form="(jit-eager)"
       --form="(list :glyphs (kiln-zero-prerender-glyphs))"
       "${hookform[@]}"
+      # modus's explicit clean step before the save's full collection: native modules
+      # drop their bytecode and translation tables (source links stay)
+      --form="(if (fboundp (quote jit-prune)) (jit-prune) :no-jit-prune)"
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))"
       --expect="MAIN T FONTS T")                       # the board prints :MAIN as MAIN
     if [[ -n $builder ]]; then

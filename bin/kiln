@@ -2792,6 +2792,25 @@ EOF
         || die "kiln zero: cannot resolve ${withs[*]} (see $w/packages.json)"
       rm -f "$lock"
       local order; order=$(python3 -c "import json;print(' '.join(n for n in json.load(open('$w/packages.json'))['order'] if n != 'bordeaux-threads'))")
+      # GLASS ON THE BOARD IS KILN-ZERO'S: the trimmed package + framebuffer + desk it already
+      # carries (glass/fb's McCLIM backend needs SB-CONCURRENCY, which modus has not got).  A
+      # closure that reaches glass/nostr -- the lean nostr gateway's admission client and the
+      # desktop's identity -- gets just that file and the listener re-exports it reads, as one
+      # small system in glass/nostr's place, after cl-transport/listeners and cl-nostr.
+      if [[ " $order " == *" glass/nostr "* ]]; then
+        local gz="$w/tars/zero-glass-nostr"; mkdir -p "$gz/src"
+        cp "$KILN_ROOT/glass/src/transports.lisp" "$gz/src/transports.lisp"
+        cp "$KILN_ROOT/glass/src/nostr.lisp" "$gz/src/nostr.lisp"
+        printf '%s\n' ";;;; glass/nostr on the board: the identity and admission file over kiln-zero's glass." \
+          '(asdf:defsystem :zero-glass-nostr :serial t' \
+          '  :components ((:module "src" :serial t :components ((:file "transports") (:file "nostr")))))' \
+          > "$gz/zero-glass-nostr.asd"
+        (cd "$w/tars" && tar cf zero-glass-nostr.tar zero-glass-nostr)
+        local o2="" n; for n in $order; do
+          case $n in glass|glass/fb|glass/clipboard|cram) ;; glass/nostr) o2+=" zero-glass-nostr" ;; *) o2+=" $n" ;; esac
+        done
+        order=${o2# }
+      fi
       note "zero: --with ${withs[*]}: $order"
       # an x/test system goes in right after x, before anything heavier: cl-fips/test
       # installed after cl-marmot stalled for 90 minutes on the board image, and in

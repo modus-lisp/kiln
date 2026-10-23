@@ -2806,8 +2806,29 @@ EOF
           '  :components ((:module "src" :serial t :components ((:file "transports") (:file "nostr")))))' \
           > "$gz/zero-glass-nostr.asd"
         (cd "$w/tars" && tar cf zero-glass-nostr.tar zero-glass-nostr)
+        # ...and somewhere to keep its stores (seat keys, enrolments, codes): the board's OPEN is
+        # a Linux syscall with no OS behind it, which halts the core.  A cabinet filesystem routes
+        # OPEN (modus lib/cabinet-fs.lisp); zero-gateway:start mounts one on a RAM disk.  --media's
+        # kiln-zero already carries it.
+        local cabsys=""
+        if [[ $media != 1 ]]; then
+          local zc="$w/tars/zero-cabinet" f; mkdir -p "$zc/src"; cabsys=" zero-cabinet"
+          for f in packages device device-file device-sector pager node btree store; do
+            cp "$KILN_ROOT/pagetree/src/$f.lisp" "$zc/src/pt-$f.lisp"; done
+          for f in packages utf8 codec fs; do
+            cp "$KILN_ROOT/cabinet/src/$f.lisp" "$zc/src/cab-$f.lisp"; done
+          cp "$modus/lib/cabinet-fs.lisp" "$zc/src/cabinet-fs.lisp"
+          printf '%s\n' ";;;; pagetree + cabinet + modus's cabinet-fs: a filesystem under CL's OPEN on the board." \
+            '(asdf:defsystem :zero-cabinet :serial t' \
+            '  :components ((:module "src" :serial t :components' \
+            '    ((:file "pt-packages") (:file "pt-device") (:file "pt-device-file") (:file "pt-device-sector")' \
+            '     (:file "pt-pager") (:file "pt-node") (:file "pt-btree") (:file "pt-store")' \
+            '     (:file "cab-packages") (:file "cab-utf8") (:file "cab-codec") (:file "cab-fs") (:file "cabinet-fs")))))' \
+            > "$zc/zero-cabinet.asd"
+          (cd "$w/tars" && tar cf zero-cabinet.tar zero-cabinet)
+        fi
         local o2="" n; for n in $order; do
-          case $n in glass|glass/fb|glass/clipboard|cram) ;; glass/nostr) o2+=" zero-glass-nostr" ;; *) o2+=" $n" ;; esac
+          case $n in glass|glass/fb|glass/clipboard|cram) ;; glass/nostr) o2+="$cabsys zero-glass-nostr" ;; *) o2+=" $n" ;; esac
         done
         order=${o2# }
       fi

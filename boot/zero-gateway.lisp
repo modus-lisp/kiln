@@ -17,7 +17,7 @@
 
 (defpackage #:zero-gateway
   (:use #:cl)
-  (:export #:start #:setenv #:getenv #:*env*))
+  (:export #:start #:setenv #:getenv #:*env* #:mount-ram-cabinet #:net-up-qemu))
 (in-package #:zero-gateway)
 
 (defvar *env* (make-hash-table :test 'equal)
@@ -45,9 +45,50 @@
     (and s t)))
 
 (defun %call (pkg name &rest args)
-  (let ((s (and (find-package pkg) (find-symbol name pkg))))
+  ;; a KERNEL function (CL-USER) has no symbol until somebody types its name: INTERN it there,
+  ;; and the symbol names the image's function (kiln-zero-ssh's %KERNEL)
+  (let ((s (if (string= pkg "COMMON-LISP-USER")
+               (intern name pkg)
+               (and (find-package pkg) (find-symbol name pkg)))))
     (unless (and s (fboundp s)) (error "zero-gateway: ~a::~a is not in this image" pkg name))
     (apply (symbol-function s) args)))
+
+;;; SOMEWHERE TO KEEP THE STORES.  glass/nostr keeps the seat keys, the enrolments and the codes it
+;;; has minted in files, and the board's OPEN is a Linux syscall with nothing behind it: the core
+;;; halts.  kiln's zero-cabinet (pagetree + cabinet + modus lib/cabinet-fs.lisp) routes OPEN to a
+;;; cabinet filesystem; this one is on a RAM disk, so the stores last as long as the power does.
+;;; The disk is the region --media puts its clips on: past the core, inside the RAM the image maps.
+(defun mount-ram-cabinet (&key (base #x1B000000) (bytes 33554432))
+  "Mount a fresh cabinet on BASE..BASE+BYTES, with /glass and /tmp.  T, or NIL with no cabinet."
+  (let ((cab (find-symbol "*CABFS*" "COMMON-LISP-USER")))
+    (cond ((null cab) nil)
+          ((symbol-value cab) t)
+          (t (%call "COMMON-LISP-USER" "CABINET-MOUNT-DEVICE"
+                    (%call "COMMON-LISP-USER" "CABINET-RAW-DISK" base bytes) :format t)
+             (dolist (d '("/glass" "/tmp"))
+               (%call "CABINET" "MAKE-DIRECTORIES" (symbol-value cab) d))
+             t))))
+
+;;; THE NETWORK UNDER QEMU.  NET-UP (kiln-zero-ssh) finds the hub's RTL8153 behind the Zero's hub;
+;;; QEMU raspi3b's usb-net is a plain CDC-ECM device on the root hub, which the kernel's own probe
+;;; binds.  The HID scan is switched off first: it re-addresses ports, and QEMU aborts on a transfer
+;;; to an address with no device behind it.  Slirp: -netdev user,net=10.0.0.0/24,host=10.0.0.1,dns=10.0.0.3
+(defun net-up-qemu (&key (ip #x0200000A) (gateway #x0100000A) (dns #x0A000003))
+  (%call "COMMON-LISP-USER" "HID-PUT" 0 0)
+  (dotimes (p 8) (%call "COMMON-LISP-USER" "HID-RESERVE-PORT" p))
+  (unless (eql 1 (%call "COMMON-LISP-USER" "E1000-PROBE"))
+    (error "zero-gateway: no USB NIC"))
+  (let ((s (%call "COMMON-LISP-USER" "E1000-STATE-BASE")))
+    (%call "COMMON-LISP-USER" "CDC-READ-MAC" s)
+    (setf (cl-user::mem-ref (+ s #x18) :u32) ip
+          (cl-user::mem-ref (+ s #x1C) :u32) gateway))
+  (unless (dotimes (i 50)
+            (when (eql 1 (%call "COMMON-LISP-USER" "ARP-RESOLVE")) (return t))
+            (%call "COMMON-LISP-USER" "DWC2-DELAY-MS" 100))
+    (error "zero-gateway: no ARP reply from the gateway"))
+  (%set-by-name "KILN-ZERO-SSH" "*NET-UP*" t)
+  (%set-by-name "COMMON-LISP-USER" "*BARE-DNS-SERVERS*" (list dns))
+  t)
 
 (defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915)
                    login-url-base)
@@ -75,7 +116,18 @@
         (setenv "TURN_USER" (subseq turn (1+ p1) p2))
         (setenv "TURN_PASS" (subseq turn (1+ p2)))
         (%set-by-name "GLASS" "*TURN-ICE*" turn))))
-  ;; the gateway read these when it LOADED, which for a core was build time
+  ;; the stores, on a cabinet: without one, glass's first OPEN halts the core
+  (unless (mount-ram-cabinet)
+    (error "zero-gateway: no cabinet filesystem in this image (kiln's zero-cabinet)"))
+  ;; glass/nostr and the gateway read these when they LOADED, which for a core was build time
+  (%set-by-name "GLASS" "*BOX-SECRET*" secret)
+  (%set-by-name "GLASS" "*ENROLMENT-FILE*" "/glass/devices")
+  (%set-by-name "GLASS" "*SEAT-KEY-FILE*" "/glass/seats")
+  (%set-by-name "GLASS" "*LOGIN-CODE-FILE*" nil)
+  (%set-by-name "WEBRTC-DATA" "*STATS-FILE*" "/tmp/glass-stats.sexp")
+  (when relays
+    (%set-by-name "GLASS" "*NOSTR-RELAYS*" relays)
+    (%set-by-name "WEBRTC-DATA" "*RELAYS*" relays))
   (%set-by-name "WEBRTC-DATA" "*BOX-SECRET*" secret)
   (%set-by-name "WEBRTC-DATA" "*GLASS-HOST*" "127.0.0.1")
   (%set-by-name "WEBRTC-DATA" "*GLASS-PORT*" rfb-port)

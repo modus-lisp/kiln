@@ -2821,9 +2821,11 @@ EOF
       --form="(jit-eager)"
       --form="(list :glyphs (kiln-zero-prerender-glyphs))"
       "${hookform[@]}"
-      # modus's explicit clean step before the save's full collection: native modules
-      # drop their bytecode and translation tables (source links stay)
+      # modus's explicit clean steps before the save's full collection: native modules
+      # drop their bytecode and translation tables (source links stay), then the
+      # image's name tables share one narrow string per name
       --form="(if (fboundp (quote jit-prune)) (jit-prune) :no-jit-prune)"
+      --form="(if (fboundp (quote compact-names)) (list :compacted (compact-names)) :no-compact-names)"
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))"
       --expect="MAIN T FONTS T")                       # the board prints :MAIN as MAIN
     if [[ -n $builder ]]; then

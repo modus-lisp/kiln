@@ -2811,6 +2811,15 @@ EOF
         done
         order=${o2# }
       fi
+      # ...and the board's own half of that gateway, after it: an environment for the readers it
+      # was written with, and START (boot/zero-gateway.lisp).
+      if [[ " $order " == *" glass-webrtc/nostr-lean "* ]]; then
+        local gg="$w/tars/zero-gateway"; mkdir -p "$gg"
+        cp "$ROOT/boot/zero-gateway.lisp" "$gg/zero-gateway.lisp"
+        printf '%s\n' '(asdf:defsystem :zero-gateway :components ((:file "zero-gateway")))' > "$gg/zero-gateway.asd"
+        (cd "$w/tars" && tar cf zero-gateway.tar zero-gateway)
+        order+=" zero-gateway"
+      fi
       note "zero: --with ${withs[*]}: $order"
       # an x/test system goes in right after x, before anything heavier: cl-fips/test
       # installed after cl-marmot stalled for 90 minutes on the board image, and in

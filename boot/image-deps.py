@@ -129,20 +129,40 @@ def main():
         # one SYSTEM per tarball, so cl-nostr's "seal/http" went missing when it
         # was folded into "seal" (seal.http:get-string, a reader error).
         full = name.lower(); base = full.split("/")[0]
-        visit_base(base, via)
-        if full == base or full in seen or base not in asds: return
+        if full == base:
+            visit_base(base, via); return
+        # ASDF semantics: loading BASE/SUB does not load BASE.  The base's repo is FETCHED
+        # (its tarball carries the sub-system's files) but only the sub-system's own
+        # :depends-on are followed -- glass-webrtc/nostr-lean must not drag in
+        # glass-webrtc's whole media stack.  A sub-system that needs its base says so.
+        fetch_base(base, via)
+        if full in seen or base not in asds: return
         seen.add(full)
         for d in depends_on(asds[base], full):
-            if d.lower() != base: visit(d, full)
+            visit(d, full)          # including the base itself, when the sub-system declares it
         tar = os.path.join(a.out, full + ".tar")
         os.makedirs(os.path.dirname(tar), exist_ok=True)
         with open(os.path.join(a.out, base + ".tar"), "rb") as s, open(tar, "wb") as d: d.write(s.read())
         info[full] = dict(source=info[base]["source"], commit=info[base]["commit"], subsystem_of=base,
                           tar=full + ".tar", sha256=sha256(tar), bytes=os.path.getsize(tar))
         order.append(full)
+    fetched = set()
     def visit_base(name, via):
         if name in seen or name in BUILTIN: return
         seen.add(name)
+        if not fetch_base(name, via): return
+        deps = depends_on(asds[name], name)
+        info[name].update(depends_on=deps)
+        for d in deps: visit(d, name)
+        tar = os.path.join(a.out, name + ".tar")
+        info[name].update(tar=os.path.basename(tar), sha256=sha256(tar), bytes=os.path.getsize(tar))
+        order.append(name)
+    def fetch_base(name, via):
+        """Archive NAME's repo (or copy its archive) to <out>/NAME.tar and read its .asd,
+        once.  True when there is one."""
+        if name in BUILTIN: return False
+        if name in fetched: return name in asds
+        fetched.add(name)
         repo = find_repo(a.root, name)
         if repo:
             head = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"]).decode().strip()
@@ -170,11 +190,7 @@ def main():
             asd = asd_from_tar(tar, name)
             info[name] = dict(source=os.path.basename(arc), commit=None)
         asds[name] = asd
-        deps = depends_on(asd, name)
-        info[name].update(depends_on=deps)
-        for d in deps: visit(d, name)
-        info[name].update(tar=os.path.basename(tar), sha256=sha256(tar), bytes=os.path.getsize(tar))
-        order.append(name)
+        return True
     for n in a.names: visit(n, None)
     man = dict(order=order, systems=info, unresolved=unresolved)
     print(json.dumps(man, indent=1))

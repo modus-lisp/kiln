@@ -2782,7 +2782,10 @@ EOF
       # the closure, dependencies first; kiln-zero (installed first) already carries zero-bt,
       # the one-thread bordeaux-threads, so the real one is left out
       local base sys_bases=() lock; lock=$(mktemp); local x
-      for x in "${withs[@]}"; do sys_bases+=("${x%%/*}"); done
+      # FULL names: a sub-system resolves to ITS dependencies, not its base's whole closure
+      # (boot/image-deps.py) -- glass-webrtc/nostr-lean is not glass-webrtc's media stack.
+      # Ask for a base explicitly when it is wanted too (--with=cl-transport).
+      for x in "${withs[@]}"; do sys_bases+=("$x"); done
       python3 "$ROOT/boot/image-deps.py" --out "$w/tars" --root "$KILN_ROOT" --lock "$lock" \
         --archives "$modus/test/ladder/tars" $(for a in "$HOME"/quicklisp/dists/*/archives; do printf -- '--archives %s ' "$a"; done) \
         "${sys_bases[@]}" > "$w/packages.json" \

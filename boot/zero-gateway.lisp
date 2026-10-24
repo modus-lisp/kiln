@@ -17,7 +17,7 @@
 
 (defpackage #:zero-gateway
   (:use #:cl)
-  (:export #:start #:setenv #:getenv #:*env* #:mount-ram-cabinet #:net-up-qemu))
+  (:export #:start #:boot-main #:setenv #:getenv #:*env* #:mount-ram-cabinet #:net-up-qemu))
 (in-package #:zero-gateway)
 
 (defvar *env* (make-hash-table :test 'equal)
@@ -203,3 +203,42 @@
   (%call "GLASS" "START-SESSION-NOSTR" :port admission-port)
   (bt:make-thread (lambda () (%call "WEBRTC-DATA" "START-NOSTR-GATEWAY"))
                   :name "nostr-gateway"))
+
+;;; ---- a card that boots into it -------------------------------------------------------------
+;;; `kiln zero --sd-image --nsec-file F --owner NPUB' writes the card's cmdline.txt -- bootargs, which
+;;; modus reads with %CLI-GETENV -- and makes BOOT-MAIN the core's restart hook:
+;;;   NSEC=nsec1...    the board's identity: its SSH key and the box's nostr key
+;;;   OWNER=npub1...   who is sent the link, and may connect
+;;;   TURN=turn:host:port,user,pass   (commas: a bootarg cannot hold a space)
+;;;   RELAYS=wss://a,wss://b          optional
+;;;   NET=qemu                        QEMU's usb-net instead of the hub's RTL8153
+
+(defun %bootarg (name)
+  (let ((v (ignore-errors (%call "COMMON-LISP-USER" "%CLI-GETENV" name))))
+    (and (stringp v) (plusp (length v)) v)))
+
+(defun %split-commas (s)
+  (let ((out '()) (start 0))
+    (loop for i = (position #\, s :start start)
+          do (push (subseq s start i) out)
+             (if i (setf start (1+ i)) (return)))
+    (nreverse out)))
+
+(defun boot-main ()
+  "The card's restart hook: the network, the gateway (which DMs OWNER the link), then the desk --
+   whose idle time is the gateway's.  Without NSEC and OWNER on the card it is the plain desk."
+  (let ((nsec (%bootarg "NSEC")) (owner (%bootarg "OWNER")))
+    (handler-case
+        (when (and nsec owner)
+          (if (equal (%bootarg "NET") "qemu")
+              (net-up-qemu)
+              (%call "KILN-ZERO-SSH" "NET-UP"))
+          (let ((turn (%bootarg "TURN")) (relays (%bootarg "RELAYS")))
+            (start :secret (%call "CL-NOSTR.UTIL" "BYTES->HEX"
+                                  (%call "CL-NOSTR.BECH32" "NSEC-DECODE" nsec))
+                   :owner owner
+                   :turn (and turn (substitute #\Space #\, turn))
+                   :relays (and relays (%split-commas relays)))))
+      (error (e)
+        (ignore-errors (format t "~&zero-gateway: not started: ~a~%" e) (finish-output)))))
+  (%call "COMMON-LISP-USER" "KILN-ZERO-MAIN"))

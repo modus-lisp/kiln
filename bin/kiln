@@ -2367,7 +2367,7 @@ zero_firmware() {
 # runs *CORE-RESTART-HOOK* (the desk).  gpu_mem=32 gives the ARM 480 MiB, the room
 # above 0x18000000 a core needs.  Built with mtools: no root, no loop devices.
 zero_sd_image() {
-  local img=$1 core=$2 out=$3 nsec_file=${4:-} fw w
+  local img=$1 core=$2 out=$3 nsec_file=${4:-} owner=${5:-} fw w
   fw=$(zero_firmware)
   w=$(mktemp -d)
   gunzip -c "$img" > "$w/kernel8.img" || die "kiln zero: cannot unzip $img"
@@ -2407,7 +2407,22 @@ TXT
   if [[ -n $nsec_file ]]; then
     local nsec; nsec=$(tr -d ' \n\r' < "$nsec_file")
     [[ $nsec == nsec1* ]] || die "kiln zero: $nsec_file does not hold an nsec1... key"
-    printf 'NSEC=%s\n' "$nsec" > "$w/cmdline.txt"; boot_files+=" cmdline.txt"
+    # ONE line of space-separated bootargs.  A gateway card adds who it serves and its relay:
+    # OWNER (sent the login link at boot) and TURN with commas for spaces (a bootarg holds none)
+    local args="NSEC=$nsec"
+    if [[ -n $owner ]]; then
+      [[ $owner == npub1* ]] || die "kiln zero: --owner wants an npub1... key"
+      args+=" OWNER=$owner"
+      if [[ -z ${TURN_ICE:-} && -f $ROOT/boot/config.sh ]]; then
+        # shellcheck source=boot/config.sh
+        KILN_ETC="${KILN_ETC:-$HOME/.kiln}" . "$ROOT/boot/config.sh"; load_config
+      fi
+      [[ -n ${TURN_ICE:-} ]] && args+=" TURN=$(printf '%s' "$TURN_ICE" | tr ' ' ',')"
+      [[ -n ${KILN_ZERO_NET:-} ]] && args+=" NET=$KILN_ZERO_NET"
+    fi
+    printf '%s\n' "$args" > "$w/cmdline.txt"; boot_files+=" cmdline.txt"
+  elif [[ -n $owner ]]; then
+    die "kiln zero: --owner needs --nsec-file (the board's identity: the box's nostr key)"
   fi
   local f total mb
   total=0
@@ -2458,7 +2473,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=0
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=0 owner=""
   local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -2474,6 +2489,7 @@ cmd_zero() {
       --with)  withs+=("${val:?--with=SYSTEM}") ;;
       --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
       --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
+      --owner) owner=${val:?--owner=NPUB} ;;
       --threads) threads=1 ;;
       --jit-skip) IFS=, read -ra jit_skip <<< "${val:?--jit-skip=PKG,PKG,...}" ;;
       -h|--help)
@@ -2887,7 +2903,11 @@ EOF
       for p in "${jit_skip[@]}"; do sk+=" \"$p\""; done
       skipform=(--form="$sk) :skip)")
     fi
-    [[ -n $sd_image ]] && hookform=(--form="(progn (setq *core-restart-hook* (quote kiln-zero-main)) :hook)")
+    # a GATEWAY card (--owner): the hook brings the network and the nostr gateway up before the
+    # desk (boot/zero-gateway.lisp BOOT-MAIN), from what the card's cmdline.txt says
+    local hook=kiln-zero-main
+    [[ -n $owner ]] && hook=zero-gateway:boot-main
+    [[ -n $sd_image ]] && hookform=(--form="(progn (setq *core-restart-hook* (quote $hook)) :hook)")
     note "zero: building a core on $(basename "$netboot") under QEMU (~50 min)"
     local -a coreargs=(
       --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)"
@@ -2925,7 +2945,7 @@ EOF
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
     if [[ -n $sd_image ]]; then
-      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file"
+      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file" "$owner"
       return 0
     fi
     note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"

@@ -7,10 +7,12 @@
 ;;;; SB-BSD-SOCKETS: a listener, and per client a reader and a sender, all core-0 threads (they
 ;;;; share the main thread's heap: net/bare-threads.lisp, CORE 0).
 ;;;;
-;;;; RFB 3.8, security None, Raw rectangles out of the HDMI scanout buffer (32-bit XRGB, BGRX in
-;;;; memory; swapped to RGBX when the client asks for red at shift 0, noVNC's default).  An
-;;;; incremental request is answered with the rows that changed since the last update, as one
-;;;; rectangle; nothing changed, the sender looks again in 30 ms.
+;;;; RFB 3.8, security None, out of the HDMI scanout buffer (32-bit XRGB, BGRX in memory; swapped
+;;;; to RGBX when the client asks for red at shift 0, noVNC's default).  ZRLE when the client
+;;;; offers it (one persistent zlib stream per client, cram), else TRLE, else Raw: a raw 640x480
+;;;; frame is 1.2 MB, and through DTLS on a Zero the link carries a few KB/s.  An incremental
+;;;; request is answered with the rows that changed since the last update, as one rectangle;
+;;;; nothing changed, the sender looks again in 30 ms.
 ;;;;
 ;;;;   (kiln-zero-rfbs:rfbs-start)            ; 127.0.0.1:5900; :address "0.0.0.0" to open it up
 
@@ -32,6 +34,9 @@
    (mask :initform 0 :accessor cl-mask)              ; pointer buttons last seen
    (prev :initform nil :accessor cl-prev)            ; the frame last sent, rows of bytes
    (frames :initform 0 :accessor cl-frames)
+   (encodings :initform nil :accessor cl-encodings) ; what SetEncodings offered
+   (zs :initform nil :accessor cl-zs)                ; the connection's zlib stream (ZRLE)
+   (bytes :initform 0 :accessor cl-bytes)            ; encoded bytes sent
    (open :initform t :accessor cl-open)))
 
 ;;; ---- the screen ---------------------------------------------------------------------------
@@ -71,11 +76,89 @@
 (defun %u16 (s n) (%u8 s (ash n -8)) (%u8 s n))
 (defun %u32 (s n) (%u16 s (ash n -16)) (%u16 s (logand n #xFFFF)))
 
+;;; ---- ZRLE / TRLE tiles (RFC 6143 7.7.5-6) ---------------------------------------------------
+;;; A tile is solid (subencoding 1), a packed palette of <= 16 colours (2..16), or raw CPIXELs (0).
+;;; CPIXELs are 3 bytes: the low three of the client's 32-bit pixel -- B,G,R natively, R,G,B for a
+;;; client that asked for red at shift 0.  The palette is a 16-slot vector searched linearly: no
+;;; hashing per pixel.
+
+(defun %pack-tiles (rows y0 y1 tile swap)
+  "Rows Y0..Y1-1 as TILE-pixel tiles: (values BUF LEN)."
+  (let* ((rb (length (aref rows 0))) (w (floor rb 4)) (h (- y1 y0))
+         (buf (make-array (+ (* w h 3) (* (ceiling w tile) (ceiling h tile) 68) 16)
+                          :element-type '(unsigned-byte 8)))
+         (pal (make-array 16 :initial-element 0)) (i 0))
+    (labels ((px (row x) (let ((o (* 4 x)))
+                           (logior (aref row o) (ash (aref row (+ o 1)) 8) (ash (aref row (+ o 2)) 16))))
+             (cpix (p)
+               (let ((b (logand p 255)) (g (logand (ash p -8) 255)) (r (ash p -16)))
+                 (if swap
+                     (setf (aref buf i) r (aref buf (+ i 1)) g (aref buf (+ i 2)) b)
+                     (setf (aref buf i) b (aref buf (+ i 1)) g (aref buf (+ i 2)) r))
+                 (incf i 3)))
+             (%slot (p n) (dotimes (k n nil) (when (= (svref pal k) p) (return k)))))
+      (loop for ty from 0 below h by tile for th = (min tile (- h ty)) do
+        (loop for tx from 0 below w by tile for tw = (min tile (- w tx)) do
+          (let ((n 0) (over nil))
+            (block scan
+              (dotimes (ly th)
+                (let ((row (aref rows (+ y0 ty ly))))
+                  (dotimes (lx tw)
+                    (let ((p (px row (+ tx lx))))
+                      (unless (%slot p n)
+                        (when (= n 16) (setf over t) (return-from scan))
+                        (setf (svref pal n) p) (incf n)))))))
+            (cond
+              (over
+               (setf (aref buf i) 0) (incf i)
+               (dotimes (ly th)
+                 (let ((row (aref rows (+ y0 ty ly))))
+                   (dotimes (lx tw) (cpix (px row (+ tx lx)))))))
+              ((= n 1) (setf (aref buf i) 1) (incf i) (cpix (svref pal 0)))
+              (t
+               (let ((bpp (cond ((<= n 2) 1) ((<= n 4) 2) (t 4))))
+                 (setf (aref buf i) n) (incf i)
+                 (dotimes (k n) (cpix (svref pal k)))
+                 (dotimes (ly th)
+                   (let ((row (aref rows (+ y0 ty ly))) (acc 0) (nbits 0))
+                     (dotimes (lx tw)
+                       (setf acc (logior (ash acc bpp) (%slot (px row (+ tx lx)) n)))
+                       (incf nbits bpp)
+                       (when (>= nbits 8)
+                         (decf nbits 8)
+                         (setf (aref buf i) (logand (ash acc (- nbits)) 255)) (incf i)
+                         (setf acc (logand acc (1- (ash 1 nbits))))))
+                     (when (plusp nbits)
+                       (setf (aref buf i) (logand (ash acc (- 8 nbits)) 255)) (incf i))))))))))
+      (values buf i))))
+
+(defun %encoding (c)
+  (let ((e (cl-encodings c)))
+    (cond ((member 16 e) 16) ((member 15 e) 15) (t 0))))
+
 (defun %send-rows (c rows y0 y1)
-  "Rows Y0..Y1-1 as one FramebufferUpdate of one Raw rectangle."
-  (let ((s (cl-stream c)) (w (floor (length (aref rows 0)) 4)))
+  "Rows Y0..Y1-1 as one FramebufferUpdate of one rectangle, in the best encoding the client
+   offered (ZRLE, TRLE, Raw)."
+  (let ((s (cl-stream c)) (w (floor (length (aref rows 0)) 4)) (enc (%encoding c)))
     (%u8 s 0) (%u8 s 0) (%u16 s 1)                         ; FramebufferUpdate, 1 rectangle
-    (%u16 s 0) (%u16 s y0) (%u16 s w) (%u16 s (- y1 y0)) (%u32 s 0)   ; Raw
+    (%u16 s 0) (%u16 s y0) (%u16 s w) (%u16 s (- y1 y0)) (%u32 s enc)
+    (case enc
+      (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (cl-swap c))
+            (let ((zs (or (cl-zs c) (setf (cl-zs c) (cram:make-zstream :max-chain 16)))))
+              (cram:compress zs buf :end len)
+              (let ((z (cram:sync-flush zs)))
+                (%u32 s (length z)) (write-sequence z s)
+                (incf (cl-bytes c) (+ 4 (length z)))))))
+      (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (cl-swap c))
+            (write-sequence buf s :end len)
+            (incf (cl-bytes c) len)))
+      (t (%send-raw-rows c rows y0 y1)))
+    (force-output s)
+    (incf (cl-frames c))))
+
+(defun %send-raw-rows (c rows y0 y1)
+  (let ((s (cl-stream c)))
+    (incf (cl-bytes c) (* (- y1 y0) (length (aref rows 0))))
     (loop for y from y0 below y1
           do (let ((row (aref rows y)))
                (if (cl-swap c)
@@ -83,9 +166,7 @@
                      (loop for i from 0 below (length out) by 4
                            do (rotatef (aref out i) (aref out (+ i 2))))
                      (write-sequence out s))
-                   (write-sequence row s))))
-    (force-output s)
-    (incf (cl-frames c))))
+                   (write-sequence row s))))))
 
 (defun %changed (prev rows)
   "(values first last+1) of the rows of ROWS that differ from PREV, or NIL."
@@ -130,8 +211,13 @@
       (case (read-byte s)
         (0 (let ((pf (%read-n s 19)))                       ; SetPixelFormat
              (setf (cl-swap c) (and (= (aref pf 13) 0) (= (aref pf 15) 16)))))
-        (2 (let* ((h (%read-n s 3)) (n (+ (* 256 (aref h 1)) (aref h 2))))   ; SetEncodings
-             (%read-n s (* 4 n))))
+        (2 (let* ((h (%read-n s 3)) (n (+ (* 256 (aref h 1)) (aref h 2)))   ; SetEncodings
+                  (v (%read-n s (* 4 n))) (encs '()))
+             (dotimes (k n)
+               (let ((e (logior (ash (aref v (* 4 k)) 24) (ash (aref v (+ (* 4 k) 1)) 16)
+                                (ash (aref v (+ (* 4 k) 2)) 8) (aref v (+ (* 4 k) 3)))))
+                 (push (if (>= e #x80000000) (- e #x100000000) e) encs)))
+             (setf (cl-encodings c) (nreverse encs))))
         (3 (let ((r (%read-n s 9)))                         ; FramebufferUpdateRequest
              (setf (cl-want c) (if (zerop (aref r 0)) :full (or (cl-want c) :incremental)))))
         (4 (let ((k (%read-n s 7)))                         ; KeyEvent: down, keysym
@@ -224,4 +310,6 @@
     t))
 
 (defun rfbs-status ()
-  (mapcar (lambda (c) (list :frames (cl-frames c) :swap (cl-swap c) :open (cl-open c))) *clients*))
+  (mapcar (lambda (c) (list :frames (cl-frames c) :bytes (cl-bytes c) :encoding (%encoding c)
+                            :swap (cl-swap c) :open (cl-open c)))
+          *clients*))

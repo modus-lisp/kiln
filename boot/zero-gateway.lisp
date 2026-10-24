@@ -182,6 +182,8 @@
   (%set-by-name "GLASS" "*SEAT-KEY-FILE*" "/glass/seats")
   (%set-by-name "GLASS" "*LOGIN-CODE-FILE*" nil)
   (%set-by-name "WEBRTC-DATA" "*STATS-FILE*" "/tmp/glass-stats.sexp")
+  ;; every stored offer is unwrapped before a fresh one is seen, at seconds each on a Zero
+  (%set-by-name "WEBRTC-DATA" "*OFFER-BACKLOG*" 3)
   (when relays
     (%set-by-name "GLASS" "*NOSTR-RELAYS*" relays)
     (%set-by-name "WEBRTC-DATA" "*RELAYS*" relays))

@@ -2596,6 +2596,8 @@ EOF
   # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
   cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
   cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
+  # ... and the same desk over SB-BSD-SOCKETS, for a gateway on the board itself (loopback)
+  cp "$ROOT/boot/zero-rfbs.lisp" "$sys/src/zero-rfbs.lisp"
   # many TCP connections, UDP, and SB-BSD-SOCKETS over them: modus's bare-metal network layer,
   # taken from the modus checkout (its source of truth) -- the main thread's connections ride
   # zero-ssh's TX/RX rings
@@ -2669,7 +2671,7 @@ EOF
      (:file "zero-bt")
      $media_files
      (:file "zero") (:file "app") (:file "zero-ssh") (:file "zero-rfb")
-     (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets")))))
+     (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets") (:file "zero-rfbs")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)

@@ -107,7 +107,7 @@
 ;;; local --nostr), on nsite.lol under its npub.
 (defparameter *client-npub* "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc")
 
-(defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915)
+(defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915) (rfb t)
                    (login-url-base (format nil "https://~a.nsite.lol/" *client-npub*)))
   "Serve this board's desk to OWNER's phone: identity and admission (glass/nostr, which DMs OWNER
    the login link), then the gateway on a thread of its own.  Returns the gateway thread."
@@ -157,6 +157,15 @@
   (%set-by-name "WEBRTC-DATA" "*GLASS-PORT*" rfb-port)
   (%set-by-name "WEBRTC-DATA" "*ADMISSION-PORT*" admission-port)
   (when login-url-base (%set-by-name "GLASS" "*LOGIN-URL-BASE*" login-url-base))
+  ;; THE DESK, on loopback: kiln-zero's sockets RFB server (zero-rfbs.lisp), unless the caller
+  ;; serves RFB-PORT some other way.  And the desk's idle time is the gateway's: the desk owns
+  ;; the main thread, which is core 0's scheduler (modus net/bare-threads.lisp, CORE 0), so its
+  ;; idle hook yields to the gateway's threads.
+  (when (and rfb (find-package "KILN-ZERO-RFBS"))
+    (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port))
+  (%set-by-name "COMMON-LISP-USER" "*KZ-MAIN-NET*"
+                (let ((y (symbol-function (intern "BT-YIELD" "COMMON-LISP-USER"))))
+                  (lambda () (funcall y))))
   ;; identity, enrolments, admission on ADMISSION-PORT, the DM bot -- and the link to OWNER
   (%call "GLASS" "START-SESSION-NOSTR" :port admission-port)
   (bt:make-thread (lambda () (%call "WEBRTC-DATA" "START-NOSTR-GATEWAY"))

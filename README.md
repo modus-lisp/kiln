@@ -20,7 +20,7 @@ bin/kiln container     # once (first run compiles McCLIM — get a coffee)
 bin/kiln vnc           # desktop on vnc://127.0.0.1:5901
 ```
 
-Both do the same three things — seed five repos as tarballs, let cairn clone the
+Both do the same three things — seed six repos as tarballs, let cairn clone the
 other 33, dump a core with the whole world in it. The only difference is where
 they land.
 
@@ -41,6 +41,33 @@ container system stop && container system start
 ```
 
 Then `bin/kiln container` again; the cached layers make the retry cheap.
+
+**If the build dies at the SBCL download with a certificate error.** The network
+is intercepting TLS, and its CA is not in the image's bundle. Give the build the
+CA, as a PEM file:
+
+```sh
+bin/kiln container --extra-ca=/path/to/intercepting-ca.pem
+```
+
+The CA is trusted by the build's fetches and by the clones, and by nothing else:
+it is passed as a build secret, never written to a layer, and not installed into
+the image's system bundle, so the desktop does not trust it. The build logs the
+fingerprint of every extra certificate it trusted (`@@ trust extra-ca …`). Without
+the flag, the build trusts only the public roots, as it always has.
+
+**If the network has no direct route out, only a proxy.** Name it — an HTTP proxy
+that tunnels with CONNECT, with credentials in the URL if it wants them:
+
+```sh
+bin/kiln container --https-proxy=http://user:pass@proxy.example:3128
+```
+
+It reaches the build as docker's predefined proxy build args, which every step sees
+and which docker keeps out of the image's history; curl uses it, and the clones go
+through it on cl-transport. The build logs `@@ proxy http-connect host:port`, never
+the URL. If the proxy also intercepts TLS, give `--extra-ca` as well. Quicklisp's
+dists are plain HTTP and still go direct.
 
 A kiln is where you fire what you've shaped — the step that turns worked clay
 into something that holds its form. The workspace is the clay; this is the
@@ -76,9 +103,9 @@ TLS 1.3, which runs on [natrium](https://github.com/modus-lisp/natrium)'s
 crypto. So the clone travels `cairn → seal → natrium` and never leaves Lisp.
 **There is no `git` binary in this image.**
 
-cairn can't clone itself into existence, so exactly five repos arrive as
-tarballs first — cairn, seal, conch, cram, natrium, a closure with no
-third-party dependencies at all. From there Lisp takes over and clones the other
+cairn can't clone itself into existence, so exactly six repos arrive as
+tarballs first — cairn, seal, conch, cram, natrium, and cl-transport (for a
+build behind a proxy), a closure with no third-party dependencies at all. From there Lisp takes over and clones the other
 33, including a real checkout of cairn replacing the seed, each pinned to the
 commit in [`repos.lock`](repos.lock):
 
@@ -99,6 +126,25 @@ SBCL_VERSION=` moves it.
 `info/refs` through cairn, one HTTPS GET apiece. No GitHub API, no token, no
 rate limit.
 
+## Working on the whole org
+
+`kiln build` fetches the pinned set to make a core. To *work* on modus-lisp you
+want every repo as a live checkout, beside kiln, and current:
+
+```sh
+bin/kiln sync            # into kiln's parent directory
+bin/kiln sync ~/src      # or anywhere
+bin/kiln sync --locked   # only the repos in repos.lock
+```
+
+A missing repo is cloned. A present one is fetched and fast-forwarded only when
+nothing can be lost: it is on a branch that tracks an upstream, nothing tracked
+is modified, and the upstream contains every local commit. Anything else is
+left as it is and listed with the reason — uncommitted changes, diverged, a
+branch with no upstream. It never resets, stashes, switches a branch or
+deletes. The repo list is the org's, from GitHub's API (`GITHUB_TOKEN` is sent
+if set); `--ssh` clones over SSH, `--jobs=N` sets the parallelism (8).
+
 ## Commands
 
 | | |
@@ -117,6 +163,7 @@ rate limit.
 | `kiln eval '(form)'` | evaluate in the **running** desktop, live |
 | `kiln test` | glass's RFB self-test in a throwaway container |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
+| `kiln sync [DIR]` | every org repo beside kiln: clone what's missing, fast-forward what's safe |
 | `kiln clean` | remove the container and the image |
 
 The engine is auto-detected — Apple's `container` on macOS, else docker, else

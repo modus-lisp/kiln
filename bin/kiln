@@ -10,7 +10,11 @@
 #   kiln config           ssh in with your own key and configure the box (menuconfig)
 #   kiln desktop          the works, here: a window, a terminal, voice and ears
 #   kiln build [DIR]      set THIS machine up: fetch the workspace, dump a core
-#   kiln container        build the container image instead (first run: coffee)
+#   kiln container [--extra-ca=PATH] [--https-proxy=URL]
+#                         build the container image instead (first run: coffee);
+#                         PATH is a PEM of CAs to trust beyond the system bundle,
+#                         for a network that intercepts TLS; URL is an http://
+#                         proxy that tunnels with CONNECT, for one with no direct route
 #   kiln local            run on THIS machine, no container (no isolation either)
 #   kiln bundle [--zip]   pack the sources + a launcher into a movable folder
 #   kiln view             a NATIVE window onto the desktop (glass-sdl)
@@ -30,6 +34,8 @@
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
 #   kiln lock             refresh repos.lock from the org's live refs
+#   kiln sync [DIR]       every org repo beside kiln: clone what is missing,
+#                         fast-forward what is safe to (--locked: only repos.lock's)
 #   kiln clean            remove the container and the image
 #
 # Env: KILN_ENGINE, KILN_IMAGE, KILN_NAME, KILN_DNS, KILN_HEAP,
@@ -254,13 +260,53 @@ exists()  { ensure_engine_up; "$ENGINE" ls --all 2>/dev/null | awk 'NR>1 {print 
 # ------------------------------------------------------------------ actions
 
 cmd_container() {
+  # --extra-ca=PATH: a PEM file of CAs the build trusts IN ADDITION to the system
+  # bundle, for a network that intercepts TLS.  It goes in as the build secret
+  # `extra_ca' -- mounted only into the RUNs that fetch, never written to a layer,
+  # and not installed into the image's system bundle.  Everything else is passed
+  # through to the engine unchanged.
+  local extra_ca="" proxy="" arg
+  local -a pass=()
+  while (( $# )); do
+    arg=$1; shift
+    case $arg in
+      --extra-ca=*) extra_ca=${arg#*=} ;;
+      --extra-ca)   (( $# )) || die "--extra-ca needs a PATH"; extra_ca=$1; shift ;;
+      --https-proxy=*) proxy=${arg#*=} ;;
+      --https-proxy)   (( $# )) || die "--https-proxy needs a URL"; proxy=$1; shift ;;
+      *)            pass+=("$arg") ;;
+    esac
+  done
+  local -a build_opts=()
+  if [[ -n $extra_ca ]]; then
+    [[ -s $extra_ca ]] || die "--extra-ca: $extra_ca is not a non-empty file"
+    grep -q 'BEGIN CERTIFICATE' "$extra_ca" || die "--extra-ca: $extra_ca holds no PEM certificate"
+    extra_ca=$(cd "$(dirname "$extra_ca")" && pwd)/$(basename "$extra_ca")
+    build_opts=(--secret "id=extra_ca,src=$extra_ca")
+    note "extra CA: $extra_ca — this build's fetches trust it; the image's system bundle does not change"
+  fi
+  # --https-proxy=http://[user:pass@]host:port: a proxy that tunnels with CONNECT, for a
+  # network with no direct route out.  It goes in as docker's PREDEFINED proxy build
+  # args, which every RUN sees as its environment and which are kept out of the image's
+  # history -- curl honours them, and clone-org routes the clones through cl-transport.
+  # The URL can hold credentials, so nothing here prints it whole.
+  if [[ -n $proxy ]]; then
+    [[ $proxy =~ ^http://([^/@]*@)?([^/@:]+):([0-9]+)/?$ ]] \
+      || die "--https-proxy: expected http://[user:pass@]host:port (the proxy is spoken to in plain HTTP)"
+    build_opts+=(--build-arg "HTTPS_PROXY=$proxy" --build-arg "https_proxy=$proxy")
+    note "https proxy: ${BASH_REMATCH[2]}:${BASH_REMATCH[3]}${BASH_REMATCH[1]:+ (with credentials, not shown)}"
+  fi
+
   ensure_engine_up
   note "building $IMAGE with $ENGINE (this compiles McCLIM once; expect several minutes)"
   set_dns_args
   if [[ $ENGINE == container ]]; then
-    with_kernel container build ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} -t "$IMAGE" "$@" "$ROOT"
+    with_kernel container build ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} ${build_opts[@]+"${build_opts[@]}"} \
+      -t "$IMAGE" ${pass[@]+"${pass[@]}"} "$ROOT"
   else
-    "$ENGINE" build -t "$IMAGE" "$@" "$ROOT"
+    # BuildKit, because the Dockerfile's RUN --mount needs it, and not every docker
+    # install defaults to it.  podman and buildah take the variable as is.
+    DOCKER_BUILDKIT=1 "$ENGINE" build ${build_opts[@]+"${build_opts[@]}"} -t "$IMAGE" ${pass[@]+"${pass[@]}"} "$ROOT"
   fi
   note "built $IMAGE"
 }
@@ -1555,7 +1601,7 @@ exec_local() {
   [[ -n ${KILN_SSHD:-} ]] && envv+=(KILN_SSHD="$KILN_SSHD")
   [[ -n ${KILN_RESUME:-} ]] && envv+=(KILN_RESUME="$KILN_RESUME")
   local -a cmd=("$KILN_SBCL" --core "$LOCAL_CORE" --control-stack-size 256
-                --dynamic-space-size "${KILN_HEAP:-4096}")
+                --dynamic-space-size "${KILN_HEAP_ASKED:-4096}")
   [[ -n $boot ]] && cmd+=(--load "$boot")
 
   # DETACHED, because a desktop is not a command you are waiting on.  `kiln run' has
@@ -3060,6 +3106,28 @@ USAGE
     -p "${PUBLISH_ON}${port}:${port}" "$IMAGE" modus-rfb "$port"
 }
 
+# ---- the whole org, as a workspace ---------------------------------------------------
+#
+# `kiln build' fetches the PINNED set into a fresh tree to make a core.  This is the other
+# thing a person working on the org needs: every repo it has, as a live checkout beside
+# kiln, brought up to date -- cloned when missing, fast-forwarded when that cannot lose
+# anything, and otherwise left alone with the reason printed.  It never resets, stashes,
+# switches a branch or deletes.  See boot/sync.sh.
+cmd_sync() {
+  local dest="" a
+  local -a flags=()
+  for a in "$@"; do
+    case $a in
+      -*) flags+=("$a") ;;
+      *)  [[ -z $dest ]] || die "sync: one directory, not two"; dest=$a ;;
+    esac
+  done
+  dest=${dest:-$KILN_ROOT}
+  note "syncing github.com/${MODUS_ORG:-modus-lisp} into $dest"
+  MODUS_ORG="${MODUS_ORG:-modus-lisp}" KILN_LOCK="$ROOT/repos.lock" \
+    bash "$ROOT/boot/sync.sh" "$dest" ${flags[@]+"${flags[@]}"}
+}
+
 cmd_lock() {
   # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
   # Lisp git over seal's TLS, one HTTPS GET apiece, no GitHub API and so no token
@@ -3132,6 +3200,7 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   speech) shift; cmd_speech "$@" ;;
   lock)  shift; cmd_lock ;;
+  sync)  shift; cmd_sync "$@" ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try --help)" ;;

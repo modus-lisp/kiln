@@ -66,6 +66,18 @@ sh "$HERE/config-test.sh" || rc=1
 group "a second desktop collides with the first on nothing"
 bash "$HERE/ports-test.sh" || rc=1
 
+group "--extra-ca reaches the engine as a secret, and only then"
+bash "$HERE/extra-ca-args.sh" || rc=1
+
+group "--extra-ca: which bundle a fetch trusts, and what clone-org trusts and reports"
+bash "$HERE/extra-ca-trust.sh" || rc=1
+
+group "--https-proxy: what reaches the engine, and where clone-org sends the clones"
+bash "$HERE/https-proxy.sh" || rc=1
+
+group "kiln sync: what it clones, moves, and leaves alone"
+bash "$HERE/sync-test.sh" || rc=1
+
 group "boot decisions (flags, identity file, payload)"
 if command -v sbcl >/dev/null; then
   sbcl --script "$HERE/one-test.lisp" || rc=1

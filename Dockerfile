@@ -1,7 +1,7 @@
 # kiln — the modus-lisp personal desktop, fired into a container image.
 #
 # The interesting part of this build is that almost none of it is this file.
-# After apt and Quicklisp, the image assembles itself in Common Lisp: five
+# After apt and Quicklisp, the image assembles itself in Common Lisp: six
 # seed repos arrive as tarballs, and then *cairn* — the org's own from-scratch
 # git implementation — clones the other 33 out of GitHub over seal's TLS.
 # There is no `git` binary in this image.
@@ -25,14 +25,28 @@
 # toolchain that produced it.  Bootstrapped by Debian's own sbcl, which is what
 # it is good for.
 ARG SBCL_VERSION=2.5.6
+# The tarball is pinned by hash, not only fetched over TLS: TLS says who served
+# the bytes, and a build that trusts an intercepting CA (--extra-ca) needs the
+# bytes checked on their own.  To re-pin after changing SBCL_VERSION:
+#     sha256sum sbcl-<version>.tar.gz   (from the release tag's archive URL)
+ARG SBCL_SHA256=eaab9f76f003a996b3833eab1f7a21db6acfe792118c741c400249a4139fa37d
 
 FROM debian:trixie-slim AS sbcl
 ARG SBCL_VERSION
+ARG SBCL_SHA256
+COPY boot/ca.sh /kiln/boot/ca.sh
 RUN apt-get update && apt-get install -y --no-install-recommends \
         sbcl curl ca-certificates build-essential zlib1g-dev libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL "https://github.com/sbcl/sbcl/archive/refs/tags/sbcl-${SBCL_VERSION}.tar.gz" \
-      | tar -xz \
+# To a file, not down a pipe: `curl | tar' reports tar's status, and the hash
+# check needs the file anyway.
+RUN --mount=type=secret,id=extra_ca,required=false \
+    . /kiln/boot/ca.sh \
+ && export CURL_CA_BUNDLE="$(kiln_ca)" \
+ && curl -fsSL -o /tmp/sbcl.tar.gz "https://github.com/sbcl/sbcl/archive/refs/tags/sbcl-${SBCL_VERSION}.tar.gz" \
+ && echo "${SBCL_SHA256}  /tmp/sbcl.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/sbcl.tar.gz \
+ && rm -f /tmp/sbcl.tar.gz /tmp/kiln-ca.pem \
  && cd "sbcl-sbcl-${SBCL_VERSION}" \
  && sh make.sh --fancy --prefix=/usr/local \
  && INSTALL_ROOT=/usr/local sh install.sh \
@@ -41,6 +55,11 @@ RUN curl -fsSL "https://github.com/sbcl/sbcl/archive/refs/tags/sbcl-${SBCL_VERSI
 # ---- stage 2: the desktop -------------------------------------------------
 
 FROM debian:trixie-slim
+
+# quicklisp.lisp, pinned like the SBCL tarball above.  It is Quicklisp's own
+# bootstrap, and Quicklisp revises it occasionally: when it changes, this build
+# stops at the hash check, and the new value is whatever the bootstrap now is.
+ARG QUICKLISP_SHA256=4a7a5c2aebe0716417047854267397e24a44d0cce096127411e9ce9ccfeb2c17
 
 LABEL org.opencontainers.image.title="kiln" \
       org.opencontainers.image.description="The modus-lisp desktop: a Common Lisp personal computer, on SBCL, in a container." \
@@ -63,6 +82,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # The compiler from stage 1, without the toolchain that built it.
 COPY --from=sbcl /usr/local/bin/sbcl /usr/local/bin/sbcl
 COPY --from=sbcl /usr/local/lib/sbcl /usr/local/lib/sbcl
+# The CA helper every network RUN below sources; boot/ is copied in full later,
+# and this is the same file.
+COPY boot/ca.sh /kiln/boot/ca.sh
 
 # No `sbcl` package here on purpose — /usr/local/bin/sbcl is the one we want,
 # and Debian's would only shadow it depending on PATH order.  curl fetches
@@ -90,17 +112,27 @@ RUN mkdir -p /etc/common-lisp/source-registry.conf.d \
 # Quicklisp, and the third-party half of the desktop (McCLIM and friends).
 # Above repos.lock on purpose: this is the slowest layer in the build and it has
 # nothing to do with which commit any modus-lisp repo is pinned to.
-RUN curl -fsSL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp \
+RUN --mount=type=secret,id=extra_ca,required=false \
+    . /kiln/boot/ca.sh \
+ && export CURL_CA_BUNDLE="$(kiln_ca)" \
+ && curl -fsSL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp \
+ && echo "${QUICKLISP_SHA256}  /tmp/quicklisp.lisp" | sha256sum -c - \
  && sbcl --non-interactive --disable-debugger \
          --load /tmp/quicklisp.lisp \
          --eval '(quicklisp-quickstart:install :path "/opt/quicklisp/")' \
- && rm /tmp/quicklisp.lisp
+ && rm -f /tmp/quicklisp.lisp /tmp/kiln-ca.pem
 
 # --dynamic-space-size is a RUNTIME option and SBCL rejects it once toplevel
-# options have started, so it has to come first.
-RUN sbcl --dynamic-space-size 4096 --non-interactive --disable-debugger \
+# options have started, so it has to come first.  Quicklisp's dists are served
+# over plain http, so the bundle matters here only for anything Quicklisp fetches
+# over https -- and it fetches through curl, so CURL_CA_BUNDLE reaches it.
+RUN --mount=type=secret,id=extra_ca,required=false \
+    . /kiln/boot/ca.sh \
+ && export CURL_CA_BUNDLE="$(kiln_ca)" \
+ && sbcl --dynamic-space-size 4096 --non-interactive --disable-debugger \
          --load /opt/quicklisp/setup.lisp \
-         --eval '(handler-bind ((warning (function muffle-warning))) (ql:quickload (list :mcclim :mcclim-render :clim-examples :clim-listener :chipz)))'
+         --eval '(handler-bind ((warning (function muffle-warning))) (ql:quickload (list :mcclim :mcclim-render :clim-examples :clim-listener :chipz)))' \
+ && rm -f /tmp/kiln-ca.pem
 
 # Make Quicklisp present for a bare `sbcl`, not just for scripts that load
 # setup.lisp themselves.  glass's own run-tests.sh (which `kiln test` runs
@@ -122,9 +154,9 @@ COPY repos.lock ./
 COPY boot/seed.sh boot/
 
 # The seed: cairn + seal + conch + cram + natrium, as tarballs, because cairn
-# cannot clone itself into existence.  Five repos with no third-party
-# dependencies at all.
-RUN sh boot/seed.sh
+# cannot clone itself into existence, plus cl-transport for a build behind an
+# HTTPS_PROXY.  Six repos with no third-party dependencies at all.
+RUN --mount=type=secret,id=extra_ca,required=false sh boot/seed.sh
 
 # And then Lisp takes over.  cairn clones all 38 repos — including a real
 # checkout of cairn itself, replacing the seed, which is deleted in this same
@@ -134,12 +166,21 @@ COPY boot/clone-org.lisp boot/
 # resolves deltas, and the biggest repos here (weft carries test vectors) have
 # outgrown SBCL's default heap.  Four clones run at once, so the ceiling is per
 # job and they share it.
-RUN sbcl --dynamic-space-size 4096 --script boot/clone-org.lisp \
+#
+# The clones travel seal, not curl, so the extra CA reaches them as KILN_EXTRA_CA
+# (see clone-org.lisp INSTALL-TRUST), and only when the build was given one.
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -s /run/secrets/extra_ca ]; then export KILN_EXTRA_CA=/run/secrets/extra_ca; fi \
+ && sbcl --dynamic-space-size 4096 --script boot/clone-org.lisp \
  && rm -rf "$KILN_SEED"
 
 # Load the world and dump it, so `kiln run` starts in about a second.
 COPY boot/build.lisp boot/
-RUN sbcl --dynamic-space-size 4096 --script boot/build.lisp
+RUN --mount=type=secret,id=extra_ca,required=false \
+    . /kiln/boot/ca.sh \
+ && export CURL_CA_BUNDLE="$(kiln_ca)" \
+ && sbcl --dynamic-space-size 4096 --script boot/build.lisp \
+ && rm -f /tmp/kiln-ca.pem
 
 # THE MODUS CLI — modus-lisp's own Lisp, hosted, as an ordinary ELF beside the
 # SBCL core.  A second Lisp in the image is deliberate: it is the one this

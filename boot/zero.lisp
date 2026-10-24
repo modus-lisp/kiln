@@ -730,9 +730,13 @@
 ;;; how far it got.  The board is single-threaded: when the app is wedged, serial is the only
 ;;; voice it has.
 (defvar *kz-said* 0)
+;;; Bumped whenever the desk draws on the screen: an RFB server (zero-rfbs.lisp) compares the
+;;; scanout only when this moved, instead of copying and comparing the whole screen every poll.
+(defvar *kz-damage* 0)
 (defun %kz-say (s) (write-string-serial s) (write-char-serial 10))
 
 (defun %kiln-sys (n a b c &optional (d 0))
+  (when (member n '(1002 1005 1007)) (incf *kz-damage*))
   (let ((bit (case n (1001 1) (1002 2) (1004 4) (1005 8) (t 0))))
     (when (and (plusp bit) (zerop (logand *kz-said* bit)))
       (setf *kz-said* (logior *kz-said* bit))

@@ -177,21 +177,37 @@
         (setf y1 (1+ y))))
     (and y0 (values y0 y1))))
 
+(defun %damage ()
+  "The desk's draw counter (kiln-zero *KZ-DAMAGE*), or NIL without a desk."
+  (and (boundp 'cl-user::*kz-damage*) (symbol-value 'cl-user::*kz-damage*)))
+
 (defun %sender (c)
-  (loop while (cl-open c)
-        do (let ((want (cl-want c)))
-             (if (null want)
-                 (sleep 0.03)
-                 (let ((rows (%grab (cl-prev c))))
-                   (multiple-value-bind (y0 y1)
-                       (if (or (eq want :full) (null (cl-prev c)))
-                           (values 0 (length rows))
-                           (%changed (cl-prev c) rows))
-                     (if y0
-                         (progn (setf (cl-want c) nil)
-                                (%send-rows c rows y0 y1)
-                                (setf (cl-prev c) rows))
-                         (sleep 0.03))))))))
+  ;; AN INCREMENTAL REQUEST ON A STILL SCREEN COSTS NOTHING: the screen is copied and compared
+  ;; only when the desk has drawn since the last look (*KZ-DAMAGE*), or once a second (the text
+  ;; console draws without the desk).  Copying 1.2 MB and comparing 480 rows every 30 ms was a
+  ;; steady load on core 0, which the gateway's threads share.
+  (let ((seen nil) (looked 0))
+    (loop while (cl-open c)
+          do (let ((want (cl-want c)) (dmg (%damage)) (now (get-internal-real-time)))
+               (if (or (null want)
+                       (and (eq want :incremental) (cl-prev c) (eql dmg seen)
+                            (< (- now looked) internal-time-units-per-second)))
+                   (sleep 0.03)
+                   (progn
+                     (setf seen dmg looked now)
+                     (%send-if-changed c want)))))))
+
+(defun %send-if-changed (c want)
+  "Grab the screen; send what changed (all of it for a :FULL request or a first update)."
+  (let ((rows (%grab (cl-prev c))))
+    (multiple-value-bind (y0 y1)
+        (if (or (eq want :full) (null (cl-prev c)))
+            (values 0 (length rows))
+            (%changed (cl-prev c) rows))
+      (when y0
+        (setf (cl-want c) nil)
+        (%send-rows c rows y0 y1)
+        (setf (cl-prev c) rows)))))
 
 ;;; ---- reading ------------------------------------------------------------------------------
 

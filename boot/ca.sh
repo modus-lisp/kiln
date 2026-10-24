@@ -20,12 +20,24 @@
 
 # KILN_EXTRA_CA_SECRET moves the secret's path, for t/extra-ca-trust.sh; in a build it is
 # always the mount point.
+#
+# The public roots are wherever this system keeps them: Debian's path in the
+# image, /etc/ssl/cert.pem when seed.sh runs on a Mac for `kiln build'.
+kiln_system_ca() {
+  for f in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem /etc/pki/tls/certs/ca-bundle.crt; do
+    [ -s "$f" ] && { echo "$f"; return; }
+  done
+  echo "kiln: no system CA bundle found" >&2
+  return 1
+}
+
 kiln_ca() {
   secret=${KILN_EXTRA_CA_SECRET:-/run/secrets/extra_ca}
+  system=$(kiln_system_ca) || return 1
   if [ -s "$secret" ]; then
-    cat /etc/ssl/certs/ca-certificates.crt "$secret" > /tmp/kiln-ca.pem
+    cat "$system" "$secret" > /tmp/kiln-ca.pem
     echo /tmp/kiln-ca.pem
   else
-    echo /etc/ssl/certs/ca-certificates.crt
+    echo "$system"
   fi
 }

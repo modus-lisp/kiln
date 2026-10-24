@@ -149,6 +149,13 @@
 (defun hex (bytes)
   (format nil "~{~(~2,'0x~)~}" (coerce bytes 'list)))
 
+(defun system-ca-bundle ()
+  "The public roots, wherever this system keeps them: Debian's path in the image,
+/etc/ssl/cert.pem on a Mac."
+  (or (find-if #'probe-file '("/etc/ssl/certs/ca-certificates.crt" "/etc/ssl/cert.pem"
+                              "/etc/pki/tls/certs/ca-bundle.crt"))
+      (error "kiln: no system CA bundle found")))
+
 (defun install-trust ()
   (if (null *extra-ca*)
       (say "kiln: trust: system roots only~%")
@@ -156,7 +163,7 @@
                      (unless (probe-file *extra-ca*)
                        (error "KILN_EXTRA_CA=~a does not exist" *extra-ca*))
                      (uiop:read-file-string *extra-ca*)))
-            (system (uiop:read-file-string "/etc/ssl/certs/ca-certificates.crt")))
+            (system (uiop:read-file-string (system-ca-bundle))))
         (let ((ders (seal:pem-certificates extra)))
           (unless ders (error "KILN_EXTRA_CA=~a holds no certificates" *extra-ca*))
           (dolist (der ders)

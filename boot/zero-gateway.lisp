@@ -65,9 +65,22 @@
           ((symbol-value cab) t)
           (t (%call "COMMON-LISP-USER" "CABINET-MOUNT-DEVICE"
                     (%call "COMMON-LISP-USER" "CABINET-RAW-DISK" base bytes) :format t)
-             (dolist (d '("/glass" "/tmp"))
+             (dolist (d '("/glass" "/tmp" "/etc/ssl/certs"))
                (%call "CABINET" "MAKE-DIRECTORIES" (symbol-value cab) d))
              t))))
+
+;;; THE CA BUNDLE.  seal verifies a relay's certificate against the system's roots, and a board
+;;; has no /etc/ssl: kiln puts the build machine's bundle in the core (ca-bundle.lisp, generated)
+;;; and START writes it where seal looks first.
+(defvar *ca-bundle* nil "PEM text of the roots TLS trusts, or NIL.")
+
+(defun %install-ca-bundle ()
+  (let ((path (first (symbol-value (or (find-symbol "*SYSTEM-CA-BUNDLES*" "SEAL")
+                                       (error "zero-gateway: no seal in this image"))))))
+    (when (and *ca-bundle* (not (probe-file path)))
+      (with-open-file (s path :direction :output :if-does-not-exist :create)
+        (write-string *ca-bundle* s)))
+    (probe-file path)))
 
 ;;; THE NETWORK UNDER QEMU.  NET-UP (kiln-zero-ssh) finds the hub's RTL8153 behind the Zero's hub;
 ;;; QEMU raspi3b's usb-net is a plain CDC-ECM device on the root hub, which the kernel's own probe
@@ -90,12 +103,21 @@
   (%set-by-name "COMMON-LISP-USER" "*BARE-DNS-SERVERS*" (list dns))
   t)
 
+;;; Where a link sends the phone: the published client kiln's gateway serves too (bin/kiln
+;;; local --nostr), on nsite.lol under its npub.
+(defparameter *client-npub* "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc")
+
 (defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915)
-                   login-url-base)
+                   (login-url-base (format nil "https://~a.nsite.lol/" *client-npub*)))
   "Serve this board's desk to OWNER's phone: identity and admission (glass/nostr, which DMs OWNER
    the login link), then the gateway on a thread of its own.  Returns the gateway thread."
   (unless (and (stringp secret) (= (length secret) 64))
     (error "zero-gateway: SECRET must be the box's 64-hex nostr secret"))
+  ;; THE DATE: no RTC, so the board's clock starts at 1900 -- a login code would expire as it
+  ;; was minted and a relay drops an event dated 1900.  SNTP over the board's UDP.
+  (when (< (get-universal-time) 3786825600)          ; before 2020: never set
+    (unless (%call "COMMON-LISP-USER" "BARE-SET-CLOCK")
+      (error "zero-gateway: the board does not know the date and SNTP did not answer")))
   (setenv "NOSTR_SEC" secret)
   (setenv "GLASS_NOSTR_SEC" secret)
   (when owner
@@ -119,6 +141,8 @@
   ;; the stores, on a cabinet: without one, glass's first OPEN halts the core
   (unless (mount-ram-cabinet)
     (error "zero-gateway: no cabinet filesystem in this image (kiln's zero-cabinet)"))
+  (unless (%install-ca-bundle)
+    (error "zero-gateway: no CA bundle, so no relay's TLS certificate can be checked"))
   ;; glass/nostr and the gateway read these when they LOADED, which for a core was build time
   (%set-by-name "GLASS" "*BOX-SECRET*" secret)
   (%set-by-name "GLASS" "*ENROLMENT-FILE*" "/glass/devices")

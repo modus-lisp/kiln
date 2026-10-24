@@ -2837,7 +2837,14 @@ EOF
       if [[ " $order " == *" glass-webrtc/nostr-lean "* ]]; then
         local gg="$w/tars/zero-gateway"; mkdir -p "$gg"
         cp "$ROOT/boot/zero-gateway.lisp" "$gg/zero-gateway.lisp"
-        printf '%s\n' '(asdf:defsystem :zero-gateway :components ((:file "zero-gateway")))' > "$gg/zero-gateway.asd"
+        # THE ROOTS A RELAY'S CERTIFICATE CHAINS TO: a board has no /etc/ssl, and seal verifies
+        # (it refuses every wss:// relay without them).  This machine's bundle, as a string in
+        # the core; ZERO-GATEWAY:START writes it where seal looks, on the RAM cabinet.
+        local cab=${KILN_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}
+        [[ -s $cab ]] || die "kiln zero: no CA bundle at $cab (KILN_CA_BUNDLE names one)"
+        grep -q '["\\]' "$cab" && die "kiln zero: $cab has a quote or backslash; it cannot be a Lisp string as is"
+        { printf '(in-package #:zero-gateway)\n(setf *ca-bundle* "'; cat "$cab"; printf '")\n'; } > "$gg/ca-bundle.lisp"
+        printf '%s\n' '(asdf:defsystem :zero-gateway :serial t :components ((:file "zero-gateway") (:file "ca-bundle")))' > "$gg/zero-gateway.asd"
         (cd "$w/tars" && tar cf zero-gateway.tar zero-gateway)
         order+=" zero-gateway"
       fi

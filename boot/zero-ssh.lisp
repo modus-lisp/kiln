@@ -350,7 +350,12 @@
 (defvar *tx-idx* (make-array 3 :initial-element 0) "head, tail, dropped")
 
 (defun %main-with-usb-thread-p ()
-  (and *usb-executor* (cl-user::%mvm-on-main-thread-p)))
+  "Whether this thread must leave the controller to the USB thread: there is one, and this is not
+   it.  Not only the main thread: with core-0 threads (modus net/bare-threads.lisp) the gateway's
+   threads send and receive too, and on core 0 a thread that read the NIC itself raced the USB
+   thread's reads -- the controller is one device.  The USB thread is the executor on core 1
+   (KZ-USB-START); nothing else is placed there."
+  (and *usb-executor* (/= (cl-user::%bt-core-id) 1)))
 
 (defun %tx-drain ()
   "On the USB thread: send every frame the main thread has queued, oldest first."

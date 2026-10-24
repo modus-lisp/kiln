@@ -2846,7 +2846,20 @@ EOF
         [[ -s $cab ]] || die "kiln zero: no CA bundle at $cab (KILN_CA_BUNDLE names one)"
         grep -q '["\\]' "$cab" && die "kiln zero: $cab has a quote or backslash; it cannot be a Lisp string as is"
         { printf '(in-package #:zero-gateway)\n(setf *ca-bundle* "'; cat "$cab"; printf '")\n'; } > "$gg/ca-bundle.lisp"
-        printf '%s\n' '(asdf:defsystem :zero-gateway :serial t :components ((:file "zero-gateway") (:file "ca-bundle")))' > "$gg/zero-gateway.asd"
+        # THE CLIENT ITSELF: the published shell asks the box for the rest of itself on data
+        # channel 104 (glass-webrtc payload-channel.lisp), and a board has no disk to serve it
+        # from.  The built payload kiln local serves ($KILN_ETC/payload.js, tools/mksplit.lisp),
+        # as base64 in the core; ZERO-GATEWAY:START puts it on the cabinet and turns the channel on.
+        local pay=${KILN_PAYLOAD:-$HOME/.kiln/payload.js} gcomp='(:file "zero-gateway") (:file "ca-bundle")'
+        if [[ -s $pay ]]; then
+          { printf '(in-package #:zero-gateway)\n(setf *payload-js-b64* "'; base64 -w0 "$pay"; printf '")\n'
+            if [[ -s $pay.gz ]]; then printf '(setf *payload-gz-b64* "'; base64 -w0 "$pay.gz"; printf '")\n'; fi
+          } > "$gg/payload.lisp"
+          gcomp+=' (:file "payload")'
+        else
+          note "zero: no client payload at $pay (KILN_PAYLOAD names one): the board will not serve the shell"
+        fi
+        printf '%s\n' "(asdf:defsystem :zero-gateway :serial t :components ($gcomp))" > "$gg/zero-gateway.asd"
         (cd "$w/tars" && tar cf zero-gateway.tar zero-gateway)
         order+=" zero-gateway"
       fi

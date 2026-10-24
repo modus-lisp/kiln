@@ -82,6 +82,26 @@
         (write-string *ca-bundle* s)))
     (probe-file path)))
 
+;;; THE CLIENT.  The published shell asks the box for the rest of itself on data channel 104;
+;;; kiln puts the built payload (and its gzip) in the core as base64 (payload.lisp, generated) and
+;;; START writes them to the cabinet and points the gateway's payload channel at them.
+(defvar *payload-js-b64* nil)
+(defvar *payload-gz-b64* nil)
+
+(defun %write-bytes (path bytes)
+  (with-open-file (s path :direction :output :element-type '(unsigned-byte 8)
+                          :if-exists :supersede :if-does-not-exist :create)
+    (write-sequence bytes s)))
+
+(defun %install-payload ()
+  "T when the client payload is on the cabinet and the gateway will serve it."
+  (when *payload-js-b64*
+    (flet ((bytes (b64) (%call "CL-BASE64" "BASE64-STRING-TO-USB8-ARRAY" b64)))
+      (%write-bytes "/glass/payload.js" (bytes *payload-js-b64*))
+      (when *payload-gz-b64* (%write-bytes "/glass/payload.js.gz" (bytes *payload-gz-b64*))))
+    (%set-by-name "WEBRTC-DATA" "*PAYLOAD-FILE*" "/glass/payload.js")
+    (%set-by-name "WEBRTC-DATA" "*PAYLOAD-CHANNEL-ENABLED*" t)))
+
 ;;; THE NETWORK UNDER QEMU.  NET-UP (kiln-zero-ssh) finds the hub's RTL8153 behind the Zero's hub;
 ;;; QEMU raspi3b's usb-net is a plain CDC-ECM device on the root hub, which the kernel's own probe
 ;;; binds.  The HID scan is switched off first: it re-addresses ports, and QEMU aborts on a transfer
@@ -101,6 +121,12 @@
     (error "zero-gateway: no ARP reply from the gateway"))
   (%set-by-name "KILN-ZERO-SSH" "*NET-UP*" t)
   (%set-by-name "COMMON-LISP-USER" "*BARE-DNS-SERVERS*" (list dns))
+  ;; THE USB THREAD, as on the board: core 1 drains the NIC into a ring all the time.  Without it
+  ;; every reader is on core 0, and while a sender there encrypts, QEMU drops what arrives -- a
+  ;; WebRTC session saw 1 SACK of the hundreds sent, and stalled at the congestion window.
+  (when (%call "COMMON-LISP-USER" "KZ-USB-START")
+    (%set-by-name "COMMON-LISP-USER" "*KZ-NET-SERVICE*"
+                  (symbol-function (find-symbol "%NET-SERVICE" "KILN-ZERO-SSH"))))
   t)
 
 ;;; Where a link sends the phone: the published client kiln's gateway serves too (bin/kiln
@@ -134,15 +160,22 @@
     (let* ((p1 (position #\Space turn)) (p2 (and p1 (position #\Space turn :start (1+ p1)))))
       (when p2
         (setenv "TURN_ICE" turn)
-        (setenv "TURN_SERVER" (subseq turn 0 p1))
+        ;; host:port, no scheme -- what the gateway's TURN client parses (kiln: ${_t[0]#turn:})
+        (setenv "TURN_SERVER" (let ((srv (subseq turn 0 p1)))
+                                (if (and (> (length srv) 5) (string-equal "turn:" srv :end2 5))
+                                    (subseq srv 5) srv)))
         (setenv "TURN_USER" (subseq turn (1+ p1) p2))
         (setenv "TURN_PASS" (subseq turn (1+ p2)))
-        (%set-by-name "GLASS" "*TURN-ICE*" turn))))
+        ;; glass's link carries (SERVER USER PASS), the server with its turn: scheme -- the
+        ;; browser uses it as the ICE server's URL, as kiln local sets it
+        (%set-by-name "GLASS" "*TURN-ICE*"
+                      (list (subseq turn 0 p1) (subseq turn (1+ p1) p2) (subseq turn (1+ p2)))))))
   ;; the stores, on a cabinet: without one, glass's first OPEN halts the core
   (unless (mount-ram-cabinet)
     (error "zero-gateway: no cabinet filesystem in this image (kiln's zero-cabinet)"))
   (unless (%install-ca-bundle)
     (error "zero-gateway: no CA bundle, so no relay's TLS certificate can be checked"))
+  (%install-payload)
   ;; glass/nostr and the gateway read these when they LOADED, which for a core was build time
   (%set-by-name "GLASS" "*BOX-SECRET*" secret)
   (%set-by-name "GLASS" "*ENROLMENT-FILE*" "/glass/devices")

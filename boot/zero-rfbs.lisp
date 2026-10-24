@@ -31,6 +31,8 @@
   ((stream :initarg :stream :reader cl-stream)
    (want :initform nil :accessor cl-want)            ; NIL, :incremental or :full
    (swap :initform nil :accessor cl-swap)            ; client wants red at shift 0
+   (bpp :initform 32 :accessor cl-bpp)               ; the client's pixel format: 32, or 16 ...
+   (shifts :initform '(16 8 0) :accessor cl-shifts)  ; ... red green blue shifts (16 bpp: 0 5 10)
    (mask :initform 0 :accessor cl-mask)              ; pointer buttons last seen
    (prev :initform nil :accessor cl-prev)            ; the frame last sent, rows of bytes
    (frames :initform 0 :accessor cl-frames)
@@ -82,20 +84,25 @@
 ;;; client that asked for red at shift 0.  The palette is a 16-slot vector searched linearly: no
 ;;; hashing per pixel.
 
-(defun %pack-tiles (rows y0 y1 tile swap)
-  "Rows Y0..Y1-1 as TILE-pixel tiles: (values BUF LEN)."
+(defun %pack-tiles (rows y0 y1 tile fmt)
+  "Rows Y0..Y1-1 as TILE-pixel tiles: (values BUF LEN).  FMT is the CPIXEL: :BGR or :RGB (3
+   bytes), or the (RED GREEN BLUE) shifts of a 16-bit 5:5:5 pixel (2 bytes, little-endian)."
   (let* ((rb (length (aref rows 0))) (w (floor rb 4)) (h (- y1 y0))
-         (buf (make-array (+ (* w h 3) (* (ceiling w tile) (ceiling h tile) 68) 16)
+         (buf (make-array (+ (* w h 3) (* (ceiling w tile) (ceiling h tile) 52) 16)
                           :element-type '(unsigned-byte 8)))
          (pal (make-array 16 :initial-element 0)) (i 0))
     (labels ((px (row x) (let ((o (* 4 x)))
                            (logior (aref row o) (ash (aref row (+ o 1)) 8) (ash (aref row (+ o 2)) 16))))
              (cpix (p)
                (let ((b (logand p 255)) (g (logand (ash p -8) 255)) (r (ash p -16)))
-                 (if swap
-                     (setf (aref buf i) r (aref buf (+ i 1)) g (aref buf (+ i 2)) b)
-                     (setf (aref buf i) b (aref buf (+ i 1)) g (aref buf (+ i 2)) r))
-                 (incf i 3)))
+                 (cond ((eq fmt :bgr)
+                        (setf (aref buf i) b (aref buf (+ i 1)) g (aref buf (+ i 2)) r) (incf i 3))
+                       ((eq fmt :rgb)
+                        (setf (aref buf i) r (aref buf (+ i 1)) g (aref buf (+ i 2)) b) (incf i 3))
+                       (t (let ((v (logior (ash (ash r -3) (first fmt)) (ash (ash g -3) (second fmt))
+                                           (ash (ash b -3) (third fmt)))))
+                            (setf (aref buf i) (logand v 255) (aref buf (+ i 1)) (ash v -8))
+                            (incf i 2))))))
              (%slot (p n) (dotimes (k n nil) (when (= (svref pal k) p) (return k)))))
       (loop for ty from 0 below h by tile for th = (min tile (- h ty)) do
         (loop for tx from 0 below w by tile for tw = (min tile (- w tx)) do
@@ -132,6 +139,12 @@
                        (setf (aref buf i) (logand (ash acc (- 8 nbits)) 255)) (incf i))))))))))
       (values buf i))))
 
+(defun %cpixel-format (c)
+  "The CPIXEL a tile carries for client C.  At 32 bpp glass's B,G,R -- what glass's own server
+   sends and what the shell's noVNC reads, whatever shifts it asked for; at 16 bpp the client's
+   5:5:5 layout."
+  (if (= (cl-bpp c) 16) (cl-shifts c) :bgr))
+
 (defun %encoding (c)
   (let ((e (cl-encodings c)))
     (cond ((member 16 e) 16) ((member 15 e) 15) (t 0))))
@@ -143,13 +156,13 @@
     (%u8 s 0) (%u8 s 0) (%u16 s 1)                         ; FramebufferUpdate, 1 rectangle
     (%u16 s 0) (%u16 s y0) (%u16 s w) (%u16 s (- y1 y0)) (%u32 s enc)
     (case enc
-      (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (cl-swap c))
+      (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (%cpixel-format c))
             (let ((zs (or (cl-zs c) (setf (cl-zs c) (cram:make-zstream :max-chain 16)))))
               (cram:compress zs buf :end len)
               (let ((z (cram:sync-flush zs)))
                 (%u32 s (length z)) (write-sequence z s)
                 (incf (cl-bytes c) (+ 4 (length z)))))))
-      (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (cl-swap c))
+      (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (%cpixel-format c))
             (write-sequence buf s :end len)
             (incf (cl-bytes c) len)))
       (t (%send-raw-rows c rows y0 y1)))
@@ -161,12 +174,23 @@
     (incf (cl-bytes c) (* (- y1 y0) (length (aref rows 0))))
     (loop for y from y0 below y1
           do (let ((row (aref rows y)))
-               (if (cl-swap c)
+               (cond
+                 ((= (cl-bpp c) 16)                         ; 5:5:5, little-endian
+                  (let* ((sh (cl-shifts c)) (n (floor (length row) 4))
+                         (out (make-array (* 2 n) :element-type '(unsigned-byte 8))))
+                    (dotimes (k n)
+                      (let* ((o (* 4 k))
+                             (v (logior (ash (ash (aref row (+ o 2)) -3) (first sh))
+                                        (ash (ash (aref row (+ o 1)) -3) (second sh))
+                                        (ash (ash (aref row o) -3) (third sh)))))
+                        (setf (aref out (* 2 k)) (logand v 255) (aref out (1+ (* 2 k))) (ash v -8))))
+                    (write-sequence out s)))
+                 ((cl-swap c)
                    (let ((out (copy-seq row)))
                      (loop for i from 0 below (length out) by 4
                            do (rotatef (aref out i) (aref out (+ i 2))))
-                     (write-sequence out s))
-                   (write-sequence row s))))))
+                     (write-sequence out s)))
+                 (t (write-sequence row s)))))))
 
 (defun %changed (prev rows)
   "(values first last+1) of the rows of ROWS that differ from PREV, or NIL."
@@ -226,7 +250,9 @@
     (loop
       (case (read-byte s)
         (0 (let ((pf (%read-n s 19)))                       ; SetPixelFormat
-             (setf (cl-swap c) (and (= (aref pf 13) 0) (= (aref pf 15) 16)))))
+             (setf (cl-swap c) (and (= (aref pf 13) 0) (= (aref pf 15) 16))
+                   (cl-bpp c) (if (= (aref pf 3) 16) 16 32)
+                   (cl-shifts c) (list (aref pf 13) (aref pf 14) (aref pf 15)))))
         (2 (let* ((h (%read-n s 3)) (n (+ (* 256 (aref h 1)) (aref h 2)))   ; SetEncodings
                   (v (%read-n s (* 4 n))) (encs '()))
              (dotimes (k n)

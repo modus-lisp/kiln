@@ -2406,6 +2406,44 @@ zero_firmware() {
   echo "$d"
 }
 
+# nip05_npub NAME@DOMAIN -- the npub a NIP-05 address names, from https://DOMAIN/.well-known/
+# nostr.json?name=NAME.  Resolved HERE, on the build machine, once: the card carries the npub, so
+# the board needs no HTTPS lookup at boot and a domain that changes its mind later does not
+# change who the card serves.  Fails (exit 1, a reason on stderr) rather than guessing.
+nip05_npub() {
+  python3 - "$1" <<'PY'
+import json, re, sys, urllib.request, urllib.parse
+addr = sys.argv[1].strip()
+m = re.fullmatch(r"([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", addr)
+if not m: sys.exit("not a NIP-05 address (name@domain): %s" % addr)
+name, dom = m.group(1).lower(), m.group(2).lower()
+url = "https://%s/.well-known/nostr.json?name=%s" % (dom, urllib.parse.quote(name))
+try:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "kiln"}), timeout=15) as r:
+        d = json.load(r)
+except Exception as e:
+    sys.exit("cannot fetch %s: %s" % (url, e))
+h = (d.get("names") or {}).get(name)
+if not (isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h)):
+    sys.exit("%s names no 64-hex key for %r" % (url, name))
+CH = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+def polymod(v):
+    g = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]; c = 1
+    for x in v:
+        b = c >> 25; c = (c & 0x1ffffff) << 5 ^ x
+        for i in range(5): c ^= g[i] if (b >> i) & 1 else 0
+    return c
+acc = bits = 0; out = []
+for b in bytes.fromhex(h):
+    acc = (acc << 8) | b; bits += 8
+    while bits >= 5: bits -= 5; out.append((acc >> bits) & 31)
+if bits: out.append((acc << (5 - bits)) & 31)
+hrp = "npub"; v = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+pm = polymod(v + out + [0] * 6) ^ 1
+print("npub1" + "".join(CH[x] for x in out + [(pm >> 5 * (5 - i)) & 31 for i in range(6)]))
+PY
+}
+
 # zero_sd_image BOARD.img.gz CORE OUT.img -- a card the Zero boots from on its own:
 # one FAT32 partition holding the firmware, the kernel, the core and a config.txt.
 # The GPU firmware loads kernel8.img at 0x80000 and, through `initramfs`, the core
@@ -2457,7 +2495,7 @@ TXT
     # OWNER (sent the login link at boot) and TURN with commas for spaces (a bootarg holds none)
     local args="NSEC=$nsec"
     if [[ -n $owner ]]; then
-      [[ $owner == npub1* ]] || die "kiln zero: --owner wants an npub1... key"
+      [[ $owner == npub1* ]] || die "kiln zero: --owner wants an npub1... key or a NIP-05 name@domain"
       args+=" OWNER=$owner"
       if [[ -z ${TURN_ICE:-} && -f $ROOT/boot/config.sh ]]; then
         # shellcheck source=boot/config.sh
@@ -2535,7 +2573,7 @@ cmd_zero() {
       --with)  withs+=("${val:?--with=SYSTEM}") ;;
       --sd-image) sd_image=${val:?--sd-image=OUT.img} ;;
       --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
-      --owner) owner=${val:?--owner=NPUB} ;;
+      --owner) owner=${val:?--owner=NPUB or NAME@DOMAIN} ;;
       --threads) threads=1 ;;
       --jit-skip) IFS=, read -ra jit_skip <<< "${val:?--jit-skip=PKG,PKG,...}" ;;
       -h|--help)
@@ -2582,6 +2620,10 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     core slot 96 MB: a desk+network core compiled whole fills both, so
                     e.g. --jit-skip=GLASS,SCRIBE,CRAM,BROTLI-PURE,KILN-ZERO-RFB keeps
                     the desk interpreted and the network stack native
+  --owner=WHO       with --sd-image and --nsec-file: a GATEWAY card -- at boot it brings the
+                    network and the nostr gateway up and DMs WHO the login link.  WHO is an
+                    npub1... key or a NIP-05 address (name@domain), which is resolved now, on
+                    this machine, and the card carries the npub it named
   --nsec-file=PATH  with --sd-image: the board's identity -- an nsec1... key, written to the
                     card's cmdline.txt as NSEC=; kiln-zero-ssh derives the board's SSH key
                     from it (with --with=conch), so the key survives reboots
@@ -2592,6 +2634,12 @@ USAGE
     esac
     shift
   done
+  # --owner=NAME@DOMAIN: who that NIP-05 address names, now -- before half an hour of building
+  if [[ $owner == *@* ]]; then
+    local addr=$owner
+    owner=$(nip05_npub "$addr") || die "kiln zero: --owner=$addr: the NIP-05 lookup failed"
+    note "zero: --owner $addr is $owner"
+  fi
   if [[ -n $sd_image ]]; then
     [[ $media == 0 ]] || die "kiln zero: --sd-image does not take --media yet (the clips have nowhere to come from on a standalone card)"
     [[ -z $core && -z $build_core ]] || die "kiln zero: --sd-image builds its own core"

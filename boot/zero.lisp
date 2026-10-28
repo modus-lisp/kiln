@@ -53,6 +53,22 @@
 
 (defvar *kz-hw-cursor* nil)               ; T: the pointer is an HVS plane (the screen thread's)
 
+;;; WHICH ROWS CHANGED, for an RFB server (zero-rfbs.lisp).  Every draw on the scanout stamps the
+;;; rows it touched with a fresh number from *KZ-DAMAGE*, AFTER the pixels are written; the
+;;; server keeps the stamp it last sent per row and sends a row whose stamp moved.  Nothing is
+;;; reset, so a draw racing a send is simply sent on the next look.  Fixnums only: the screen
+;;; thread stamps too, and a thread may store an immediate into this (main's) vector.  Copying and
+;;; comparing a whole 640x480 screen to find the change was ~4 s a look on a QEMU board.
+(defvar *kz-damage* 0)
+;;; T while an RFB client is connected: it draws its own pointer, as RFB clients do, so the desk's
+;;; drawn into the scanout would be a second, lagging one -- and every move would be pixels to send.
+(defvar *kz-pointer-off* nil)
+(defvar *kz-row-gen* (make-array 2048 :initial-element 0))
+(defun %kz-touch (y0 y1)
+  (let ((g (setq *kz-damage* (+ *kz-damage* 1))) (v *kz-row-gen*))
+    (loop for y from (max 0 y0) below (min y1 (length v)) do (setf (svref v y) g))
+    nil))
+
 (defun %zero-pointer-hide ()
   (when *kz-hw-cursor* (return-from %zero-pointer-hide nil))
   (when *zero-under*
@@ -60,11 +76,12 @@
       (dotimes (r 16)
         (dotimes (c 11)
           (when (%zero-on-screen-p (+ x c) (+ y r))
-            (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) (svref saved (+ (* r 11) c)))))))
+            (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) (svref saved (+ (* r 11) c))))))
+      (%kz-touch y (+ y 16)))
     (setf *zero-under* nil)))
 
 (defun %zero-pointer-show ()
-  (when *kz-hw-cursor* (return-from %zero-pointer-show nil))
+  (when (or *kz-hw-cursor* *kz-pointer-off*) (return-from %zero-pointer-show nil))
   (let ((x *zero-px*) (y *zero-py*) (saved *zero-under-pixels*))
     (dotimes (r 16)
       (let ((line (nth r *zero-arrow*)))
@@ -75,7 +92,8 @@
               (case (char line c)
                 (#\2 (setf (mem-ref a :u32) #x000000))
                 (#\1 (setf (mem-ref a :u32) #xffffff))))))))
-    (setf *zero-under-x* x *zero-under-y* y *zero-under* t)))
+    (setf *zero-under-x* x *zero-under-y* y *zero-under* t)
+    (%kz-touch y (+ y 16))))
 
 ;;; --- the USB thread (a board image built with kiln zero --threads) ---------------------------
 ;;;
@@ -728,7 +746,8 @@
         (modus-int::hcon-u64 (+ scr 24) rows)
         (modus-int::hcon-u64 (+ scr 32) (modus-int::hcon-get #x08))
         (modus-int::hcon-u64 (+ scr 40) (* 8 stride))
-        (modus-int::%jit-call code)))
+        (modus-int::%jit-call code)
+        (%kz-touch y0 (+ y0 rows))))
     (%zero-pointer-show)
     0))
 
@@ -766,7 +785,6 @@
 (defvar *kz-said* 0)
 ;;; Bumped whenever the desk draws on the screen: an RFB server (zero-rfbs.lisp) compares the
 ;;; scanout only when this moved, instead of copying and comparing the whole screen every poll.
-(defvar *kz-damage* 0)
 (defun %kz-say (s) (modus-int::write-string-serial s) (write-char-serial 10))
 
 (defun %kiln-sys (n a b c &optional (d 0))
@@ -780,6 +798,7 @@
     (1002 (%kz-on-screen (lambda ()
                            (%zero-pointer-hide)
                            (modus-int::hcon-nfill (modus-int::hcon-get #x04) (* (modus-int::hcon-get #x10) (modus-int::hcon-get #x08)) c)
+                           (%kz-touch 0 (modus-int::hcon-get #x10))
                            (%zero-pointer-show) 0)))
     (1004 (%zero-next-event))
     (1005 (%kz-on-screen (lambda () (%zero-blit a b c d))))

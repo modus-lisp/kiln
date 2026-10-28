@@ -43,6 +43,7 @@
    (timer :initform nil :accessor cl-timer)           ; the sender's tick
    (seen :initform nil :accessor cl-seen)             ; *KZ-DAMAGE* at the last look
    (looked :initform 0 :accessor cl-looked)           ; when that was
+   (sent :initform nil :accessor cl-sent)             ; per row, the desk's stamp last sent
    (want :initform nil :accessor cl-want)            ; NIL, :incremental or :full
    (swap :initform nil :accessor cl-swap)            ; client wants red at shift 0
    (bpp :initform 32 :accessor cl-bpp)               ; the client's pixel format: 32, or 16 ...
@@ -72,25 +73,36 @@
   "Where byte vector V's elements start (V must not move before the address is used)."
   (+ (modus-int::%gc-word-of v (modus-int::%conv-addr #x100050A0)) 7))
 
-(defun %copy-row (dst src bytes)
-  "BYTES (a multiple of 64) from SRC into byte vector DST, with the console's native copy -- on
-   the screen thread when there is one, which uses the same scratch block for its presents."
-  (let ((scr (and (boundp 'cl-user::*kz-scr*) (symbol-value 'cl-user::*kz-scr*))))
-    (if scr
-        (modus-int::bt-call scr (lambda () (modus-int::hcon-ncopy (%data-address dst) src bytes) 0))
-        (modus-int::hcon-ncopy (%data-address dst) src bytes))))
+(defun %copy-rows (rows y0 y1)
+  "Scanout rows Y0..Y1-1 into the byte vectors of ROWS, with the console's native copy -- in ONE
+   call on the screen thread when there is one (it uses the same scratch block for its presents).
+   A call per row was 480 cross-core round trips a frame."
+  (multiple-value-bind (fb pitch w) (%geometry)
+    (let* ((rb (* 4 w))
+           (fn (lambda ()
+                 (loop for y from y0 below y1
+                       do (modus-int::hcon-ncopy (%data-address (aref rows y)) (+ fb (* y pitch)) rb))
+                 0))
+           (scr (and (boundp 'cl-user::*kz-scr*) (symbol-value 'cl-user::*kz-scr*))))
+      (if scr (modus-int::bt-call scr fn) (funcall fn))
+      rows)))
+
+(defun %row-buffers (prev)
+  "PREV when it is a vector of row buffers the screen's shape, else a fresh one."
+  (multiple-value-bind (fb pitch w h) (%geometry)
+    (declare (ignore fb pitch))
+    (let ((rb (* 4 w)))
+      (if (and prev (= (length prev) h) (= (length (aref prev 0)) rb))
+          prev
+          (let ((v (make-array h)))
+            (dotimes (y h v)
+              (setf (aref v y) (make-array rb :element-type '(unsigned-byte 8)))))))))
 
 (defun %grab (prev)
-  "The screen now, as a vector of row byte vectors (PREV's reused when it is the right shape)."
-  (multiple-value-bind (fb pitch w h) (%geometry)
-    (let* ((rb (* 4 w))
-           (rows (if (and prev (= (length prev) h) (= (length (aref prev 0)) rb))
-                     (map 'vector #'copy-seq prev)
-                     (let ((v (make-array h)))
-                       (dotimes (y h v)
-                         (setf (aref v y) (make-array rb :element-type '(unsigned-byte 8))))))))
-      (dotimes (y h rows)
-        (%copy-row (aref rows y) (+ fb (* y pitch)) rb)))))
+  "The screen now, as a fresh vector of row byte vectors (PREV is left as it was)."
+  (let ((rows (%row-buffers nil)))
+    (declare (ignorable prev))
+    (%copy-rows rows 0 (length rows))))
 
 ;;; ---- writing ------------------------------------------------------------------------------
 ;;; Into the client's OUT buffer; %FLUSH sends it in one write.
@@ -248,11 +260,38 @@
   "The desk's draw counter (kiln-zero *KZ-DAMAGE*), or NIL without a desk."
   (and (boundp 'cl-user::*kz-damage*) (symbol-value 'cl-user::*kz-damage*)))
 
+(defun %row-gen ()
+  "The desk's per-row draw stamps (kiln-zero *KZ-ROW-GEN*), or NIL without a desk."
+  (and (boundp 'cl-user::*kz-row-gen*) (symbol-value 'cl-user::*kz-row-gen*)))
+
 (defun %sender-tick (c)
-  ;; AN INCREMENTAL REQUEST ON A STILL SCREEN COSTS NOTHING: the screen is copied and compared
-  ;; only when the desk has drawn since the last look (*KZ-DAMAGE*), or once a second (the text
-  ;; console draws without the desk).  Copying 1.2 MB and comparing 480 rows every 30 ms was a
-  ;; steady load on core 0, which the gateway shares.
+  (if (%row-gen) (%send-stamped c) (%sender-tick-compare c)))
+
+(defun %send-stamped (c)
+  "Send the rows the desk has drawn since they were last sent: no screen copy, no compare, to
+   find them -- only the band that changed is copied.  A full request sends everything."
+  (let ((want (cl-want c)) (gens (%row-gen)))
+    (when want
+      (multiple-value-bind (fb pitch w h) (%geometry)
+        (declare (ignore fb pitch w))
+        (let ((sent (or (cl-sent c) (setf (cl-sent c) (make-array h :initial-element -1))))
+              (y0 nil) (y1 nil))
+          (if (or (eq want :full) (null (cl-prev c)))
+              (setf y0 0 y1 h)
+              (dotimes (y h)
+                (unless (eql (svref gens y) (svref sent y))
+                  (unless y0 (setf y0 y))
+                  (setf y1 (1+ y)))))
+          (when y0
+            ;; the stamps are recorded BEFORE the copy: a draw landing after this is resent
+            (loop for y from y0 below y1 do (setf (svref sent y) (svref gens y)))
+            (let ((rows (%copy-rows (%row-buffers (cl-prev c)) y0 y1)))
+              (setf (cl-prev c) rows (cl-want c) nil)
+              (%send-rows c rows y0 y1))))))))
+
+(defun %sender-tick-compare (c)
+  ;; WITHOUT A DESK (the text console): the screen is copied and compared
+  ;; once a second.
   (let ((want (cl-want c)) (dmg (%damage)) (now (get-internal-real-time)))
     (unless (or (null want)
                 (and (eq want :incremental) (cl-prev c) (eql dmg (cl-seen c))
@@ -311,7 +350,8 @@
   (case (cl-phase c)
     (:version (%u8 c 1) (%u8 c 1) (setf (cl-phase c) :security))      ; one security type: None
     (:security (%u32 c 0) (setf (cl-phase c) :init))                  ; SecurityResult OK
-    (:init (%server-init c) (setf (cl-phase c) :normal))              ; ClientInit -> ServerInit
+    (:init (%server-init c) (setf (cl-phase c) :normal)               ; ClientInit -> ServerInit
+     (%desk-pointer nil))
     (t
      (case (aref m 0)
        (0 (let ((pf (subseq m 1)))                                    ; SetPixelFormat
@@ -344,6 +384,22 @@
       (%flush c)
       (when eof (%drop c)))))
 
+;;; ---- the desk's pointer ----------------------------------------------------------------
+;;; An RFB client draws its own pointer, so while one is connected the desk draws none into the
+;;; scanout (kiln-zero *KZ-POINTER-OFF*): a second, lagging arrow in the picture, and every move
+;;; of it rows to send.  Back on the HDMI screen when the last client leaves.
+
+(defun %on-screen (fn)
+  (if (fboundp 'cl-user::%kz-on-screen) (cl-user::%kz-on-screen fn) (funcall fn)))
+
+(defun %desk-pointer (on)
+  (when (boundp 'cl-user::*kz-pointer-off*)
+    (setf (symbol-value 'cl-user::*kz-pointer-off*) (not on))
+    (when (and (fboundp 'cl-user::%zero-pointer-hide) (fboundp 'cl-user::%zero-pointer-show))
+      (%on-screen (if on
+                      (lambda () (cl-user::%zero-pointer-show) 0)
+                      (lambda () (cl-user::%zero-pointer-hide) 0))))))
+
 ;;; ---- a client -----------------------------------------------------------------------------
 
 (defun %drop (c)
@@ -353,7 +409,9 @@
     (ignore-errors (%lp "CANCEL" *loop* (cl-timer c)))
     (ignore-errors (%lp "UNWATCH" *loop* (cl-sock c)))
     (ignore-errors (%sk "TCP-CLOSE" (cl-sock c)))
-    (sb-thread:with-mutex (*lock*) (setf *clients* (remove c *clients*)))))
+    (sb-thread:with-mutex (*lock*) (setf *clients* (remove c *clients*)))
+    (unless (find :normal *clients* :key #'cl-phase)
+      (ignore-errors (%desk-pointer t)))))
 
 (defun %guarded (c fn)
   "FN of C, and an error ends C rather than reaching the loop."

@@ -45,6 +45,7 @@
    (looked :initform 0 :accessor cl-looked)           ; when that was
    (sent :initform nil :accessor cl-sent)             ; per row, the desk's stamp last sent
    (want :initform nil :accessor cl-want)            ; NIL, :incremental or :full
+   (ahead :initform 1 :accessor cl-ahead)            ; updates we may send before one is asked for
    (swap :initform nil :accessor cl-swap)            ; client wants red at shift 0
    (bpp :initform 32 :accessor cl-bpp)               ; the client's pixel format: 32, or 16 ...
    (shifts :initform '(16 8 0) :accessor cl-shifts)  ; ... red green blue shifts (16 bpp: 0 5 10)
@@ -270,7 +271,11 @@
 (defun %send-stamped (c)
   "Send the rows the desk has drawn since they were last sent: no screen copy, no compare, to
    find them -- only the band that changed is copied.  A full request sends everything."
-  (let ((want (cl-want c)) (gens (%row-gen)))
+  (let* ((asked (cl-want c)) (gens (%row-gen))
+         ;; ONE UPDATE AHEAD: noVNC asks for the next update only once this one arrives, so
+         ;; waiting for the ask costs a round trip per frame (0.3-0.7 s on cellular).  With a
+         ;; prior frame sent, one more may go unasked; the ask it draws restores the credit.
+         (want (or asked (and (cl-prev c) (> (cl-ahead c) 0) :incremental))))
     (when want
       (multiple-value-bind (fb pitch w h) (%geometry)
         (declare (ignore fb pitch w))
@@ -286,7 +291,8 @@
             ;; the stamps are recorded BEFORE the copy: a draw landing after this is resent
             (loop for y from y0 below y1 do (setf (svref sent y) (svref gens y)))
             (let ((rows (%copy-rows (%row-buffers (cl-prev c)) y0 y1)))
-              (setf (cl-prev c) rows (cl-want c) nil)
+              (if asked (setf (cl-want c) nil) (decf (cl-ahead c)))
+              (setf (cl-prev c) rows)
               (%send-rows c rows y0 y1))))))))
 
 (defun %sender-tick-compare (c)
@@ -362,7 +368,8 @@
                 (loop for k from 4 below (length m) by 4
                       collect (let ((e (%be m k 4)))
                                 (if (>= e #x80000000) (- e #x100000000) e)))))
-       (3 (setf (cl-want c) (if (zerop (aref m 1)) :full (or (cl-want c) :incremental))))
+       (3 (when (cl-want c) (setf (cl-ahead c) (min 1 (1+ (cl-ahead c)))))  ; asked for one sent ahead
+          (setf (cl-want c) (if (zerop (aref m 1)) :full (or (cl-want c) :incremental))))
        (4 (when (= (aref m 1) 1)                                      ; KeyEvent: down, keysym
             (%event (+ (* 4 1099511627776) (%be m 4 4)))))
        (5 (let* ((nb (aref m 1)) (x (%be m 2 2)) (y (%be m 4 2))     ; PointerEvent

@@ -131,11 +131,15 @@
   t)
 
 ;;; Where a link sends the phone: the published client kiln's gateway serves too (bin/kiln
-;;; local --nostr), on nsite.lol under its npub.
+;;; local --nostr), under its npub on an nsite gateway.  The card can name others (NSITE_NPUB=,
+;;; NSITE=), so moving the client is an edit to cmdline.txt, not a new core.  nsite.run, not
+;;; nsite.lol: nsite.lol caches a page for an hour and has gone on serving the previous client
+;;; after a publish (glass src/site.lisp says the same).
 (defparameter *client-npub* "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc")
+(defparameter *client-nsite* "nsite.run")
 
 (defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915) (rfb t)
-                   (login-url-base (format nil "https://~a.nsite.lol/" *client-npub*)))
+                   (login-url-base (format nil "https://~a.~a/" *client-npub* *client-nsite*)))
   "Serve this board's desk to OWNER's phone: identity and admission (glass/nostr, which DMs OWNER
    the login link), then the gateway on a thread of its own.  Returns the gateway thread."
   (unless (and (stringp secret) (= (length secret) 64))
@@ -215,6 +219,8 @@
 ;;;   TURN=turn:host:port,user,pass   (commas: a bootarg cannot hold a space)
 ;;;   RELAYS=wss://a,wss://b          optional
 ;;;   NET=qemu                        QEMU's usb-net instead of the hub's RTL8153
+;;;   NSITE_NPUB=npub1...             optional: the site serving the client the link opens
+;;;   NSITE=nsite.run                 optional: the nsite gateway the link names
 
 (defun %bootarg (name)
   (let ((v (ignore-errors (%call "MODUS-INT" "%CLI-GETENV" name))))
@@ -237,6 +243,8 @@
               (net-up-qemu)
               (%call "KILN-ZERO-SSH" "NET-UP"))
           (let ((turn (%bootarg "TURN")) (relays (%bootarg "RELAYS")))
+            (setf *client-npub* (or (%bootarg "NSITE_NPUB") *client-npub*)
+                  *client-nsite* (or (%bootarg "NSITE") *client-nsite*))
             (start :secret (%call "CL-NOSTR.UTIL" "BYTES->HEX"
                                   (%call "CL-NOSTR.BECH32" "NSEC-DECODE" nsec))
                    :owner owner

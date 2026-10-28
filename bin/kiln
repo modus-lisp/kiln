@@ -2529,7 +2529,7 @@ zero_prereqs() {
 # runs *CORE-RESTART-HOOK* (the desk).  gpu_mem=32 gives the ARM 480 MiB, the room
 # above 0x18000000 a core needs.  Built with mtools: no root, no loop devices.
 zero_sd_image() {
-  local img=$1 core=$2 out=$3 nsec_file=${4:-} owner=${5:-} fw w
+  local img=$1 core=$2 out=$3 nsec_file=${4:-} owner=${5:-} site=${6:-} nsite=${7:-} fw w
   fw=$(zero_firmware)
   w=$(mktemp -d)
   gunzip -c "$img" > "$w/kernel8.img" || die "kiln zero: cannot unzip $img"
@@ -2593,6 +2593,8 @@ TXT
         KILN_ETC="${KILN_ETC:-$HOME/.kiln}" . "$ROOT/boot/config.sh"; load_config
       fi
       [[ -n ${TURN_ICE:-} ]] && args+=" TURN=$(printf '%s' "$TURN_ICE" | tr ' ' ',')"
+      [[ -n $site ]] && args+=" NSITE_NPUB=$site"
+      [[ -n $nsite ]] && args+=" NSITE=$nsite"
     fi
   fi
   [[ -n ${ZERO_RELAYS:-} ]] && args+=" RELAYS=$ZERO_RELAYS"
@@ -2647,7 +2649,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp site="" nsite=""
   local -a relays=() ssh_keys=()
   local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
@@ -2668,6 +2670,8 @@ cmd_zero() {
       --relay) relays+=("${val:?--relay=wss://...}") ;;
       --ssh-key) ssh_keys+=("${val:?--ssh-key=FILE.pub or a public key line}") ;;
       --net) net=${val:?--net=dhcp|static|off} ;;
+      --site)  site=${val:?--site=NPUB} ;;
+      --nsite) nsite=${val:?--nsite=HOST} ;;
       --threads) threads=1 ;;
       --no-threads) threads=0 ;;
       --workspace) workspace=1 ;;
@@ -2735,6 +2739,10 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
   --nsec-file=PATH  the board's identity -- an nsec1... key, written to the card's cmdline.txt
                     as NSEC=: its nostr key, and the seed of its SSH host key, so both survive
                     reboots.  Without it both are fresh at every boot
+  --site=NPUB       with --owner on a gateway card: the nsite serving the client the login link
+                    opens (the card's NSITE_NPUB=; default the published glass client)
+  --nsite=HOST      with --owner on a gateway card: the nsite gateway the link names (NSITE=;
+                    default nsite.run).  Both are bootargs: edit cmdline.txt to change them
 Output in $KILN_STATE/zero.
 USAGE
         return 0 ;;
@@ -2748,6 +2756,8 @@ USAGE
     owner=$(nip05_npub "$addr") || die "kiln zero: --owner=$addr: the NIP-05 lookup failed"
     note "zero: --owner $addr is $owner"
   fi
+  [[ -z $site || $site == npub1* ]] || die "kiln zero: --site wants an npub1... key"
+  [[ -z $site$nsite || -n $owner ]] || die "kiln zero: --site/--nsite need --owner (they name where its login link goes)"
   if [[ -n $sd_image ]]; then
     [[ $media == 0 ]] || die "kiln zero: --sd-image does not take --media yet (the clips have nowhere to come from on a standalone card)"
     [[ -z $build_core ]] || die "kiln zero: --sd-image builds its own core (or takes one with --core)"
@@ -3210,7 +3220,7 @@ EOF
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
     if [[ -n $sd_image ]]; then
-      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file" "$owner"
+      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file" "$owner" "$site" "$nsite"
       return 0
     fi
     note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"

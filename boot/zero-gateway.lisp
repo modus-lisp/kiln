@@ -208,11 +208,13 @@
   ;; environment, so glass's GLASS_LOGIN_TTL cannot say this.
   (when login-ttl (%set-by-name "GLASS" "*LOGIN-TTL*" login-ttl))
   ;; THE DESK, on loopback: kiln-zero's sockets RFB server (zero-rfbs.lisp), unless the caller
-  ;; serves RFB-PORT some other way.  And the desk's idle time is the gateway's: the desk owns
-  ;; the main thread, which is core 0's scheduler (modus net/bare-threads.lisp, CORE 0), so its
-  ;; idle hook yields to the gateway's threads.
+  ;; serves RFB-PORT some other way -- on the gateway's own event loop, so the desk costs no
+  ;; thread per session (modus never gives an exited thread's slot back).  And the desk's idle
+  ;; time is the gateway's: the desk owns the main thread, which is core 0's scheduler (modus
+  ;; net/bare-threads.lisp, CORE 0), so its idle hook yields to the gateway's threads.
   (when (and rfb (find-package "KILN-ZERO-RFBS"))
-    (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port))
+    (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port
+           :loop (%call "WEBRTC-DATA" "ENSURE-NET-LOOP")))
   (%set-by-name "COMMON-LISP-USER" "*KZ-MAIN-NET*"
                 (let ((y (symbol-function (intern "BT-YIELD" "MODUS-INT"))))
                   (lambda () (funcall y))))

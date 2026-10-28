@@ -151,9 +151,10 @@
       (error "zero-gateway: the board does not know the date and SNTP did not answer")))
   (setenv "NOSTR_SEC" secret)
   (setenv "GLASS_NOSTR_SEC" secret)
+  ;; OWNER may connect -- and is sent the link, but NOT through GLASS_LINK_TO: that DMs as the
+  ;; session starts, a minute before the gateway listens.  The gateway's ready hook sends it below.
   (when owner
-    (setenv "GLASS_NOSTR_ALLOW" owner)
-    (setenv "GLASS_LINK_TO" owner))
+    (setenv "GLASS_NOSTR_ALLOW" owner))
   (when relays (setenv "NOSTR_RELAYS" (format nil "~{~a~^,~}" relays)))
   ;; the desk and the admission service are in THIS image: loopback TCP
   (setenv "GLASS_HOST" "127.0.0.1")
@@ -208,6 +209,11 @@
                   (lambda () (funcall y))))
   ;; identity, enrolments, admission on ADMISSION-PORT, the DM bot -- and the link to OWNER
   (%call "GLASS" "START-SESSION-NOSTR" :port admission-port)
+  ;; THE LINK, WHEN IT WORKS: once the gateway has its relays' stored offers behind it, so the
+  ;; owner's first tap is answered rather than queued behind a backlog or sent to nobody.
+  (when owner
+    (%set-by-name "WEBRTC-DATA" "*ON-READY*"
+                  (lambda () (%call "GLASS" "SEND-LOGIN-LINK" owner))))
   (bt:make-thread (lambda () (%call "WEBRTC-DATA" "START-NOSTR-GATEWAY"))
                   :name "nostr-gateway"))
 

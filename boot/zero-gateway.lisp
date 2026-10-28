@@ -143,6 +143,7 @@
 (defparameter *client-nsite* "nsite.run")
 
 (defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915) (rfb t)
+                   (login-ttl 3600)
                    (login-url-base (format nil "https://~a.~a/" *client-npub* *client-nsite*)))
   "Serve this board's desk to OWNER's phone: identity and admission (glass/nostr, which DMs OWNER
    the login link), then the gateway on a thread of its own.  Returns the gateway thread."
@@ -202,6 +203,10 @@
   (%set-by-name "WEBRTC-DATA" "*GLASS-PORT*" rfb-port)
   (%set-by-name "WEBRTC-DATA" "*ADMISSION-PORT*" admission-port)
   (when login-url-base (%set-by-name "GLASS" "*LOGIN-URL-BASE*" login-url-base))
+  ;; An hour, not glass's 10 minutes: the link is DM'd at boot and the board is slow to come up,
+  ;; so a phone that opens it a little later should not find it already dead.  The board has no
+  ;; environment, so glass's GLASS_LOGIN_TTL cannot say this.
+  (when login-ttl (%set-by-name "GLASS" "*LOGIN-TTL*" login-ttl))
   ;; THE DESK, on loopback: kiln-zero's sockets RFB server (zero-rfbs.lisp), unless the caller
   ;; serves RFB-PORT some other way.  And the desk's idle time is the gateway's: the desk owns
   ;; the main thread, which is core 0's scheduler (modus net/bare-threads.lisp, CORE 0), so its

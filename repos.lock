@@ -13,7 +13,7 @@ cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
 cl-nostr        master  000a352acc3972e60ca4c41ddf9efcb000be63eb
 cl-sev-snp      main    b89b0cb20c0943bdbcbe9a34e2994ef57e5ba992
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
-cl-transport    master  e249c8e495f9ef84bdb1dc9a5d3995a2fb3e83ba
+cl-transport    zero-ice  6cf9bc4356e106ac2b3fb03d6398dd5a208071db
 conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
 cram            master  f8aad087400ea1a9e8a26c4d0e1290bf9490cca1
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc
@@ -36,7 +36,7 @@ reed            master  32e1c5ea0896c4e62ab86d28652797e3ad87aa86
 reel            master  d53f12880e06233079003a73b6762eabaab94caa
 scribe          master  c704340e100641a0206b482831876b25bd3aaaa3
 seal            master  105e18c82f14fee87be4e45a80788f5bc411633d
-secp256k1-fast  master  854c6ea434410d0a29e8a90ba199cfaeb70b11cb
+secp256k1-fast  master  320c1710f1cf4b7dcc6acf4448d7aa5de994cbbf
 shuttle         master  51b368afd8d5eea7cc7b76792ae463ea0d88a759
 skep            main    8c035963bc0875d56413fb8b16053e65273f5e58
 spool           master  5901b9040bae42695153f5b82a54a75646a95dab

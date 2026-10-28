@@ -88,6 +88,7 @@
 ;;; START writes them to the cabinet and points the gateway's payload channel at them.
 (defvar *payload-js-b64* nil)
 (defvar *payload-gz-b64* nil)
+(defvar *payload-installed* nil "T once the payload is on the cabinet (the base64 is then dropped).")
 
 (defun %write-bytes (path bytes)
   (with-open-file (s path :direction :output :element-type '(unsigned-byte 8)
@@ -100,6 +101,9 @@
     (flet ((bytes (b64) (%call "CL-BASE64" "BASE64-STRING-TO-USB8-ARRAY" b64)))
       (%write-bytes "/glass/payload.js" (bytes *payload-js-b64*))
       (when *payload-gz-b64* (%write-bytes "/glass/payload.js.gz" (bytes *payload-gz-b64*))))
+    ;; On the cabinet now; the base64 (~660 KB) only crowded region 0 from here on.
+    (setf *payload-js-b64* nil *payload-gz-b64* nil *payload-installed* t))
+  (when *payload-installed*                      ; written by this call or an earlier START
     (%set-by-name "WEBRTC-DATA" "*PAYLOAD-FILE*" "/glass/payload.js")
     (%set-by-name "WEBRTC-DATA" "*PAYLOAD-CHANNEL-ENABLED*" t)))
 

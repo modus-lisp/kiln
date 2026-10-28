@@ -51,6 +51,7 @@
    (shifts :initform '(16 8 0) :accessor cl-shifts)  ; ... red green blue shifts (16 bpp: 0 5 10)
    (mask :initform 0 :accessor cl-mask)              ; pointer buttons last seen
    (prev :initform nil :accessor cl-prev)            ; the frame last sent, rows of bytes
+   (scratch :initform nil :accessor cl-scratch)      ; rows being compared against PREV
    (frames :initform 0 :accessor cl-frames)
    (encodings :initform nil :accessor cl-encodings) ; what SetEncodings offered
    (zs :initform nil :accessor cl-zs)                ; the connection's zlib stream (ZRLE)
@@ -73,6 +74,24 @@
 (defun %data-address (v)
   "Where byte vector V's elements start (V must not move before the address is used)."
   (+ (modus-int::%gc-word-of v (modus-int::%conv-addr #x100050A0)) 7))
+
+(defun %row-diff (a b)
+  "(values FIRST LAST+1), the byte range where row buffers A and B differ, or NIL -- four bytes
+   per load.  CL:MISMATCH did this a byte at a time through the generic sequence path and was
+   99% of the sender's time on the board."
+  (let* ((n (floor (length a) 4)) (pa (%data-address a)) (pb (%data-address b)) (lo nil))
+    (dotimes (k n)
+      (unless (eql (cl-user::mem-ref (+ pa (* 4 k)) :u32) (cl-user::mem-ref (+ pb (* 4 k)) :u32))
+        (setf lo k)
+        (return)))
+    (when lo
+      (let ((hi lo))
+        (loop for k from (1- n) above lo
+              do (unless (eql (cl-user::mem-ref (+ pa (* 4 k)) :u32)
+                              (cl-user::mem-ref (+ pb (* 4 k)) :u32))
+                   (setf hi k)
+                   (return)))
+        (values (* 4 lo) (* 4 (1+ hi)))))))
 
 (defun %copy-rows (rows y0 y1)
   "Scanout rows Y0..Y1-1 into the byte vectors of ROWS, with the console's native copy -- in ONE
@@ -141,10 +160,10 @@
 ;;; client that asked for red at shift 0.  The palette is a 16-slot vector searched linearly: no
 ;;; hashing per pixel.
 
-(defun %pack-tiles (rows y0 y1 tile fmt)
-  "Rows Y0..Y1-1 as TILE-pixel tiles: (values BUF LEN).  FMT is the CPIXEL: :BGR or :RGB (3
+(defun %pack-tiles (rows y0 y1 tile fmt &optional (x0 0) x1)
+  "Rows Y0..Y1-1, columns X0..X1-1 (all of them by default), as TILE-pixel tiles: (values BUF LEN).  FMT is the CPIXEL: :BGR or :RGB (3
    bytes), or the (RED GREEN BLUE) shifts of a 16-bit 5:5:5 pixel (2 bytes, little-endian)."
-  (let* ((rb (length (aref rows 0))) (w (floor rb 4)) (h (- y1 y0))
+  (let* ((rb (length (aref rows 0))) (w (- (or x1 (floor rb 4)) x0)) (h (- y1 y0))
          (buf (make-array (+ (* w h 3) (* (ceiling w tile) (ceiling h tile) 52) 16)
                           :element-type '(unsigned-byte 8)))
          (pal (make-array 16 :initial-element 0)) (i 0))
@@ -168,7 +187,7 @@
               (dotimes (ly th)
                 (let ((row (aref rows (+ y0 ty ly))))
                   (dotimes (lx tw)
-                    (let ((p (px row (+ tx lx))))
+                    (let ((p (px row (+ x0 tx lx))))
                       (unless (%slot p n)
                         (when (= n 16) (setf over t) (return-from scan))
                         (setf (svref pal n) p) (incf n)))))))
@@ -177,7 +196,7 @@
                (setf (aref buf i) 0) (incf i)
                (dotimes (ly th)
                  (let ((row (aref rows (+ y0 ty ly))))
-                   (dotimes (lx tw) (cpix (px row (+ tx lx)))))))
+                   (dotimes (lx tw) (cpix (px row (+ x0 tx lx)))))))
               ((= n 1) (setf (aref buf i) 1) (incf i) (cpix (svref pal 0)))
               (t
                (let ((bpp (cond ((<= n 2) 1) ((<= n 4) 2) (t 4))))
@@ -186,7 +205,7 @@
                  (dotimes (ly th)
                    (let ((row (aref rows (+ y0 ty ly))) (acc 0) (nbits 0))
                      (dotimes (lx tw)
-                       (setf acc (logior (ash acc bpp) (%slot (px row (+ tx lx)) n)))
+                       (setf acc (logior (ash acc bpp) (%slot (px row (+ x0 tx lx)) n)))
                        (incf nbits bpp)
                        (when (>= nbits 8)
                          (decf nbits 8)
@@ -206,20 +225,22 @@
   (let ((e (cl-encodings c)))
     (cond ((member 16 e) 16) ((member 15 e) 15) (t 0))))
 
-(defun %send-rows (c rows y0 y1)
-  "Rows Y0..Y1-1 as one FramebufferUpdate of one rectangle, in the best encoding the client
-   offered (ZRLE, TRLE, Raw)."
-  (let ((w (floor (length (aref rows 0)) 4)) (enc (%encoding c)))
+(defun %send-rows (c rows y0 y1 &optional (x0 0) x1)
+  "Rows Y0..Y1-1, columns X0..X1-1 (all by default), as one FramebufferUpdate of one rectangle, in
+   the best encoding the client offered (ZRLE, TRLE, Raw -- Raw always sends whole rows)."
+  (let* ((enc (%encoding c))
+         (x0 (if (member enc '(16 15)) x0 0))
+         (x1 (if (member enc '(16 15)) (or x1 (floor (length (aref rows 0)) 4)) (floor (length (aref rows 0)) 4))))
     (%u8 c 0) (%u8 c 0) (%u16 c 1)                         ; FramebufferUpdate, 1 rectangle
-    (%u16 c 0) (%u16 c y0) (%u16 c w) (%u16 c (- y1 y0)) (%u32 c enc)
+    (%u16 c x0) (%u16 c y0) (%u16 c (- x1 x0)) (%u16 c (- y1 y0)) (%u32 c enc)
     (case enc
-      (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (%cpixel-format c))
+      (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (%cpixel-format c) x0 x1)
             (let ((zs (or (cl-zs c) (setf (cl-zs c) (cram:make-zstream :max-chain 16)))))
               (cram:compress zs buf :end len)
               (let ((z (cram:sync-flush zs)))
                 (%u32 c (length z)) (%put c z)
                 (incf (cl-bytes c) (+ 4 (length z)))))))
-      (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (%cpixel-format c))
+      (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (%cpixel-format c) x0 x1)
             (%put c buf :end len)
             (incf (cl-bytes c) len)))
       (t (%send-raw-rows c rows y0 y1)))
@@ -290,10 +311,31 @@
           (when y0
             ;; the stamps are recorded BEFORE the copy: a draw landing after this is resent
             (loop for y from y0 below y1 do (setf (svref sent y) (svref gens y)))
-            (let ((rows (%copy-rows (%row-buffers (cl-prev c)) y0 y1)))
-              (if asked (setf (cl-want c) nil) (decf (cl-ahead c)))
-              (setf (cl-prev c) rows)
-              (%send-rows c rows y0 y1))))))))
+            (if (or (eq want :full) (null (cl-prev c)))
+                (let ((rows (%copy-rows (%row-buffers (cl-prev c)) y0 y1)))
+                  (if asked (setf (cl-want c) nil) (decf (cl-ahead c)))
+                  (setf (cl-prev c) rows)
+                  (%send-rows c rows y0 y1))
+                ;; A STAMP SAYS A ROW WAS DRAWN, NOT THAT IT CHANGED: the desk repaints rows whose
+                ;; pixels come out the same, and a band of them cost a near-full-frame encode per
+                ;; update on the board.  So copy the band aside, keep only what differs from what
+                ;; this client last got, and send that rectangle.
+                (let* ((prev (cl-prev c))
+                       (scr (setf (cl-scratch c) (%row-buffers (cl-scratch c))))
+                       (cy0 nil) (cy1 nil) (bx0 nil) (bx1 nil))
+                  (%copy-rows scr y0 y1)
+                  (loop for y from y0 below y1
+                        do (let ((a (aref scr y)) (b (aref prev y)))
+                             (multiple-value-bind (m e) (%row-diff a b)
+                               (when m
+                                 (unless cy0 (setf cy0 y))
+                                 (setf cy1 (1+ y)
+                                       bx0 (if bx0 (min bx0 m) m)
+                                       bx1 (if bx1 (max bx1 e) e))
+                                 (replace b a)))))
+                  (when cy0
+                    (if asked (setf (cl-want c) nil) (decf (cl-ahead c)))
+                    (%send-rows c prev cy0 cy1 (floor bx0 4) (ceiling bx1 4)))))))))))
 
 (defun %sender-tick-compare (c)
   ;; WITHOUT A DESK (the text console): the screen is copied and compared

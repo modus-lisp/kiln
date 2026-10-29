@@ -832,6 +832,24 @@
     (1010 1)
     (t 0)))
 
+;;; GENERATIONAL GC (modus docs/generational-gc.md).  The restored core is ~40 MB that
+;;; survives every collection; tenured, it is an OLD space that collections never copy.
+;;; Run once the threads are up: starting them carves the lock arena off region 0, and
+;;; region 0 cannot be carved after it has an old space (the young pair, the old area and
+;;; a major's copy are laid out inside the semispaces as they are at tenure).  The old
+;;; space is then the core plus the gateway's boot state.  The card argument GC=plain
+;;; leaves the board on the plain semispace collector.
+(defun kz-gen-gc-start ()
+  (cond ((not (fboundp 'gc-tenure)) nil)              ; a modus without it
+        ((equal (ignore-errors (%cli-getenv "GC")) "plain") (%kz-say "KZ:gc plain") nil)
+        ((%gc-old-space-p) nil)                         ; already
+        (t (handler-case
+               (let ((r (gc-tenure)))
+                 (%kz-say (format nil "KZ:gc generational, old ~d KB, young 2 x ~d KB"
+                                  (floor (- (second r) (first r)) 1024) (floor (third r) 1024)))
+                 r)
+             (error (e) (%kz-say (format nil "KZ:gc tenure failed: ~a" e)) nil)))))
+
 (defun kiln-zero-main (&key media autoplay (yuv t) frames)
   "The phone app on the Zero's screen, until a character arrives on the serial port.  MEDIA
    opens the media player on the files under /media/ of the mounted cabinet (kiln zero
@@ -843,6 +861,7 @@
   (unless (modus-int::hcon-ready-p) (modus-int::hcon-init))
   (setq *kz-frame-limit* frames)
   (kz-usb-start)                          ; threads: input on core 1 from here on
+  (kz-gen-gc-start)                       ; after the threads' lock arena is carved
   (kz-scr-start (and media yuv))          ; ... and the screen on core 2
   ;; ... and HDMI audio on core 3 -- except for media: there core 3 decodes (and with no mixer
   ;; on the Zero yet, a film plays silent anyway)

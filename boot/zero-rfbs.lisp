@@ -163,14 +163,23 @@
 ;;; client that asked for red at shift 0.  The palette is searched linearly, but only when the
 ;;; pixel differs from the one before it, so a run costs one compare per pixel.
 
+(defvar *tile-buf* nil "%PACK-TILES' output, grown and kept: the caller copies out of it.")
+(defvar *tile-pal* (make-array 127 :initial-element 0))
+
 (defun %pack-tiles (rows y0 y1 tile fmt &optional (x0 0) x1)
   "Rows Y0..Y1-1, columns X0..X1-1 (all of them by default), as TILE-pixel tiles: (values BUF LEN).  FMT is the CPIXEL: :BGR or :RGB (3
-   bytes), or the (RED GREEN BLUE) shifts of a 16-bit 5:5:5 pixel (2 bytes, little-endian)."
+   bytes), or the (RED GREEN BLUE) shifts of a 16-bit 5:5:5 pixel (2 bytes, little-endian).
+   BUF is *TILE-BUF*, reused by the next call (the sender's thread is the only caller): it
+   was a raw-sized vector per update, most of what an update allocated."
   (let* ((rb (length (aref rows 0))) (w (- (or x1 (floor rb 4)) x0)) (h (- y1 y0))
          (cp (if (or (eq fmt :bgr) (eq fmt :rgb)) 3 2))
-         (buf (make-array (+ (* w h cp) (* (ceiling w tile) (ceiling h tile) 52) 16)
-                          :element-type '(unsigned-byte 8)))
-         (pal (make-array 127 :initial-element 0)) (i 0))
+         (need (+ (* w h cp) (* (ceiling w tile) (ceiling h tile) 52) 16))
+         (buf (let ((b *tile-buf*))
+                (if (and b (>= (length b) need))
+                    b
+                    (setf *tile-buf* (make-array (max need (if b (* 2 (length b)) 65536))
+                                                 :element-type '(unsigned-byte 8))))))
+         (pal *tile-pal*) (i 0))
     ;; A pixel is one 32-bit load at the row's data address (taken per row: nothing in a row's
     ;; loop allocates, so the row cannot move under it).  Three AREFs a pixel were most of the
     ;; sender's time on the board.

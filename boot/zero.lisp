@@ -221,7 +221,9 @@
 ;;; collection.  Then the pause lands where nobody is moving anything, and a gesture that
 ;;; follows starts with the whole semispace free.
 
-(defparameter *kz-idle-gc-us* 500000)     ; quiet this long first (internal time units: µs)
+(defparameter *kz-idle-gc-us* 2000000)    ; quiet this long first (internal time units: µs): on a
+                                          ; board serving a phone, a slow drag's input came >0.5 s
+                                          ; apart and a collection landed in the middle of it
 (defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
 (defvar *kz-active-at* 0)
 (defvar *kz-frame-at* 0)

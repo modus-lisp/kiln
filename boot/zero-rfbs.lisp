@@ -11,14 +11,14 @@
 ;;;; the board two of its twelve slots for good.  It now runs on an event loop (cl-transport's,
 ;;;; the gateway's own NET-LOOP when RFBS-START is given it): the listener and each client are
 ;;;; socket watches, the client's messages are parsed from whatever bytes have arrived, and the
-;;;; sender is a 5 ms timer.  Writes do not wait: a loopback write appends to the peer's buffer.
+;;;; sender is a 10 ms timer.  Writes do not wait: a loopback write appends to the peer's buffer.
 ;;;;
 ;;;; RFB 3.8, security None, out of the HDMI scanout buffer (32-bit XRGB, BGRX in memory; swapped
 ;;;; to RGBX when the client asks for red at shift 0, noVNC's default).  ZRLE when the client
 ;;;; offers it (one persistent zlib stream per client, cram), else TRLE, else Raw: a raw 640x480
 ;;;; frame is 1.2 MB, and through DTLS on a Zero the link carries a few KB/s.  An incremental
 ;;;; request is answered with the rows that changed since the last update, as one rectangle;
-;;;; nothing changed, the sender looks again in 5 ms (a look with nothing drawn is one compare).
+;;;; nothing changed, the sender looks again in 10 ms (a look with nothing drawn is one compare).
 ;;;;
 ;;;;   (kiln-zero-rfbs:rfbs-start :loop L)    ; 127.0.0.1:5900; :address "0.0.0.0" to open it up
 
@@ -345,10 +345,14 @@
          ;; prior frame sent, one more may go unasked; the ask it draws restores the credit.
          (want (or asked (and (cl-prev c) (> (cl-ahead c) 0) :incremental))))
     ;; NOTHING DRAWN SINCE THE LAST LOOK: one compare, so the sender can look every few ms.  SEEN
-    ;; is the newest stamp found in the rows, not the counter -- %KZ-TOUCH bumps the counter before
-    ;; it stamps, and a look in between must not mark the rows about to be stamped as seen.
-    (when (and (eq want :incremental) (cl-prev c) (eql (%damage) (cl-seen c)))
-      (setf want nil))
+    ;; is the counter a look found every row stamp caught up with -- or, when the counter was
+    ;; ahead of them all, (COUNTER), and the NEXT look settles it.  The counter runs ahead for
+    ;; two reasons: draws that stamp no row (the board's fill/blit/present calls), and
+    ;; %KZ-TOUCH bumping it before it stamps, from another thread.  The second must not mark the
+    ;; rows about to be stamped as seen; one more look gives that thread its time.
+    (let ((dmg (%damage)) (seen (cl-seen c)))
+      (when (and (eq want :incremental) (cl-prev c) (eql dmg seen))
+        (setf want nil)))
     (when want
       (multiple-value-bind (fb pitch w h) (%geometry)
         (declare (ignore fb pitch w))
@@ -363,7 +367,11 @@
                     (unless (eql g (svref sent y))
                       (unless y0 (setf y0 y))
                       (setf y1 (1+ y)))))
-                (setf (cl-seen c) newest)))
+                (let ((dmg (%damage)) (seen (cl-seen c)))
+                  (setf (cl-seen c)
+                        (cond ((>= newest dmg) dmg)
+                              ((and (consp seen) (eql (car seen) dmg)) dmg)
+                              (t (list dmg)))))))
           (when y0
             ;; the stamps are recorded BEFORE the copy: a draw landing after this is resent
             (loop for y from y0 below y1 do (setf (svref sent y) (svref gens y)))
@@ -534,7 +542,7 @@
           (%lp "WATCH" *loop* ts (lambda (s) (declare (ignore s)) (%guarded c #'%readable))
                :what "rfbs client")
           (setf (cl-timer c)
-                (%lp "EVERY-SECONDS" *loop* 0.005
+                (%lp "EVERY-SECONDS" *loop* 0.01
                      (lambda ()
                        (when (eq (cl-phase c) :normal) (%guarded c #'%sender-tick)))
                      :what "rfbs sender")))))))

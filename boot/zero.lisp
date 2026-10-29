@@ -111,6 +111,16 @@
 (defvar *kz-usb-idle-hook* nil)    ; a function of no arguments, run on the USB thread each round
 (defvar *kz-event-source* nil)     ; a function returning events (the desk's encoding), main thread
 (defvar *kz-main-net* nil)         ; with sockets on the main thread: pump them while the desk idles
+
+(defun %kiln-frame-wait (ms)
+  "The rest of the app's frame, MS ms.  With sockets on this thread it is spent turning them: an
+   RFB update encoded while the frame waits is one not encoded on top of it (hosted, that was 14
+   of every 46 ms between updates)."
+  (if *kz-main-net*
+      (let ((until (+ (get-internal-real-time) (* ms 1000))))
+        (loop while (< (get-internal-real-time) until)
+              do (unless (funcall *kz-main-net*) (%sleep-ms 1))))
+      (%sleep-ms ms)))
 (defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
@@ -301,6 +311,15 @@
     (when *kz-just-drew*
       (setf *kz-just-drew* nil *kz-frame-at* now)
       (unless *zero-events* (%zero-poll)))
+    ;; A DUE FRAME LOOKS AT INPUT FIRST.  Input that arrived while the app slept out its frame
+    ;; goes before the draw, or the frame draws nothing new and the move waits a whole second
+    ;; frame: with the RFB client dragging at 60 Hz, every other tick drew nothing and updates came
+    ;; 34 ms apart.  Bounded: past a second frame's worth, the frame goes first whatever is queued.
+    (when (and (> (- now *kz-frame-at*) 16000) (< (- now *kz-frame-at*) 32000))
+      (unless *zero-events* (%zero-poll))
+      (when *zero-events*
+        (setf *kz-active-at* now)
+        (return-from %zero-next-event (pop *zero-events*))))
     (if (> (- now *kz-frame-at*) 16000)
         (progn (setf *kz-frame-at* now *kz-just-drew* t)
                (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))

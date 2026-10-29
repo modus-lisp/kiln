@@ -11,14 +11,14 @@
 ;;;; the board two of its twelve slots for good.  It now runs on an event loop (cl-transport's,
 ;;;; the gateway's own NET-LOOP when RFBS-START is given it): the listener and each client are
 ;;;; socket watches, the client's messages are parsed from whatever bytes have arrived, and the
-;;;; sender is a 30 ms timer.  Writes do not wait: a loopback write appends to the peer's buffer.
+;;;; sender is a 5 ms timer.  Writes do not wait: a loopback write appends to the peer's buffer.
 ;;;;
 ;;;; RFB 3.8, security None, out of the HDMI scanout buffer (32-bit XRGB, BGRX in memory; swapped
 ;;;; to RGBX when the client asks for red at shift 0, noVNC's default).  ZRLE when the client
 ;;;; offers it (one persistent zlib stream per client, cram), else TRLE, else Raw: a raw 640x480
 ;;;; frame is 1.2 MB, and through DTLS on a Zero the link carries a few KB/s.  An incremental
 ;;;; request is answered with the rows that changed since the last update, as one rectangle;
-;;;; nothing changed, the sender looks again in 30 ms.
+;;;; nothing changed, the sender looks again in 5 ms (a look with nothing drawn is one compare).
 ;;;;
 ;;;;   (kiln-zero-rfbs:rfbs-start :loop L)    ; 127.0.0.1:5900; :address "0.0.0.0" to open it up
 
@@ -155,18 +155,22 @@
         (unless (eq r :ok) (error "rfbs: client went away"))))))
 
 ;;; ---- ZRLE / TRLE tiles (RFC 6143 7.7.5-6) ---------------------------------------------------
-;;; A tile is solid (subencoding 1), a packed palette of <= 16 colours (2..16), or raw CPIXELs (0).
+;;; Each tile goes out in whichever subencoding is smallest: solid (1), packed palette of <= 16
+;;; colours (2..16), plain RLE (128), palette RLE of <= 127 colours (130..255), or raw CPIXELs (0).
+;;; Flat UI is mostly runs, and a tile with a gradient or text antialiasing still RLEs to a fraction
+;;; of its raw size -- which matters because deflate's time goes with the bytes it is fed.
 ;;; CPIXELs are 3 bytes: the low three of the client's 32-bit pixel -- B,G,R natively, R,G,B for a
-;;; client that asked for red at shift 0.  The palette is a 16-slot vector searched linearly: no
-;;; hashing per pixel.
+;;; client that asked for red at shift 0.  The palette is searched linearly, but only when the
+;;; pixel differs from the one before it, so a run costs one compare per pixel.
 
 (defun %pack-tiles (rows y0 y1 tile fmt &optional (x0 0) x1)
   "Rows Y0..Y1-1, columns X0..X1-1 (all of them by default), as TILE-pixel tiles: (values BUF LEN).  FMT is the CPIXEL: :BGR or :RGB (3
    bytes), or the (RED GREEN BLUE) shifts of a 16-bit 5:5:5 pixel (2 bytes, little-endian)."
   (let* ((rb (length (aref rows 0))) (w (- (or x1 (floor rb 4)) x0)) (h (- y1 y0))
-         (buf (make-array (+ (* w h 3) (* (ceiling w tile) (ceiling h tile) 52) 16)
+         (cp (if (or (eq fmt :bgr) (eq fmt :rgb)) 3 2))
+         (buf (make-array (+ (* w h cp) (* (ceiling w tile) (ceiling h tile) 52) 16)
                           :element-type '(unsigned-byte 8)))
-         (pal (make-array 16 :initial-element 0)) (i 0))
+         (pal (make-array 127 :initial-element 0)) (i 0))
     (labels ((px (row x) (let ((o (* 4 x)))
                            (logior (aref row o) (ash (aref row (+ o 1)) 8) (ash (aref row (+ o 2)) 16))))
              (cpix (p)
@@ -179,40 +183,83 @@
                                            (ash (ash b -3) (third fmt)))))
                             (setf (aref buf i) (logand v 255) (aref buf (+ i 1)) (ash v -8))
                             (incf i 2))))))
-             (%slot (p n) (dotimes (k n nil) (when (= (svref pal k) p) (return k)))))
+             (%slot (p n) (dotimes (k n nil) (when (= (svref pal k) p) (return k))))
+             (run-length (len)                      ; LEN-1 as 255s and a final byte < 255
+               (let ((v (1- len)))
+                 (loop while (>= v 255) do (setf (aref buf i) 255) (incf i) (decf v 255))
+                 (setf (aref buf i) v) (incf i))))
       (loop for ty from 0 below h by tile for th = (min tile (- h ty)) do
         (loop for tx from 0 below w by tile for tw = (min tile (- w tx)) do
-          (let ((n 0) (over nil))
-            (block scan
+          ;; Pass 1: the palette (up to 127), the runs, and what each RLE form would cost.
+          (let ((n 0) (over nil) (runs 0) (plen 0) (rlb 0) (prev -1) (len 0))
+            (flet ((close-run ()
+                     (let ((lb (1+ (floor (1- len) 255))))
+                       (incf runs) (incf plen lb) (incf rlb (if (= len 1) 1 (1+ lb))))))
               (dotimes (ly th)
                 (let ((row (aref rows (+ y0 ty ly))))
                   (dotimes (lx tw)
                     (let ((p (px row (+ x0 tx lx))))
-                      (unless (%slot p n)
-                        (when (= n 16) (setf over t) (return-from scan))
-                        (setf (svref pal n) p) (incf n)))))))
-            (cond
-              (over
-               (setf (aref buf i) 0) (incf i)
-               (dotimes (ly th)
-                 (let ((row (aref rows (+ y0 ty ly))))
-                   (dotimes (lx tw) (cpix (px row (+ x0 tx lx)))))))
-              ((= n 1) (setf (aref buf i) 1) (incf i) (cpix (svref pal 0)))
-              (t
-               (let ((bpp (cond ((<= n 2) 1) ((<= n 4) 2) (t 4))))
+                      (if (= p prev)
+                          (incf len)
+                          (progn
+                            (when (plusp len) (close-run))
+                            (setf prev p len 1)
+                            (unless (or over (%slot p n))
+                              (if (= n 127) (setf over t)
+                                  (progn (setf (svref pal n) p) (incf n))))))))))
+              (close-run))
+            (let* ((raw (* tw th cp))
+                   (prle (+ (* runs cp) plen))
+                   (bpp (cond ((<= n 2) 1) ((<= n 4) 2) (t 4)))
+                   (packed (if (and (not over) (<= n 16)) (+ (* n cp) (* th (ceiling (* tw bpp) 8))) raw))
+                   (palrle (if over raw (+ (* n cp) rlb)))
+                   (best (min raw prle packed palrle)))
+              (cond
+                ((and (not over) (= n 1)) (setf (aref buf i) 1) (incf i) (cpix (svref pal 0)))
+                ((= best raw)
+                 (setf (aref buf i) 0) (incf i)
+                 (dotimes (ly th)
+                   (let ((row (aref rows (+ y0 ty ly))))
+                     (dotimes (lx tw) (cpix (px row (+ x0 tx lx)))))))
+                ((= best packed)
                  (setf (aref buf i) n) (incf i)
                  (dotimes (k n) (cpix (svref pal k)))
-                 (dotimes (ly th)
-                   (let ((row (aref rows (+ y0 ty ly))) (acc 0) (nbits 0))
-                     (dotimes (lx tw)
-                       (setf acc (logior (ash acc bpp) (%slot (px row (+ x0 tx lx)) n)))
-                       (incf nbits bpp)
-                       (when (>= nbits 8)
-                         (decf nbits 8)
-                         (setf (aref buf i) (logand (ash acc (- nbits)) 255)) (incf i)
-                         (setf acc (logand acc (1- (ash 1 nbits))))))
-                     (when (plusp nbits)
-                       (setf (aref buf i) (logand (ash acc (- 8 nbits)) 255)) (incf i))))))))))
+                 (let ((lp -1) (li 0))
+                   (dotimes (ly th)
+                     (let ((row (aref rows (+ y0 ty ly))) (acc 0) (nbits 0))
+                       (dotimes (lx tw)
+                         (let ((p (px row (+ x0 tx lx))))
+                           (unless (= p lp) (setf lp p li (%slot p n)))
+                           (setf acc (logior (ash acc bpp) li)))
+                         (incf nbits bpp)
+                         (when (>= nbits 8)
+                           (decf nbits 8)
+                           (setf (aref buf i) (logand (ash acc (- nbits)) 255)) (incf i)
+                           (setf acc (logand acc (1- (ash 1 nbits))))))
+                       (when (plusp nbits)
+                         (setf (aref buf i) (logand (ash acc (- 8 nbits)) 255)) (incf i))))))
+                (t
+                 ;; Pass 2: the runs again, as plain RLE (CPIXEL + length) or palette RLE (index,
+                 ;; with bit 7 set and a length after it when the run is longer than one pixel).
+                 (let ((pl (= best palrle)) (prev -1) (len 0))
+                   (setf (aref buf i) (if pl (+ 128 n) 128)) (incf i)
+                   (when pl (dotimes (k n) (cpix (svref pal k))))
+                   (flet ((emit-run ()
+                            (if pl
+                                (let ((k (%slot prev n)))
+                                  (if (= len 1)
+                                      (progn (setf (aref buf i) k) (incf i))
+                                      (progn (setf (aref buf i) (+ 128 k)) (incf i) (run-length len))))
+                                (progn (cpix prev) (run-length len)))))
+                     (dotimes (ly th)
+                       (let ((row (aref rows (+ y0 ty ly))))
+                         (dotimes (lx tw)
+                           (let ((p (px row (+ x0 tx lx))))
+                             (if (= p prev)
+                                 (incf len)
+                                 (progn (when (plusp len) (emit-run))
+                                        (setf prev p len 1)))))))
+                     (emit-run)))))))))
       (values buf i))))
 
 (defun %cpixel-format (c)
@@ -297,6 +344,11 @@
          ;; waiting for the ask costs a round trip per frame (0.3-0.7 s on cellular).  With a
          ;; prior frame sent, one more may go unasked; the ask it draws restores the credit.
          (want (or asked (and (cl-prev c) (> (cl-ahead c) 0) :incremental))))
+    ;; NOTHING DRAWN SINCE THE LAST LOOK: one compare, so the sender can look every few ms.  SEEN
+    ;; is the newest stamp found in the rows, not the counter -- %KZ-TOUCH bumps the counter before
+    ;; it stamps, and a look in between must not mark the rows about to be stamped as seen.
+    (when (and (eq want :incremental) (cl-prev c) (eql (%damage) (cl-seen c)))
+      (setf want nil))
     (when want
       (multiple-value-bind (fb pitch w h) (%geometry)
         (declare (ignore fb pitch w))
@@ -304,10 +356,14 @@
               (y0 nil) (y1 nil))
           (if (or (eq want :full) (null (cl-prev c)))
               (setf y0 0 y1 h)
-              (dotimes (y h)
-                (unless (eql (svref gens y) (svref sent y))
-                  (unless y0 (setf y0 y))
-                  (setf y1 (1+ y)))))
+              (let ((newest 0))
+                (dotimes (y h)
+                  (let ((g (svref gens y)))
+                    (when (> g newest) (setf newest g))
+                    (unless (eql g (svref sent y))
+                      (unless y0 (setf y0 y))
+                      (setf y1 (1+ y)))))
+                (setf (cl-seen c) newest)))
           (when y0
             ;; the stamps are recorded BEFORE the copy: a draw landing after this is resent
             (loop for y from y0 below y1 do (setf (svref sent y) (svref gens y)))
@@ -478,7 +534,7 @@
           (%lp "WATCH" *loop* ts (lambda (s) (declare (ignore s)) (%guarded c #'%readable))
                :what "rfbs client")
           (setf (cl-timer c)
-                (%lp "EVERY-SECONDS" *loop* 0.03
+                (%lp "EVERY-SECONDS" *loop* 0.005
                      (lambda ()
                        (when (eq (cl-phase c) :normal) (%guarded c #'%sender-tick)))
                      :what "rfbs sender")))))))

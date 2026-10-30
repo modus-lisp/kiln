@@ -14,9 +14,9 @@
 ;;;; NO THREADS ARE STARTED HERE.  A snapshot carries no threads; the player's
 ;;;; mixer and decoders start on the phone, after the restore.
 
-(defvar *kiln-root* (let ((r (%cli-getenv "KILN_ROOT")))
+(defvar *kiln-root* (let ((r (modus-int::%cli-getenv "KILN_ROOT")))
                       (if (and r (> (length r) 0)) r (error "KILN_ROOT is not set"))))
-(defvar *kiln-ql* (%cli-getenv "KILN_QL"))
+(defvar *kiln-ql* (modus-int::%cli-getenv "KILN_QL"))
 
 (dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
                 "cassette" "reed" "reel" "cl-transport"))
@@ -35,8 +35,8 @@
 ;; The app (boot/app.lisp) and the platform's way to the screen: KILN_APP is
 ;; "ios" (the default) or "android".  KILN_BOOT is this directory, so a kiln
 ;; worktree loads its own files rather than $KILN_ROOT/kiln's.
-(defvar *kiln-app* (let ((a (%cli-getenv "KILN_APP"))) (if (and a (> (length a) 0)) a "ios")))
-(defvar *kiln-boot* (let ((b (%cli-getenv "KILN_BOOT")))
+(defvar *kiln-app* (let ((a (modus-int::%cli-getenv "KILN_APP"))) (if (and a (> (length a) 0)) a "ios")))
+(defvar *kiln-boot* (let ((b (modus-int::%cli-getenv "KILN_BOOT")))
                       (if (and b (> (length b) 0)) b (concatenate 'string *kiln-root* "/kiln/boot"))))
 (load (concatenate 'string *kiln-boot* "/" *kiln-app* ".lisp"))
 (load (concatenate 'string *kiln-boot* "/app.lisp"))
@@ -74,10 +74,10 @@
 
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.
-(let ((r (%jit-eager-all)))
+(let ((r (modus-int::%jit-eager-all)))
   (format t "~&kiln: compiled ~D functions in ~D modules, ~D left to the interpreter~%"
           (first r) (second r) (third r)))
 
-(let ((core (%cli-getenv "KILN_CORE")))
+(let ((core (modus-int::%cli-getenv "KILN_CORE")))
   (format t "~&kiln: saving ~A~%" core)
   (save-and-die core))

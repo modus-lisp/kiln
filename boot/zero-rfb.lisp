@@ -56,7 +56,7 @@
 
 (defun %now () (get-internal-real-time))
 (defun %u32 (n) (logand n #xFFFFFFFF))
-(defun %st () (cl-user::e1000-state-base))
+(defun %st () (modus-int::e1000-state-base))
 
 ;;; ---- the main thread's side ---------------------------------------------------------------
 
@@ -66,8 +66,8 @@
     (setf (sv s :rxbuf) (make-array 4096 :element-type '(unsigned-byte 8) :initial-element 0)
           (sv s :ring) (make-array 256 :initial-element 0)
           (sv s :seg) (make-array (seg-max) :element-type '(unsigned-byte 8) :initial-element 0)
-          (sv s :fb) (cl-user::hcon-get #x04) (sv s :pitch) (cl-user::hcon-get #x08)
-          (sv s :w) (cl-user::hcon-get #x0C) (sv s :h) (cl-user::hcon-get #x10)
+          (sv s :fb) (modus-int::hcon-get #x04) (sv s :pitch) (modus-int::hcon-get #x08)
+          (sv s :w) (modus-int::hcon-get #x0C) (sv s :h) (modus-int::hcon-get #x10)
           (sv s :window) 8192
           (sv s :tcb) (make-array 4 :initial-element 0))
     (setf (svref (sv s :tcb) 0) port)
@@ -118,7 +118,7 @@
   "A short message (handshake): one segment, from a list of octets."
   (let ((v (make-array (length bytes))) (i 0))
     (dolist (b bytes) (setf (svref v i) b) (incf i))
-    (cl-user::tcp-send-segment 24 v (length bytes))))
+    (modus-int::tcp-send-segment 24 v (length bytes))))
 
 (defun %u16 (n) (list (ash n -8) (logand n 255)))
 (defun %u32b (n) (list (ldb (byte 8 24) n) (ldb (byte 8 16) n) (ldb (byte 8 8) n) (logand n 255)))
@@ -129,14 +129,14 @@
 
 (defun %rx (s)
   "Take one frame off the NIC and deal with it.  T when there was one."
-  (let ((len (cl-user::e1000-receive)))
+  (let ((len (modus.net:nic-receive)))
     (when (and len (> len 0))
       (incf (sv s :rx-frames))
-      (let ((b (cl-user::e1000-rx-buf)) (st (%st)))
+      (let ((b (modus.net:nic-rx-buf)) (st (%st)))
         (kiln-zero-ssh::%arp-answer b)                    ; so the gateway can find us
         (flet ((u8 (o) (cl-user::mem-ref (+ b o) :u8))
-               (u16 (o) (cl-user::buf-read-u16-mem b o))
-               (u32 (o) (cl-user::buf-read-u32-mem b o)))
+               (u16 (o) (modus-int::buf-read-u16-mem b o))
+               (u32 (o) (modus-int::buf-read-u32-mem b o)))
           (when (and (= (u8 12) 8) (= (u8 13) 0) (= (u8 23) 6)
                      (= (u16 36) (cl-user::mem-ref (+ st #x34) :u16)))
             (incf (sv s :rx-tcp))
@@ -153,7 +153,7 @@
                        (cl-user::mem-ref (+ st #x3C) :u32) (%u32 (+ 1000 (* 65536 (sv s :conns))))
                        (cl-user::mem-ref (+ st #x40) :u32) (%u32 (1+ seq))
                        (sv s :window) win)
-                  (cl-user::tcp-send-segment 18 (make-array 0) 0)   ; SYN-ACK
+                  (modus-int::tcp-send-segment 18 (make-array 0) 0)   ; SYN-ACK
                   (setf (sv s :phase) 2))
                 ((< phase 2) nil)
                 ;; not our peer
@@ -186,10 +186,10 @@
                          (dotimes (i new) (setf (aref rx (+ n i)) (u8 (+ at i))))
                          (setf (sv s :rx-len) (+ n new)
                                (cl-user::mem-ref (+ st #x40) :u32) (%u32 (+ seq dlen))))))
-                   (cl-user::tcp-send-segment 16 (make-array 0) 0))  ; ACK (or re-ACK)
+                   (modus-int::tcp-send-segment 16 (make-array 0) 0))  ; ACK (or re-ACK)
                  (when (logtest flags 1)                            ; FIN
                    (setf (cl-user::mem-ref (+ st #x40) :u32) (%u32 (+ seq dlen 1)))
-                   (cl-user::tcp-send-segment 17 (make-array 0) 0)
+                   (modus-int::tcp-send-segment 17 (make-array 0) 0)
                    (%listen s)))))))
         t))))
 
@@ -283,7 +283,7 @@
           (when (or (<= n 0) (<= budget 0)) (return))
           (%fill s sent n)
           (setf (cl-user::mem-ref (+ (%st) #x3C) :u32) (%u32 (+ (sv s :snd-base) sent)))
-          (cl-user::tcp-send-segment 24 (sv s :seg) n)
+          (modus-int::tcp-send-segment 24 (sv s :seg) n)
           (setf (sv s :sent) (+ sent n))
           (decf budget)))
       (cond ((>= (sv s :acked) len)

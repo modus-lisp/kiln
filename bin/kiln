@@ -2819,10 +2819,10 @@ EOF
   cat > "$out/forms.txt" <<'EOF'
 (setq *jit-hot-only* nil)
 (defun kz-fnv (arr n) (let ((h 2166136261) (i 0)) (loop (when (>= i n) (return h)) (setq h (logand (* (logxor h (aref arr i)) 16777619) 4294967295)) (setq i (+ i 1)))))
-(defun kz-piece (url n hash) (let ((tries 0)) (loop (when (> tries 30) (return nil)) (let ((tb (net-fetch-bytes url))) (when (and tb (= (cdr tb) n) (= (kz-fnv (car tb) n) hash)) (return (car tb)))) (setq tries (+ tries 1)))))
+(defun kz-piece (url n hash) (let ((tries 0)) (loop (when (> tries 30) (return nil)) (let ((tb (modus-int::net-fetch-bytes url))) (when (and tb (= (cdr tb) n) (= (kz-fnv (car tb) n) hash)) (return (car tb)))) (setq tries (+ tries 1)))))
 (defun kz-fetch (base m) (let* ((total (let ((s 0)) (dolist (e m s) (setq s (+ s (cadr e)))))) (v (make-array total :element-type (quote (unsigned-byte 8)))) (off 0)) (dolist (e m v) (let ((p (kz-piece (concatenate (quote string) base (car e)) (cadr e) (caddr e)))) (when (null p) (return nil)) (replace v p :start1 off) (setq off (+ off (cadr e)))))))
-(progn (setq *tar-block-size* 512) (setq *kz-tar* (kz-fetch "@BASE@" (quote @TAR@))) (if *kz-tar* (length *kz-tar*) :fetch-failed))
-(install-tarball-from-bytes *kz-tar*)
+(progn (setq modus-int::*tar-block-size* 512) (setq *kz-tar* (kz-fetch "@BASE@" (quote @TAR@))) (if *kz-tar* (length *kz-tar*) :fetch-failed))
+(modus-int::install-tarball-from-bytes *kz-tar*)
 EOF
   cat > "$out/fonts.txt" <<'EOF'
 (progn (setq *kz-tar* nil) (setq *kz-reg* (kz-fetch "@BASE@" (quote @REG@))) (setq *kz-bold* (kz-fetch "@BASE@" (quote @BOLD@))) (if (and *kz-reg* *kz-bold*) (progn (setf glass::*font-regular* (scribe:open-font *kz-reg*) glass::*font-bold* (scribe:open-font *kz-bold*)) :fonts) :fonts-failed))
@@ -2833,12 +2833,12 @@ EOF
   # and each clip written to /media/ in one WRITE-FILE.
   : > "$out/media.txt"
   if [[ $media == 1 ]]; then
-    echo '(progn (cabinet-mount-device (cabinet-raw-disk #x1B000000 33554432) :format t) (funcall (symbol-function (intern "MAKE-DIRECTORIES" "CABINET")) *cabfs* "/media") :mounted)' >> "$out/media.txt"
+    echo '(progn (modus-int::cabinet-mount-device (modus-int::cabinet-raw-disk #x1B000000 33554432) :format t) (funcall (symbol-function (intern "MAKE-DIRECTORIES" "CABINET")) modus-int::*cabfs* "/media") :mounted)' >> "$out/media.txt"
     local c
     for c in "$ROOT"/media/*; do
       [[ -f $c ]] || continue
       local cn; cn=$(basename "$c")
-      echo "(let ((b (kz-fetch \"@BASE@\" (quote @CLIP:${cn%.*}@)))) (if b (progn (funcall (symbol-function (intern \"WRITE-FILE\" \"CABINET\")) *cabfs* \"/media/$cn\" b) (list :$cn (length b))) :clip-failed))" >> "$out/media.txt"
+      echo "(let ((b (kz-fetch \"@BASE@\" (quote @CLIP:${cn%.*}@)))) (if b (progn (funcall (symbol-function (intern \"WRITE-FILE\" \"CABINET\")) modus-int::*cabfs* \"/media/$cn\" b) (list :$cn (length b))) :clip-failed))" >> "$out/media.txt"
     done
   fi
   cat > "$out/install.sh" <<'EOF'
@@ -2993,7 +2993,7 @@ EOF
     # a standalone card's core starts the desk by itself after the restore
     local -a hookform=() skipform=()
     if [[ ${#jit_skip[@]} -gt 0 ]]; then
-      local sk="(setq *jit-skip-prefixes* (list \"QL-\" \"QUICKLISP\"" p
+      local sk="(setq modus-int::*jit-skip-prefixes* (list \"QL-\" \"QUICKLISP\"" p
       for p in "${jit_skip[@]}"; do sk+=" \"$p\""; done
       skipform=(--form="$sk) :skip)")
     fi
@@ -3013,7 +3013,7 @@ EOF
       # drop their bytecode and translation tables (source links stay), then the
       # image's name tables share one narrow string per name
       --form="(if (fboundp (quote jit-prune)) (jit-prune) :no-jit-prune)"
-      --form="(if (fboundp (quote compact-names)) (list :compacted (compact-names)) :no-compact-names)"
+      --form="(if (fboundp (quote modus-int::compact-names)) (list :compacted (modus-int::compact-names)) :no-compact-names)"
       --probe="(list :main (fboundp (quote kiln-zero-main)) :fonts (not (null glass::*font-bold*)))"
       --expect="MAIN T FONTS T")                       # the board prints :MAIN as MAIN
     if [[ -n $builder ]]; then

@@ -22,7 +22,7 @@
 ;;; FIND-SYMBOL answers NIL for one nothing mentions (BT-PIN-NEXT: the decoder's
 ;;; MAKE-THREAD called NIL).  INTERN finds the image's function either way.
 (defun %kernel-fn (name)
-  (let ((s (intern name "COMMON-LISP-USER")))
+  (let ((s (intern name "MODUS-INT")))
     (and (fboundp s) s)))
 
 (defun %threaded-p ()

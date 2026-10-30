@@ -38,8 +38,9 @@
 (defun %sym (name pkg) (or (find-symbol name pkg) (error "kiln-zero-ssh: no ~a::~a" pkg name)))
 (defun %kernel (name)
   ;; INTERN, not FIND-SYMBOL: a kernel function nobody has typed has no symbol yet, and the
-  ;; symbol, once made, names the image's function by its name.
-  (symbol-function (intern name "COMMON-LISP-USER")))
+  ;; symbol, once made, names the image's function by its name.  In MODUS-INT: the kernel's
+  ;; functions are not CL-USER's.
+  (symbol-function (intern name "MODUS-INT")))
 
 (defun %ip (host)
   "\"10.0.0.1\" as the big-endian integer net/ip.lisp takes."
@@ -68,7 +69,7 @@
 
 (defun %fill ()
   "Wait for the next in-order TCP segment and append its payload to *RX*."
-  (let ((t0 (get-internal-real-time)) (recv (%kernel "TCP-RECEIVE")) (rxbuf (%kernel "E1000-RX-BUF")))
+  (let ((t0 (get-internal-real-time)) (recv (%kernel "TCP-RECEIVE")) (rxbuf (function modus.net:nic-rx-buf)))
     (loop
       ;; ONE receive attempt per call: between calls the USB thread polls the keyboard and
       ;; mouse.  The segment stays in the NIC's buffer until the next receive, and only a
@@ -238,18 +239,18 @@
 ;;; So the USB thread's idle round is THE reader of the NIC: it drains what has arrived into a
 ;;; RING of frames (buffers the main thread made at load: the USB thread stores only bytes and
 ;;; fixnums into them), answering ARP for our address on the way -- a peer, kiln's gateway at
-;;; the other end of the cable, cannot find us otherwise.  E1000-RECEIVE is redefined to hand
-;;; out the ring's frames first (through the NIC's own RX buffer, where callers look), and a
-;;; kernel redefinition reaches the kernel's own callers, so TCP-RECEIVE, TCP-CONNECT and the
-;;; RFB server read the ring unchanged.  Nothing waits with the NIC unread any more.
+;;; the other end of the cable, cannot find us otherwise.  MODUS.NET:NIC-RECEIVE is rebound to
+;;; hand out the ring's frames first, and the NIC interface is a seam -- (setf fdefinition)
+;;; reaches every caller, the kernel's included -- so TCP-RECEIVE, TCP-CONNECT and the RFB
+;;; server read the ring unchanged.  Nothing waits with the NIC unread any more.
 
-;; The NIC's own receive (net/usb-netdev's), taken before E1000-RECEIVE is redefined below --
-;; ONCE.  Taken again on a second load it would be the redefinition, which calls it: a
+;; The NIC's own receive (net/usb-netdev's), taken before NIC-RECEIVE is rebound below --
+;; ONCE.  Taken again on a second load it would be the rebinding, which calls it: a
 ;; recursion that ends the USB thread.  Not with a DEFVAR initform: modus before d53ddb6 re-ran
 ;; those on every load.  A DEFVAR without one never assigns; BOUNDP decides.
 (defvar *nic-receive*)
 (unless (boundp '*nic-receive*)
-  (setq *nic-receive* (symbol-function (intern "E1000-RECEIVE" "COMMON-LISP-USER"))))
+  (setq *nic-receive* (fdefinition 'modus.net:nic-receive)))
 (defvar *ring-bufs* (let ((v (make-array 32)))
                       (dotimes (i 32 v)
                         (setf (svref v i) (make-array 2048 :element-type '(unsigned-byte 8))))))
@@ -266,18 +267,14 @@
 ;;; (0x11010000: inside the E1000 RX-buffer block, of which CDC uses the first 2 KB) and
 ;;; E1000-RX-BUF says where the current frame is.
 (defun %stage () #x11010000)
-;; The NIC's own RX buffer, by a name nothing redefines.  NOT the old definition of
-;; E1000-RX-BUF saved with SYMBOL-FUNCTION before redefining it: that object resolved LATE,
-;; to the new definition, which called itself until the USB thread's stack was gone -- and an
-;; error in an executor's idle round ends the executor, so the USB thread stopped dead (found
-;; under QEMU: "this thread's stack is exhausted (512 KB)").  BY DRIVER, as the kernel's own
-;; E1000-RX-BUF does: NET-UP brings a cold RTL8153 up CDC-ECM, but after U-Boot (every netboot)
-;; it is vendor-initialised, CDC mangles its frames, and NET-USB-PROBE binds modus's r8152.
-(defun %nic-rx-buf ()
-  (case (cl-user::usb-netdev-get)
-    (2 (cl-user::r8152-rx-buf))
-    (1 (cl-user::cdcether-rx-buf))
-    (t (cl-user::cdc-rx-buf-addr))))
+;; The NIC's own RX buffer, by a name nothing rebinds: net/usb-netdev's USB-NIC-RX-BUF, which
+;; the interface is bound to at boot.  NOT whatever NIC-RX-BUF is now: that is ours below, and
+;; calling it from here recursed until the USB thread's stack was gone -- and an error in an
+;; executor's idle round ends the executor, so the USB thread stopped dead (found under QEMU:
+;; "this thread's stack is exhausted (512 KB)").  USB-NIC-RX-BUF goes BY DRIVER: NET-UP brings
+;; a cold RTL8153 up CDC-ECM, but after U-Boot (every netboot) it is vendor-initialised, CDC
+;; mangles its frames, and NET-USB-PROBE latches modus's r8152.
+(defun %nic-rx-buf () (modus-int::usb-nic-rx-buf))
 (defvar *rx-staged* (make-array 1 :initial-element 0) "1: the current frame is in %STAGE")
 
 ;; The hot path names kernel functions directly (CL-USER::NAME, interned when this file is
@@ -287,10 +284,10 @@
   "B a received frame: reply when it is an ARP request for our address.  T when it was ARP."
   (flet ((u8 (o) (cl-user::mem-ref (+ b o) :u8)))
     (when (and (= (u8 12) 8) (= (u8 13) 6))
-      (let ((st (cl-user::e1000-state-base)))
+      (let ((st (modus-int::e1000-state-base)))
         (when (and (= (u8 21) 1)
                    (loop for i below 4 always (= (u8 (+ 38 i)) (cl-user::mem-ref (+ st #x18 i) :u8))))
-          (cl-user::arp-reply b)))
+          (modus-int::arp-reply b)))
       t)))
 
 (defun %net-service ()
@@ -312,7 +309,7 @@
                           (svref idx 1) next)
                     (incf (svref idx 3)))))))))))
 
-(defun cl-user::e1000-receive ()
+(defun %kz-nic-receive ()
   "The ring's oldest frame, copied into the NIC's RX buffer (where every caller looks), or
    straight from the NIC when the ring is empty.  Its length, or 0."
   (let* ((idx *ring-idx*) (head (svref idx 0)))
@@ -324,25 +321,25 @@
           (dotimes (k n) (setf (cl-user::mem-ref (+ b k) :u8) (aref buf k)))
           (setf (svref idx 0) (mod (1+ head) 32)
                 (svref *rx-staged* 0) 1
-                (cl-user::mem-ref (+ (cl-user::e1000-state-base) #x44) :u32) n)
+                (cl-user::mem-ref (+ (modus-int::e1000-state-base) #x44) :u32) n)
           n))))
 
-(defun cl-user::e1000-rx-buf ()
-  "Where the frame E1000-RECEIVE last handed out is: the staging buffer for a ring frame,
+(defun %kz-nic-rx-buf ()
+  "Where the frame NIC-RECEIVE last handed out is: the staging buffer for a ring frame,
    the NIC's RX buffer for one read straight from the NIC."
   (if (= (svref *rx-staged* 0) 1) (%stage) (%nic-rx-buf)))
 
 ;;; ---- transmitting from the main thread ------------------------------------------------------
 ;;;
 ;;; Connections that live on the MAIN thread (modus net/tcp-conns.lisp, net/bare-sockets.lisp)
-;;; send from there, but only the USB thread may drive the host controller.  So E1000-SEND on
+;;; send from there, but only the USB thread may drive the host controller.  So NIC-SEND on
 ;;; the main thread queues the frame in a TX ring of buffers the main thread made (the USB
 ;;; thread reads them and stores only fixnums: the threads share no objects), and the USB
 ;;; thread's idle round sends the queue before it drains the NIC.  Without threads, or on the
 ;;; USB thread itself, it sends at once, as before.
 (defvar *nic-send*)
 (unless (boundp '*nic-send*)
-  (setq *nic-send* (symbol-function (intern "E1000-SEND" "COMMON-LISP-USER"))))
+  (setq *nic-send* (fdefinition 'modus.net:nic-send)))
 (defvar *tx-bufs* (let ((v (make-array 32)))
                     (dotimes (i 32 v)
                       (setf (svref v i) (make-array 1536 :element-type '(unsigned-byte 8))))))
@@ -355,7 +352,7 @@
    threads send and receive too, and on core 0 a thread that read the NIC itself raced the USB
    thread's reads -- the controller is one device.  The USB thread is the executor on core 1
    (KZ-USB-START); nothing else is placed there."
-  (and *usb-executor* (/= (cl-user::%bt-core-id) 1)))
+  (and *usb-executor* (/= (modus-int::%bt-core-id) 1)))
 
 (defun %tx-drain ()
   "On the USB thread: send every frame the main thread has queued, oldest first."
@@ -366,7 +363,7 @@
         (funcall *nic-send* (svref *tx-bufs* head) (svref *tx-lens* head))
         (setf (svref idx 0) (mod (1+ head) 32))))))
 
-(defun cl-user::e1000-send (buf len)
+(defun %kz-nic-send (buf len)
   "Send a frame: at once on the USB thread (or with no threads), queued from the main thread.
    A full queue gets 200 ms to drain, then the frame is dropped -- TCP retransmits it."
   (if (not (%main-with-usb-thread-p))
@@ -374,7 +371,7 @@
       (let* ((idx *tx-idx*) (tail (svref idx 1)) (next (mod (1+ tail) 32)) (n (min len 1536)))
         (dotimes (w 200)
           (unless (= next (svref idx 0)) (return))
-          (cl-user::%sleep-ms 1))
+          (modus-int::%sleep-ms 1))
         (if (= next (svref idx 0))
             (progn (incf (svref idx 2)) 0)
             (let ((b (svref *tx-bufs* tail)))
@@ -382,6 +379,13 @@
               (setf (svref *tx-lens* tail) n
                     (svref idx 1) next)
               len)))))
+
+;;; Put the three in front of the NIC.  MODUS.NET's NIC interface is a seam: every caller, the
+;;; kernel's TCP included, now reaches these, which reach the driver through *NIC-RECEIVE* and
+;;; *NIC-SEND* (taken above, once) and %NIC-RX-BUF.
+(setf (fdefinition 'modus.net:nic-receive) #'%kz-nic-receive)
+(setf (fdefinition 'modus.net:nic-rx-buf) #'%kz-nic-rx-buf)
+(setf (fdefinition 'modus.net:nic-send) #'%kz-nic-send)
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.
@@ -391,7 +395,7 @@
   (setf *net-up* t))
 
 (defun %reserve-port (port on)
-  (let ((f (find-symbol (if on "HID-RESERVE-PORT" "HID-RELEASE-PORT") "COMMON-LISP-USER")))
+  (let ((f (find-symbol (if on "HID-RESERVE-PORT" "HID-RELEASE-PORT") "MODUS-INT")))
     (when (and f (fboundp f)) (funcall f port))))
 
 (defun %net-up-1 (ip gateway)

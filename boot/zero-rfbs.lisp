@@ -45,20 +45,20 @@
 
 (defun %geometry ()
   "(values scanout-address pitch width height) of the HDMI console's framebuffer."
-  (values (cl-user::hcon-get #x04) (cl-user::hcon-get #x08)
-          (cl-user::hcon-get #x0C) (cl-user::hcon-get #x10)))
+  (values (modus-int::hcon-get #x04) (modus-int::hcon-get #x08)
+          (modus-int::hcon-get #x0C) (modus-int::hcon-get #x10)))
 
 (defun %data-address (v)
   "Where byte vector V's elements start (V must not move before the address is used)."
-  (+ (cl-user::%gc-word-of v (cl-user::%conv-addr #x100050A0)) 7))
+  (+ (modus-int::%gc-word-of v (modus-int::%conv-addr #x100050A0)) 7))
 
 (defun %copy-row (dst src bytes)
   "BYTES (a multiple of 64) from SRC into byte vector DST, with the console's native copy -- on
    the screen thread when there is one, which uses the same scratch block for its presents."
   (let ((scr (and (boundp 'cl-user::*kz-scr*) (symbol-value 'cl-user::*kz-scr*))))
     (if scr
-        (cl-user::bt-call scr (lambda () (cl-user::hcon-ncopy (%data-address dst) src bytes) 0))
-        (cl-user::hcon-ncopy (%data-address dst) src bytes))))
+        (modus-int::bt-call scr (lambda () (modus-int::hcon-ncopy (%data-address dst) src bytes) 0))
+        (modus-int::hcon-ncopy (%data-address dst) src bytes))))
 
 (defun %grab (prev)
   "The screen now, as a vector of row byte vectors (PREV's reused when it is the right shape)."

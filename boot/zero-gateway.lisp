@@ -45,9 +45,10 @@
     (and s t)))
 
 (defun %call (pkg name &rest args)
-  ;; a KERNEL function (CL-USER) has no symbol until somebody types its name: INTERN it there,
-  ;; and the symbol names the image's function (kiln-zero-ssh's %KERNEL)
-  (let ((s (if (string= pkg "COMMON-LISP-USER")
+  ;; a KERNEL function (MODUS-INT) has no symbol until somebody types its name: INTERN it
+  ;; there, and the symbol names the image's function (kiln-zero-ssh's %KERNEL).  CL-USER
+  ;; likewise, for kiln's own boot functions.
+  (let ((s (if (or (string= pkg "MODUS-INT") (string= pkg "COMMON-LISP-USER"))
                (intern name pkg)
                (and (find-package pkg) (find-symbol name pkg)))))
     (unless (and s (fboundp s)) (error "zero-gateway: ~a::~a is not in this image" pkg name))
@@ -60,11 +61,11 @@
 ;;; The disk is the region --media puts its clips on: past the core, inside the RAM the image maps.
 (defun mount-ram-cabinet (&key (base #x1B000000) (bytes 33554432))
   "Mount a fresh cabinet on BASE..BASE+BYTES, with /glass and /tmp.  T, or NIL with no cabinet."
-  (let ((cab (find-symbol "*CABFS*" "COMMON-LISP-USER")))
+  (let ((cab (find-symbol "*CABFS*" "MODUS-INT")))
     (cond ((null cab) nil)
           ((symbol-value cab) t)
-          (t (%call "COMMON-LISP-USER" "CABINET-MOUNT-DEVICE"
-                    (%call "COMMON-LISP-USER" "CABINET-RAW-DISK" base bytes) :format t)
+          (t (%call "MODUS-INT" "CABINET-MOUNT-DEVICE"
+                    (%call "MODUS-INT" "CABINET-RAW-DISK" base bytes) :format t)
              (dolist (d '("/glass" "/tmp" "/etc/ssl/certs"))
                (%call "CABINET" "MAKE-DIRECTORIES" (symbol-value cab) d))
              t))))
@@ -107,20 +108,20 @@
 ;;; binds.  The HID scan is switched off first: it re-addresses ports, and QEMU aborts on a transfer
 ;;; to an address with no device behind it.  Slirp: -netdev user,net=10.0.0.0/24,host=10.0.0.1,dns=10.0.0.3
 (defun net-up-qemu (&key (ip #x0200000A) (gateway #x0100000A) (dns #x0A000003))
-  (%call "COMMON-LISP-USER" "HID-PUT" 0 0)
-  (dotimes (p 8) (%call "COMMON-LISP-USER" "HID-RESERVE-PORT" p))
-  (unless (eql 1 (%call "COMMON-LISP-USER" "E1000-PROBE"))
+  (%call "MODUS-INT" "HID-PUT" 0 0)
+  (dotimes (p 8) (%call "MODUS-INT" "HID-RESERVE-PORT" p))
+  (unless (eql 1 (%call "MODUS.NET" "NIC-PROBE"))
     (error "zero-gateway: no USB NIC"))
-  (let ((s (%call "COMMON-LISP-USER" "E1000-STATE-BASE")))
-    (%call "COMMON-LISP-USER" "CDC-READ-MAC" s)
+  (let ((s (%call "MODUS-INT" "E1000-STATE-BASE")))
+    (%call "MODUS.NET.CDC" "CDC-READ-MAC" s)
     (setf (cl-user::mem-ref (+ s #x18) :u32) ip
           (cl-user::mem-ref (+ s #x1C) :u32) gateway))
   (unless (dotimes (i 50)
-            (when (eql 1 (%call "COMMON-LISP-USER" "ARP-RESOLVE")) (return t))
-            (%call "COMMON-LISP-USER" "DWC2-DELAY-MS" 100))
+            (when (eql 1 (%call "MODUS-INT" "ARP-RESOLVE")) (return t))
+            (%call "MODUS-INT" "DWC2-DELAY-MS" 100))
     (error "zero-gateway: no ARP reply from the gateway"))
   (%set-by-name "KILN-ZERO-SSH" "*NET-UP*" t)
-  (%set-by-name "COMMON-LISP-USER" "*BARE-DNS-SERVERS*" (list dns))
+  (%set-by-name "MODUS-INT" "*BARE-DNS-SERVERS*" (list dns))
   ;; THE USB THREAD, as on the board: core 1 drains the NIC into a ring all the time.  Without it
   ;; every reader is on core 0, and while a sender there encrypts, QEMU drops what arrives -- a
   ;; WebRTC session saw 1 SACK of the hundreds sent, and stalled at the congestion window.
@@ -142,7 +143,7 @@
   ;; THE DATE: no RTC, so the board's clock starts at 1900 -- a login code would expire as it
   ;; was minted and a relay drops an event dated 1900.  SNTP over the board's UDP.
   (when (< (get-universal-time) 3786825600)          ; before 2020: never set
-    (unless (%call "COMMON-LISP-USER" "BARE-SET-CLOCK")
+    (unless (%call "MODUS-INT" "BARE-SET-CLOCK")
       (error "zero-gateway: the board does not know the date and SNTP did not answer")))
   (setenv "NOSTR_SEC" secret)
   (setenv "GLASS_NOSTR_SEC" secret)
@@ -199,7 +200,7 @@
   (when (and rfb (find-package "KILN-ZERO-RFBS"))
     (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port))
   (%set-by-name "COMMON-LISP-USER" "*KZ-MAIN-NET*"
-                (let ((y (symbol-function (intern "BT-YIELD" "COMMON-LISP-USER"))))
+                (let ((y (symbol-function (intern "BT-YIELD" "MODUS-INT"))))
                   (lambda () (funcall y))))
   ;; identity, enrolments, admission on ADMISSION-PORT, the DM bot -- and the link to OWNER
   (%call "GLASS" "START-SESSION-NOSTR" :port admission-port)
@@ -216,7 +217,7 @@
 ;;;   NET=qemu                        QEMU's usb-net instead of the hub's RTL8153
 
 (defun %bootarg (name)
-  (let ((v (ignore-errors (%call "COMMON-LISP-USER" "%CLI-GETENV" name))))
+  (let ((v (ignore-errors (%call "MODUS-INT" "%CLI-GETENV" name))))
     (and (stringp v) (plusp (length v)) v)))
 
 (defun %split-commas (s)

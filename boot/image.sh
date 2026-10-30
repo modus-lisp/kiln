@@ -167,8 +167,8 @@ if [ $target = nitro ]; then
   # test/nitro/vsock-proxy.py), attesting its own host key on request
   # (nitro-attest-ssh).  --console=repl keeps the line-per-form vsock REPL instead.
   case $console in
-    repl) argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(vsock-repl 5000)") ;;
-    *)    argv+=(--eval "(handler-case (nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(ssh-serve-vsock 22)") ;;
+    repl) argv+=(--eval "(handler-case (modus-int::nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(modus-int::vsock-repl 5000)") ;;
+    *)    argv+=(--eval "(handler-case (modus-int::nsm-attest-selftest) (error (c) (format t \"NSM selftest: ~A~%\" c)))" --eval "(ssh-serve-vsock 22)") ;;
   esac
   printf '%s\n' "${argv[@]}" > "$out/cmd.txt"
   # AWS's init bind-mounts /rootfs, chroots into it and execs /cmd's argv there:

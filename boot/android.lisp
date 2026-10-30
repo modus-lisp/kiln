@@ -21,7 +21,7 @@
 (defun %kiln-ui-buf ()
   ;; Mapped at RUN time, on the phone: a page from the world build's process
   ;; would not be in the snapshot.
-  (or *kiln-ui-buf* (setf *kiln-ui-buf* (%gc-safe-block-6 222 0 4096 3 #x22))))
+  (or *kiln-ui-buf* (setf *kiln-ui-buf* (modus-int::%gc-safe-block-6 222 0 4096 3 #x22))))
 
 (defun %kiln-ui-send (op a b c)
   (let ((p (%kiln-ui-buf)))
@@ -29,19 +29,19 @@
           (mem-ref (+ p 4) :u32) a
           (mem-ref (+ p 8) :u32) b
           (mem-ref (+ p 12) :u32) c)
-    (%gc-safe-block-6 64 3 p 16 0)))
+    (modus-int::%gc-safe-block-6 64 3 p 16 0)))
 
 (defun %kiln-ui-reply ()
   ;; Two :u32 halves: a :u64 MEM-REF reads the word as a TAGGED value.
   (let ((p (%kiln-ui-buf)))
-    (%gc-safe-block-6 63 3 (+ p 16) 8 0)
+    (modus-int::%gc-safe-block-6 63 3 (+ p 16) 8 0)
     (let ((v (+ (mem-ref (+ p 16) :u32) (* 4294967296 (mem-ref (+ p 20) :u32)))))
       (if (>= v 9223372036854775808) (- v 18446744073709551616) v))))
 
 (defun %kiln-ui-write-all (addr n)
   "Write N bytes at ADDR to the launcher; a large write can come back short."
   (loop while (> n 0)
-        do (let ((k (%gc-safe-block-6 64 3 addr n 0)))
+        do (let ((k (modus-int::%gc-safe-block-6 64 3 addr n 0)))
              (when (<= k 0) (return))
              (incf addr k)
              (decf n k))))

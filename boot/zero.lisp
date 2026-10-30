@@ -48,8 +48,8 @@
 (defvar *zero-px* 0)
 (defvar *zero-py* 0)
 
-(defun %zero-pixel-addr (x y) (+ (hcon-get #x04) (* y (hcon-get #x08)) (* x 4)))
-(defun %zero-on-screen-p (x y) (and (< -1 x (hcon-get #x0C)) (< -1 y (hcon-get #x10))))
+(defun %zero-pixel-addr (x y) (+ (modus-int::hcon-get #x04) (* y (modus-int::hcon-get #x08)) (* x 4)))
+(defun %zero-on-screen-p (x y) (and (< -1 x (modus-int::hcon-get #x0C)) (< -1 y (modus-int::hcon-get #x10))))
 
 (defvar *kz-hw-cursor* nil)               ; T: the pointer is an HVS plane (the screen thread's)
 
@@ -96,7 +96,7 @@
 (defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
-  (hid-split-poll)
+  (modus-int::hid-split-poll)
   (let ((n *kz-net-service*) (h *kz-usb-idle-hook*))
     (when n (funcall n))                ; first: nothing may leave the NIC unread
     (when h (funcall h))))
@@ -104,9 +104,9 @@
 (defun kz-usb-start ()
   "Start the USB thread on core 1 and give it the controller.  Its handle, or NIL on an image
    without threads."
-  (when (and (null *kz-usb*) (fboundp 'bt-start-executor) (fboundp 'hid-claim-usb))
-    (let ((ex (bt-start-executor 1 #'%kz-usb-idle)))
-      (bt-call ex #'hid-claim-usb)
+  (when (and (null *kz-usb*) (fboundp 'modus-int::bt-start-executor) (fboundp 'modus-int::hid-claim-usb))
+    (let ((ex (modus-int::bt-start-executor 1 #'%kz-usb-idle)))
+      (modus-int::bt-call ex #'modus-int::hid-claim-usb)
       (setf *kz-usb* ex)
       (let ((s (find-symbol "*USB-EXECUTOR*" "KILN-ZERO-SSH")))
         (when s (setf (symbol-value s) ex)))))
@@ -127,18 +127,18 @@
 
 (defun %zero-poll ()
   "Turn what the keyboard and mouse did since the last call into queued events."
-  (hid-split-poll)
+  (modus-int::hid-split-poll)
   (let ((src *kz-event-source*))
     (when src (setf *zero-events* (append *zero-events* (funcall src)))))
-  (loop (let ((c (hid-ring-pop)))
+  (loop (let ((c (modus-int::hid-ring-pop)))
           (when (< c 0) (return))
           (setf *zero-events* (append *zero-events*
                                       (list (+ (* 4 1099511627776) (%zero-keysym c)))))))
   (when *kz-scr*
     ;; THE SCREEN THREAD MOVES THE POINTER (*ZERO-PX*/*ZERO-PY*); here only its events
     (unless *zero-mouse*
-      (setf *zero-mx* *zero-px* *zero-my* *zero-py* *zero-mb* (mouse-buttons) *zero-mouse* t))
-    (let ((px *zero-px*) (py *zero-py*) (nb (mouse-buttons)) (lb *zero-mb*))
+      (setf *zero-mx* *zero-px* *zero-my* *zero-py* *zero-mb* (modus-int::mouse-buttons) *zero-mouse* t))
+    (let ((px *zero-px*) (py *zero-py*) (nb (modus-int::mouse-buttons)) (lb *zero-mb*))
       (when (or (/= px *zero-mx*) (/= py *zero-my*) (/= nb lb))
         (let ((down (logbitp 0 nb)) (was (logbitp 0 lb)))
           (setf *zero-events*
@@ -151,12 +151,12 @@
         (setf *zero-mx* px *zero-my* py *zero-mb* nb)))
     (return-from %zero-poll nil))
   (unless *zero-mouse*
-    (setf *zero-mx* (mouse-x) *zero-my* (mouse-y) *zero-mb* (mouse-buttons) *zero-mouse* t))
+    (setf *zero-mx* (modus-int::mouse-x) *zero-my* (modus-int::mouse-y) *zero-mb* (modus-int::mouse-buttons) *zero-mouse* t))
   (let ((lx *zero-mx*) (ly *zero-my*) (lb *zero-mb*))
-    (let ((nx (mouse-x)) (ny (mouse-y)) (nb (mouse-buttons)))
+    (let ((nx (modus-int::mouse-x)) (ny (modus-int::mouse-y)) (nb (modus-int::mouse-buttons)))
       (when (or (/= nx lx) (/= ny ly) (/= nb lb))
-        (setf *zero-px* (max 0 (min (1- (hcon-get #x0C)) (+ *zero-px* (- nx lx))))
-              *zero-py* (max 0 (min (1- (hcon-get #x10)) (+ *zero-py* (- ny ly)))))
+        (setf *zero-px* (max 0 (min (1- (modus-int::hcon-get #x0C)) (+ *zero-px* (- nx lx))))
+              *zero-py* (max 0 (min (1- (modus-int::hcon-get #x10)) (+ *zero-py* (- ny ly)))))
         (let ((down (logbitp 0 nb)) (was (logbitp 0 lb)))
           (setf *zero-events*
                 (append *zero-events*
@@ -182,16 +182,16 @@
 (defvar *kz-frame-at* 0)
 (defvar *kz-just-drew* nil)      ; the last answer was a frame: input goes next
 (defvar *kz-frame-limit* nil)             ; frames left before the desk ends itself (tests), or NIL                  ; GET-INTERNAL-REAL-TIME of the last frame %ZERO-NEXT-EVENT let through                 ; GET-INTERNAL-REAL-TIME of the last input event
-(defvar *kz-gc-mark-count* -1)            ; (%GC-COUNT) and (GET-ALLOC-PTR) right after the
+(defvar *kz-gc-mark-count* -1)            ; (modus-int::%GC-COUNT) and (GET-ALLOC-PTR) right after the
 (defvar *kz-gc-mark-ptr* 0)               ; last collection this desk saw
 
 (defun %zero-idle-gc ()
   (let ((now (get-internal-real-time)))
     (when (> (- now *kz-active-at*) *kz-idle-gc-us*)
-      (when (or (/= (%gc-count) *kz-gc-mark-count*)       ; one happened anyway: re-mark only
+      (when (or (/= (modus-int::%gc-count) *kz-gc-mark-count*)       ; one happened anyway: re-mark only
                 (> (- (get-alloc-ptr) *kz-gc-mark-ptr*) *kz-idle-gc-bytes*))
-        (when (= (%gc-count) *kz-gc-mark-count*) (sb-ext:gc))
-        (setf *kz-gc-mark-count* (%gc-count) *kz-gc-mark-ptr* (get-alloc-ptr))))))
+        (when (= (modus-int::%gc-count) *kz-gc-mark-count*) (sb-ext:gc))
+        (setf *kz-gc-mark-count* (modus-int::%gc-count) *kz-gc-mark-ptr* (get-alloc-ptr))))))
 
 ;;; THE SERIAL LINE STAYS A REPL WHILE THE DESK RUNS.  The desk owns the main thread, and the
 ;;; REPL is that thread's reader loop, so running the desk used to mean losing the console: bytes
@@ -247,7 +247,7 @@
 (defun %zero-next-event ()
   ;; The serial line: a REPL (above).  At most 64 bytes a call, so a paste cannot hold a frame.
   (dotimes (i 64)
-    (unless (hid-serial-ready-p) (return))
+    (unless (modus-int::hid-serial-ready-p) (return))
     (%zero-repl-char (read-char-serial)))
   ;; A FRAME IS DUE every 16 ms whatever the input is doing.  The app loop handles one event per
   ;; call and draws only when this answers 0, and a mouse polled faster than its report interval
@@ -336,7 +336,7 @@
                 (setf (mem-ref (+ buf (* y fw) x) :u8) (if (char= ch #\2) 16 235))))))))))
 
 (defun %zy-copy (dst src bytes)
-  (hcon-ncopy dst src (logand (+ bytes 63) (lognot 63))))
+  (modus-int::hcon-ncopy dst src (logand (+ bytes 63) (lognot 63))))
 
 (defvar *zy-presents* 0)
 (defvar *zy-first* nil)   ; GET-INTERNAL-REAL-TIME of this run's first and latest present: the
@@ -345,7 +345,7 @@
   "Show :I420 framebuffer FB: copy its planes into the back scanout buffer, draw the pointer,
    point the HVS at it."
   (unless *zy*
-    (hcon-map-nc (%zy-buf-base) #x200000)
+    (modus-int::hcon-map-nc (%zy-buf-base) #x200000)
     ;; The OUTPUT size is the HVS channel's (DISPCTRL1: width bits 23:12, height 11:0) --
     ;; the firmware's "physical display" is the console's 640-wide buffer, not the monitor
     (let* ((ctl (mem-ref (+ (%zy-hvs) #x50) :u32))
@@ -482,11 +482,11 @@
       (let* ((unity (logbitp 4 (first words)))
              (pos0 (second words))
              (x0 (logand pos0 4095)) (y0 (logand (ash pos0 -12) 4095))
-             (fbw (hcon-get #x0C)) (fbh (hcon-get #x10))
+             (fbw (modus-int::hcon-get #x0C)) (fbh (modus-int::hcon-get #x10))
              (dst (if unity nil (third words)))
              (dstw (if dst (logand dst #xFFF) fbw)) (dsth (if dst (logand (ash dst -16) #xFFF) fbh))
              (k (max 1 (round dstw fbw))))
-        (hcon-map-nc (%zy-buf-base) #x200000)
+        (modus-int::hcon-map-nc (%zy-buf-base) #x200000)
         (multiple-value-bind (w h) (%kz-cur-make-image k)
           (let ((slot 2200) (i 0))
             (dolist (wd words) (%zy-slot-wr (+ slot i) wd) (setq i (+ i 1)))
@@ -590,10 +590,10 @@
 (defun %kz-scr-idle ()
   "The screen thread between calls: follow the mouse."
   (when *kz-scr-paused* (return-from %kz-scr-idle nil))
-  (let ((nx (mouse-x)) (ny (mouse-y)))
+  (let ((nx (modus-int::mouse-x)) (ny (modus-int::mouse-y)))
     (when (or (/= nx *kz-scr-mx*) (/= ny *kz-scr-my*))
-      (setf *zero-px* (max 0 (min (1- (hcon-get #x0C)) (+ *zero-px* (- nx *kz-scr-mx*))))
-            *zero-py* (max 0 (min (1- (hcon-get #x10)) (+ *zero-py* (- ny *kz-scr-my*))))
+      (setf *zero-px* (max 0 (min (1- (modus-int::hcon-get #x0C)) (+ *zero-px* (- nx *kz-scr-mx*))))
+            *zero-py* (max 0 (min (1- (modus-int::hcon-get #x10)) (+ *zero-py* (- ny *kz-scr-my*))))
             *kz-scr-mx* nx *kz-scr-my* ny)
       (cond (*kz-hw-cursor* (%kz-cur-move *zero-px* *zero-py*))   ; one word, at end of frame
             ((and *zy* (fourth *zy*)) (%kz-zy-show (fourth *zy*)))
@@ -603,25 +603,25 @@
 
 (defun %kz-on-screen (fn)
   "FN on the screen thread when there is one, else here."
-  (if *kz-scr* (bt-call *kz-scr* fn) (funcall fn)))
+  (if *kz-scr* (modus-int::bt-call *kz-scr* fn) (funcall fn)))
 
 (defun kz-scr-start (&optional yuv)
   "Start the screen thread on core 2 (after the USB thread).  YUV: the desk will be Y'CbCr
    (its first present puts the cursor in its own display list).  The handle, or NIL without
    threads."
-  (when (and (null *kz-scr*) *kz-usb* (fboundp 'bt-start-executor))
+  (when (and (null *kz-scr*) *kz-usb* (fboundp 'modus-int::bt-start-executor))
     (%zero-blit-code)                     ; the exec page, made here: the JIT's bump is main's
-    (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y))
+    (setf *kz-scr-mx* (modus-int::mouse-x) *kz-scr-my* (modus-int::mouse-y))
     ;; THE HARDWARE CURSOR, on main (its state is main's): on the RGB desk now, over the
     ;; firmware's plane; on the Y'CbCr desk with the first present.  The software arrow stays
     ;; if the firmware's entry is not one plane this understands.
-    (setf *kz-scr* (bt-start-executor 2 #'%kz-scr-idle)))
+    (setf *kz-scr* (modus-int::bt-start-executor 2 #'%kz-scr-idle)))
   (when (and *kz-scr* (null *kz-cur*))
     (setf *kz-hw-cursor* t)
     (unless (or yuv (%kz-cur-install-rgb))
       (setf *kz-hw-cursor* nil)))
   (when *kz-scr*
-    (bt-call *kz-scr* (lambda () (setf *kz-scr-mx* (mouse-x) *kz-scr-my* (mouse-y)
+    (modus-int::bt-call *kz-scr* (lambda () (setf *kz-scr-mx* (modus-int::mouse-x) *kz-scr-my* (modus-int::mouse-y)
                                        *kz-scr-paused* nil) 0)))
   *kz-scr*)
 
@@ -635,21 +635,21 @@
 (defvar *kz-audio* nil)
 (defvar *kz-audio-start* nil)             ; what HDMI-AUDIO-START answered: T or why not
 
-(defun %kz-audio-idle () (hdmi-audio-pump))
+(defun %kz-audio-idle () (modus-int::hdmi-audio-pump))
 
 (defun kz-audio-start ()
   "Bring HDMI audio up and start the audio thread on core 3.  Its handle, or NIL (no threads,
    or the link has no audio: *KZ-AUDIO-START* says why)."
-  (when (and (null *kz-audio*) *kz-usb* (fboundp 'bt-start-executor) (fboundp 'hdmi-audio-start))
-    (setf *kz-audio-start* (hdmi-audio-start 48000))
+  (when (and (null *kz-audio*) *kz-usb* (fboundp 'modus-int::bt-start-executor) (fboundp 'modus-int::hdmi-audio-start))
+    (setf *kz-audio-start* (modus-int::hdmi-audio-start 48000))
     (when (eq *kz-audio-start* t)
-      (setf *kz-audio* (bt-start-executor 3 #'%kz-audio-idle))))
+      (setf *kz-audio* (modus-int::bt-start-executor 3 #'%kz-audio-idle))))
   *kz-audio*)
 
 (defun kz-beep (&optional (hz 440) (ms 300))
   "A triangle-wave tone through HDMI (starts the audio thread if need be)."
   (kz-audio-start)
-  (if *kz-audio* (hdmi-audio-tone hz ms) *kz-audio-start*))
+  (if *kz-audio* (modus-int::hdmi-audio-tone hz ms) *kz-audio-start*))
 
 ;;; --- screen --------------------------------------------------------------------------------
 
@@ -671,7 +671,7 @@
   "The exec page holding the row copier (at 0) and its arguments (at 512)."
   (or *zero-blit-code*
       (let ((code (%mmap-exec-page 4096)))
-        (hcon-poke code (%zero-blit-words (+ code 512)))
+        (modus-int::hcon-poke code (%zero-blit-words (+ code 512)))
         (%jit-icache-flush code 512)
         (setf *zero-blit-code* code))))
 
@@ -683,18 +683,18 @@
   (let* ((w (logand wh #xFFFF)) (h (floor wh 65536))
          (x0 (logand xy #xFFFF)) (y0 (floor xy 65536))
          (stride (if (zerop stride) w stride))
-         (sw (hcon-get #x0C)) (sh (hcon-get #x10))
+         (sw (modus-int::hcon-get #x0C)) (sh (modus-int::hcon-get #x10))
          (cols (min w (- sw x0))) (rows (min h (- sh y0))))
     (%zero-pointer-hide)
     (when (and (> cols 0) (> rows 0))
       (let* ((code (%zero-blit-code)) (scr (+ code 512)))
-        (hcon-u64 scr (%zero-pixel-addr x0 y0))
-        (hcon-u64 (+ scr 8) addr)
-        (hcon-u64 (+ scr 16) cols)
-        (hcon-u64 (+ scr 24) rows)
-        (hcon-u64 (+ scr 32) (hcon-get #x08))
-        (hcon-u64 (+ scr 40) (* 8 stride))
-        (%jit-call code)))
+        (modus-int::hcon-u64 scr (%zero-pixel-addr x0 y0))
+        (modus-int::hcon-u64 (+ scr 8) addr)
+        (modus-int::hcon-u64 (+ scr 16) cols)
+        (modus-int::hcon-u64 (+ scr 24) rows)
+        (modus-int::hcon-u64 (+ scr 32) (modus-int::hcon-get #x08))
+        (modus-int::hcon-u64 (+ scr 40) (* 8 stride))
+        (modus-int::%jit-call code)))
     (%zero-pointer-show)
     0))
 
@@ -733,7 +733,7 @@
 ;;; Bumped whenever the desk draws on the screen: an RFB server (zero-rfbs.lisp) compares the
 ;;; scanout only when this moved, instead of copying and comparing the whole screen every poll.
 (defvar *kz-damage* 0)
-(defun %kz-say (s) (write-string-serial s) (write-char-serial 10))
+(defun %kz-say (s) (modus-int::write-string-serial s) (write-char-serial 10))
 
 (defun %kiln-sys (n a b c &optional (d 0))
   (when (member n '(1002 1005 1007)) (incf *kz-damage*))
@@ -742,17 +742,17 @@
       (setf *kz-said* (logior *kz-said* bit))
       (%kz-say (case n (1001 "KZ:size") (1002 "KZ:fill") (1004 "KZ:event") (t "KZ:blit")))))
   (case n
-    (1001 (case a (0 (hcon-get #x0C)) (1 (hcon-get #x10)) (t 1)))
+    (1001 (case a (0 (modus-int::hcon-get #x0C)) (1 (modus-int::hcon-get #x10)) (t 1)))
     (1002 (%kz-on-screen (lambda ()
                            (%zero-pointer-hide)
-                           (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) c)
+                           (modus-int::hcon-nfill (modus-int::hcon-get #x04) (* (modus-int::hcon-get #x10) (modus-int::hcon-get #x08)) c)
                            (%zero-pointer-show) 0)))
     (1004 (%zero-next-event))
     (1005 (%kz-on-screen (lambda () (%zero-blit a b c d))))
     ;; the FIRST present makes *ZY* (a list: main's, since a thread may not store its own
     ;; objects in a global); every later one is the screen thread's
     (1007 (cond ((null *kz-scr*) (%zero-present-yuv a))
-                ((and *zy* (fourth *zy*)) (bt-call *kz-scr* (lambda () (%kz-present-yuv a))))
+                ((and *zy* (fourth *zy*)) (modus-int::bt-call *kz-scr* (lambda () (%kz-present-yuv a))))
                 (t (%kz-present-yuv a)))
           0)
     (1010 1)
@@ -766,24 +766,24 @@
    file name under /media/, starts it playing once the desk is up."
   ;; The screen's state block outlives a board reset: trust it only once this boot has
   ;; brought the console up (the kernel zeroes its ready word at reset).
-  (unless (hcon-ready-p) (hcon-init))
+  (unless (modus-int::hcon-ready-p) (modus-int::hcon-init))
   (setq *kz-frame-limit* frames)
   (kz-usb-start)                          ; threads: input on core 1 from here on
   (kz-scr-start (and media yuv))          ; ... and the screen on core 2
   ;; ... and HDMI audio on core 3 -- except for media: there core 3 decodes (and with no mixer
   ;; on the Zero yet, a film plays silent anyway)
   (unless media (kz-audio-start))
-  (let ((ready (hcon-get 0)))
+  (let ((ready (modus-int::hcon-get 0)))
     (setf *zero-events* nil *zero-mouse* nil *zero-under* nil
-          *zero-px* (floor (hcon-get #x0C) 2) *zero-py* (floor (hcon-get #x10) 2))
+          *zero-px* (floor (modus-int::hcon-get #x0C) 2) *zero-py* (floor (modus-int::hcon-get #x10) 2))
     (setf *kz-said* 0)
     (%kz-say "KZ:start")
     ;; bytes already waiting on serial are not a request to stop.  BOUNDED: the first start
     ;; after a netboot never drew, with netboot's LF left on the line -- a drain that
     ;; trusts READ-CHAR-SERIAL to empty the line it polls can spin forever if it does not.
-    (dotimes (i 64) (if (hid-serial-ready-p) (read-char-serial) (return)))
-    (%kz-say (if (hid-serial-ready-p) "KZ:serial-not-drained" "KZ:drained"))
-    (hcon-put 0 0)                        ; the text console stops drawing
+    (dotimes (i 64) (if (modus-int::hid-serial-ready-p) (read-char-serial) (return)))
+    (%kz-say (if (modus-int::hid-serial-ready-p) "KZ:serial-not-drained" "KZ:drained"))
+    (modus-int::hcon-put 0 0)                        ; the text console stops drawing
     (unwind-protect
          (catch 'kiln-zero-exit
            (%kz-say "KZ:app")
@@ -816,6 +816,6 @@
                        (%zero-pointer-hide)
                        0))
       (setf *kz-hw-cursor* nil)
-      (hcon-put 0 ready)
-      (hcon-nfill (hcon-get #x04) (* (hcon-get #x10) (hcon-get #x08)) (hcon-get #x28))
-      (hcon-put #x1C 0) (hcon-put #x20 0))))
+      (modus-int::hcon-put 0 ready)
+      (modus-int::hcon-nfill (modus-int::hcon-get #x04) (* (modus-int::hcon-get #x10) (modus-int::hcon-get #x08)) (modus-int::hcon-get #x28))
+      (modus-int::hcon-put #x1C 0) (modus-int::hcon-put #x20 0))))

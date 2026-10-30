@@ -20,7 +20,7 @@
   "The app bundle: the directory of the file after --core (the shim resolved
    @kiln.core to a path beside the executable)."
   (when *kiln-bundle-dir* (return-from %kiln-bundle-dir *kiln-bundle-dir*))
-  (let ((args (and (fboundp '%cli-collect-argv) (%cli-collect-argv))))
+  (let ((args (and (fboundp 'modus-int::%cli-collect-argv) (modus-int::%cli-collect-argv))))
     (loop for (a b) on args
           when (and (stringp a) (string= a "--core") (stringp b))
             do (return (directory-namestring b)))))
@@ -29,7 +29,7 @@
   "Copy glass framebuffer FB to the screen at (X, Y): pseudo-syscall 1005
    reads its pixel vector in place (element 0 is the vector's word + 7)."
   (let* ((px (glass::fb-pixels fb))
-         (addr (+ (%gc-word-of px (%conv-addr #x100050A0)) 7)))
+         (addr (+ (modus-int::%gc-word-of px (modus-int::%conv-addr #x100050A0)) 7)))
     (%kiln-sys 1005 addr (+ (glass::fb-width fb) (* (glass::fb-height fb) 65536))
                (+ x (* y 65536)))))
 
@@ -42,7 +42,7 @@
 (defparameter *kiln-cushion* 7200 "Samples to keep queued: 150 ms.")
 
 (defun %kiln-audio-write (frame)
-  (%kiln-sys 1011 (+ (%gc-word-of frame (%conv-addr #x100050A0)) 7) (length frame) 0))
+  (%kiln-sys 1011 (+ (modus-int::%gc-word-of frame (modus-int::%conv-addr #x100050A0)) 7) (length frame) 0))
 
 (defun %kiln-pump-audio (mixer sink)
   "Mix and queue until the device holds *KILN-CUSHION* samples; at most a few ticks a call,
@@ -227,7 +227,7 @@
   "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
    pseudo-syscall 1005 reads the block in place, BIG's row length as its stride."
   (let* ((bw (glass:fb-width big))
-         (base (+ (%gc-word-of (glass:fb-pixels big) (%conv-addr #x100050A0)) 7))
+         (base (+ (modus-int::%gc-word-of (glass:fb-pixels big) (modus-int::%conv-addr #x100050A0)) 7))
          (addr (+ base (* 8 (+ (* y k bw) (* x k))))))
     (%kiln-sys 1005 addr (+ (* w k) (* (* h k) 65536))
                (+ (+ x0 (* x k)) (* (+ y0 (* y k)) 65536)) bw)))
@@ -326,7 +326,7 @@
                       (%kiln-sys 1007 (glass.desk:desk-fb desk) 0 0))))
               ;; a frame is 16 ms; sleep only what is left of it, not 16 ms on top of the work
               (let ((left (- 16 (floor (- (get-internal-real-time) t0) 1000))))
-                (when (> left 1) (%sleep-ms left))))
+                (when (> left 1) (modus-int::%sleep-ms left))))
             (let ((type (floor e 1099511627776))
                   (y (logand (floor e 1048576) #xFFFFF))
                   (x (logand e #xFFFFF)))
@@ -338,4 +338,4 @@
                   (glass.desk:desk-pointer desk (if (or (= type 3) (= type 5)) 0 1)
                                            (floor (- x x0) k) (floor (- y y0) k))))))
        (error (c) (format t "~&kiln: ~A~%"
-                          (if (fboundp '%escape-describe) (%escape-describe c) c)))))))
+                          (if (fboundp 'modus-int::%escape-describe) (modus-int::%escape-describe c) c)))))))

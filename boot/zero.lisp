@@ -235,8 +235,11 @@
                    (format nil "~{~s~^~%~}" vals))
                (error (e) (handler-case (format nil ";; error: ~a" e)
                             (error () ";; error (unprintable)"))))))
-    (format t "~&~a~%DESK> " out)
-    (finish-output)))
+    ;; ON THE SERIAL LINE, where the form came from: not *STANDARD-OUTPUT*, which is
+    ;; the SSH session the desk was started from (kiln zero starts it that way) -- a
+    ;; session whose network the desk is not pumping, so the answer never arrived and
+    ;; the write could hold the desk still.
+    (modus-int::write-string-serial (format nil "~a~%DESK> " out))))
 
 (defun %zero-repl-char (c)
   (let ((code (if (characterp c) (char-code c) c)) (buf *zero-repl-buf*))
@@ -797,7 +800,7 @@
          (catch 'kiln-zero-exit
            (%kz-say "KZ:app")
            (setf (fill-pointer *zero-repl-buf*) 0)
-           (format t "~&DESK> ") (finish-output)       ; the serial line is a REPL from here
+           (modus-int::write-string-serial (format nil "~%DESK> "))   ; the serial line is a REPL from here
            (when media
              (setf *kiln-bundle-dir* "/")
              (flet ((wm (name v) (setf (symbol-value (find-symbol name "WARP-MEDIA")) v)))

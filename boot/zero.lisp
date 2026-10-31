@@ -107,6 +107,15 @@
   (when (and (null *kz-usb*) (fboundp 'modus-int::bt-start-executor) (fboundp 'modus-int::hid-claim-usb))
     (let ((ex (modus-int::bt-start-executor 1 #'%kz-usb-idle)))
       (modus-int::bt-call ex #'modus-int::hid-claim-usb)
+      ;; THE USB THREAD READS THE NIC FROM HERE ON, whoever brought the network up.  Once
+      ;; *USB-EXECUTOR* is published the main thread leaves the controller alone, and only
+      ;; KILN-ZERO-SSH:NET-UP used to set the service -- so after a netboot, where modus's
+      ;; (ssh-boot) brought the network up, nothing read the NIC at all: the network died,
+      ;; the desk's first write to its SSH session waited forever for an ACK, and a threaded
+      ;; board showed a flat desk with no pointer and no serial REPL.
+      (let ((ns (find-symbol "%NET-SERVICE" "KILN-ZERO-SSH")))
+        (when (and ns (fboundp ns) (null *kz-net-service*))
+          (setf *kz-net-service* (symbol-function ns))))
       (setf *kz-usb* ex)
       (let ((s (find-symbol "*USB-EXECUTOR*" "KILN-ZERO-SSH")))
         (when s (setf (symbol-value s) ex)))))

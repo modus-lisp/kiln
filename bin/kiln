@@ -2611,9 +2611,8 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     the desk; no network, no builder.  Takes --with; not --media (the
                     clips have no place to come from yet)
   --threads         build the board image with SMP: threads on cores 1-3 (SB-THREAD and
-                    MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md).  Their heaps
-                    live where the saved core is loaded, so a threaded board runs threads only
-                    once the core is restored
+                    MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md).  The desk then
+                    runs input and the network on core 1, the screen on core 2, audio on core 3
   --jit-skip=P,...  with --build-core: leave functions whose names start with these
                     package prefixes as bytecode (jit-eager skips them; Quicklisp's
                     loader is always skipped).  The board's JIT arena is 64 MB and the

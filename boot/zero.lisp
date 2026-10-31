@@ -102,8 +102,16 @@
     (when h (funcall h))))
 
 (defun kz-usb-start ()
-  "Start the USB thread on core 1 and give it the controller.  Its handle, or NIL on an image
-   without threads."
+  "Give the USB controller to core 1.  With modus's I/O core (net/usb-io-core.lisp) that is
+   its ENGINE: one non-consing loop owns the controller -- the NIC, the keyboard and mouse,
+   the hub -- and every thread sends and receives through its rings, so nothing here calls
+   into a USB thread and *KZ-USB* is just :ENGINE.  Otherwise (an older image, or no
+   RTL8153) an executor that polls the HID and drains the NIC, as before.  NIL without
+   threads."
+  (when (and (null *kz-usb*) (fboundp 'modus-int::usbe-start))
+    (let ((r (funcall 'modus-int::usbe-start)))
+      (when (member r '(:started :already))
+        (setf *kz-usb* :engine))))
   (when (and (null *kz-usb*) (fboundp 'modus-int::bt-start-executor) (fboundp 'modus-int::hid-claim-usb))
     (let ((ex (modus-int::bt-start-executor 1 #'%kz-usb-idle)))
       (modus-int::bt-call ex #'modus-int::hid-claim-usb)

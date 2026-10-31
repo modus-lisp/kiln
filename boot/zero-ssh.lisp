@@ -390,6 +390,13 @@
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.
    With threads, all of it runs on the USB thread."
+  ;; modus's I/O core owns the controller once its engine runs (net/usb-io-core.lisp): the
+  ;; network is already up through it (it starts only with the RTL8153 bound), and nothing
+  ;; else may touch the controller -- re-addressing the adapter here would pull it out from
+  ;; under the engine
+  (let ((r (find-symbol "USBE-RUNNING-P" "MODUS-INT")))
+    (when (and r (fboundp r) (funcall r))
+      (return-from net-up (setf *net-up* t))))
   (%on-usb (lambda () (%net-up-1 ip gateway)))
   (setf (symbol-value (find-symbol "*KZ-NET-SERVICE*" "COMMON-LISP-USER")) #'%net-service)
   (setf *net-up* t))

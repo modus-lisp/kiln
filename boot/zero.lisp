@@ -294,7 +294,21 @@
                      (pop *zero-events*))
               (progn (setf *kz-frame-at* now)
                      (when *kz-main-net* (funcall *kz-main-net*))
+                     (%kz-serve-jobs)
                      (%zero-idle-gc) 0))))))
+
+;;; THE DESK IS A JOB (modus net/main-jobs.lisp): `kiln zero' starts it with
+;;; (detach (kiln-zero-main) :name "desk"), so the SSH command that started it returns.  It holds
+;;; the main thread, where every evaluation runs, so it lets the others run here, between
+;;; frames, when nothing is happening -- (jobs), (attach "desk"), any SSH command -- and a
+;;; (stop-job "desk") unwinds it from here, through KILN-ZERO-MAIN's cleanup.  An image
+;;; without jobs: nothing.
+(defvar *kz-serve-jobs* :unknown)
+(defun %kz-serve-jobs ()
+  (when (eq *kz-serve-jobs* :unknown)
+    (let ((s (find-symbol "SERVE-JOBS" "MODUS")))
+      (setf *kz-serve-jobs* (and s (fboundp s) (symbol-function s)))))
+  (when *kz-serve-jobs* (funcall *kz-serve-jobs*)))
 
 ;;; --- the screen in Y'CbCr: glass :I420 scanned out by the HVS -----------------------------
 ;;;

@@ -2872,10 +2872,13 @@ else
   while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < fonts.txt
 fi
 while IFS= read -r l; do [[ -n $l ]] && send "$l"; done < media.txt
-main="(kiln-zero-main)"; [[ $media == 1 ]] && main="(kiln-zero-main :media t)"
+# THE DESK IS A JOB on the board's main thread (modus net/main-jobs.lisp): detached, so this
+# command returns, and named, so (attach "desk") / (stop-job "desk") reach it over SSH later.
+main="(detach (kiln-zero-main) :name \"desk\")"; [[ $media == 1 ]] && main="(detach (kiln-zero-main :media t) :name \"desk\")"
 if [[ $start == 1 ]]; then
   echo "> $main"
-  setsid nohup $SSH "$main" >app.log 2>&1 </dev/null &
+  $SSH "$main" >app.log 2>&1 </dev/null
+  cat app.log
 fi
 echo KILN-ZERO-DONE
 EOF

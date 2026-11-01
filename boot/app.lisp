@@ -223,6 +223,215 @@
               nil nil
               t))))                       ; it takes typing: focusing it brings up the keyboard
 
+;;; THE TERMINAL: a Lisp listener in a window.  Enter evaluates what was typed once its
+;;; parentheses balance (otherwise the input goes on, on the next line); what it printed and its
+;;; values are added below it.  Up and Down walk the history.  It evaluates HERE, on the desk's
+;;; thread -- the board's main thread, where evaluation belongs -- so a long evaluation holds the
+;;; desk until it ends; (detach FORM :name "x") runs one as a background job instead (modus
+;;; net/main-jobs.lisp: (jobs), (attach "x"), (stop-job "x")).
+(defun %kiln-balanced-p (text)
+  "TEXT holds at least one complete form: its parentheses close, outside strings and comments."
+  (let ((depth 0) (in-string nil) (esc nil) (in-comment nil) (any nil))
+    (loop for ch across text
+          do (cond (in-comment (when (char= ch #\Newline) (setf in-comment nil)))
+                   (esc (setf esc nil))
+                   (in-string (cond ((char= ch #\\) (setf esc t))
+                                    ((char= ch #\") (setf in-string nil))))
+                   ((char= ch #\;) (setf in-comment t))
+                   ((char= ch #\") (setf in-string t any t))
+                   ((char= ch #\() (incf depth) (setf any t))
+                   ((char= ch #\)) (decf depth))
+                   ((not (member ch '(#\Space #\Tab #\Newline))) (setf any t))))
+    (and any (not in-string) (<= depth 0))))
+
+(defun %kiln-terminal-eval (text)
+  "Evaluate every form in TEXT: the lines it printed, then `= value' for each value of the last."
+  (let ((so (make-string-output-stream)) (vals nil) (out '()))
+    (handler-case
+        (let ((*standard-output* so) (pos 0) (eof (list nil)))
+          (loop (multiple-value-bind (form next) (read-from-string text nil eof :start pos)
+                  (when (eq form eof) (return))
+                  (setf pos next
+                        vals (multiple-value-list (eval form))))))
+      (error (c) (setf vals (list (list :error (handler-case (princ-to-string c)
+                                                  (error () "unprintable")))))))
+    (let ((printed (get-output-stream-string so)))
+      (with-input-from-string (in printed)
+        (loop for l = (read-line in nil) while l do (push l out))))
+    (if vals
+        (dolist (v vals) (push (concatenate 'string "= " (handler-case (prin1-to-string v)
+                                                          (error () "#<unprintable>")))
+                               out))
+        (push "; no values" out))
+    (nreverse out)))
+
+;;; SSH FROM THE TERMINAL: (ssh "host" :user "modus") typed into a Terminal takes that window
+;;; over -- what you type goes to the remote shell a line at a time, what it prints comes back --
+;;; until the remote end closes, or you type ~. on a line of its own.  conch is the client (kiln
+;;; zero --with=conch puts it in the desk); the board's key and host-key checks are
+;;; kiln-zero-ssh's.  Without a pty the remote shell prompts and echoes nothing, so the terminal
+;;; shows what you typed itself.  conch reads block, so a core-0 thread reads the session and
+;;; hands text to the window, which takes it each frame.
+(defvar *kiln-terminal-takeover* nil
+  "Bound while a Terminal evaluates: a function of (conn chan host) that turns it into a session.")
+
+(defun %kiln-c (name)
+  (let ((sym (and (find-package "CONCH") (find-symbol name "CONCH"))))
+    (unless (and sym (fboundp sym))
+      (error "no SSH client in this desk (kiln zero --with=conch installs conch)"))
+    (symbol-function sym)))
+
+(defun %kiln-ssh-shell (conn chan)
+  "Ask for a shell on CHAN (the request carries no argument, which conch's CHAN-REQUEST-1 adds)."
+  (let ((w (funcall (%kiln-c "MAKE-WRITER"))))
+    (funcall (%kiln-c "W-BYTE") w 98)                                  ; CHANNEL_REQUEST
+    (funcall (%kiln-c "W-U32") w (funcall (%kiln-c "CHAN-REMOTE-ID") chan))
+    (funcall (%kiln-c "W-STRING") w "shell")
+    (funcall (%kiln-c "W-BOOL") w t)
+    (funcall (%kiln-c "WRITE-PACKET") conn (funcall (%kiln-c "WRITER-BYTES") w)))
+  (loop for pl = (funcall (%kiln-c "READ-PAYLOAD") conn) for msg = (aref pl 0)
+        do (cond ((= msg 99) (return t))                               ; SUCCESS
+                 ((= msg 100) (error "the server refused a shell"))  ; FAILURE
+                 (t (funcall (%kiln-c "CHAN-PROCESS") chan pl)))))
+
+(defun %kiln-ssh-target (target user port)
+  "TARGET as [user@]host[:port]: (values host user port), the parts it names overriding USER
+   and PORT."
+  (let* ((at (position #\@ target))
+         (u (if at (subseq target 0 at) user))
+         (rest (if at (subseq target (1+ at)) target))
+         (colon (position #\: rest))
+         (h (if colon (subseq rest 0 colon) rest))
+         (p (if colon (parse-integer rest :start (1+ colon)) port)))
+    (values h u p)))
+
+(defun ssh (target &optional port-arg &key (user "modus") (port 22))
+  "In a Terminal: an SSH session in this window.  TARGET is [user@]host[:port]; a port may also
+   be given after it, (ssh \"10.0.0.1\" 2222), or as :PORT."
+  (unless *kiln-terminal-takeover* (error "SSH runs in a Terminal window"))
+  (multiple-value-bind (host u p) (%kiln-ssh-target target user (or port-arg port))
+    (%kiln-ssh-session host u p)))
+
+(defun %kiln-ssh-session (host user port)
+  (%kiln-c "CONNECT")                   ; no conch: say so, before anything else complains
+  (let ((zs (find-package "KILN-ZERO-SSH")))
+    (unless zs (error "no kiln-zero-ssh in this desk"))
+    (funcall (find-symbol "SSH-INSTALL" zs))
+    (let* ((conn (funcall (%kiln-c "CONNECT") host :port port :user user
+                          :identity (funcall (find-symbol "%IDENTITY" zs))
+                          :host-key-verifier (funcall (find-symbol "%VERIFIER" zs) host)))
+           (chan (funcall (%kiln-c "OPEN-SESSION") conn)))
+      (%kiln-ssh-shell conn chan)
+      (funcall *kiln-terminal-takeover* conn chan host)
+      (intern (format nil "CONNECTED-TO-~:@(~A~)" host) "KEYWORD"))))
+
+(defun %kiln-terminal-app (fb)
+  "A Lisp listener: see %KILN-TERMINAL-EVAL."
+  (let ((lines (list "Lisp.  Enter evaluates; (detach FORM :name \"x\") runs it in the background."
+                     "(ssh \"user@host:port\") connects this window to a remote shell."))
+        (input "") (pending "") (history '()) (hpos -1) (dirty t)
+        ;; an SSH session in this window: (conn chan host), its reader's inbox (strings, newest
+        ;; first, :EOF at the end), and the unfinished last line of what it printed
+        (remote nil) (inbox (list nil)) (partial "")
+        (font (glass:default-font)) (size 14) (lh 18) (margin 8)
+        (ink #xe8e8e8) (dim #x9aa0a6) (paper #x16181c) (caret #xe0a800))
+    (labels ((add (l) (setf lines (append lines (list l)))
+                     (when (> (length lines) 400) (setf lines (last lines 400))))
+             (prompt () (cond (remote "$ ") ((string= pending "") "> ") (t ". ")))
+             (take-over (conn chan host)
+               (setf remote (list conn chan host) inbox (list nil) partial "")
+               (add (format nil "[connected to ~A -- ~~. on a line of its own ends it]" host))
+               (let ((box inbox) (c chan))
+                 ;; ON CORE 0, the default for a thread nothing pinned: the inbox is the desk's
+                 ;; (main's) object, and a thread on cores 1..3 may not store into it
+                 (sb-thread:make-thread
+                  (lambda ()
+                    (handler-case
+                        (loop
+                          (when (or (funcall (%kiln-c "CHAN-EOF") c) (funcall (%kiln-c "CHAN-CLOSED") c))
+                            (return))
+                          (funcall (%kiln-c "CHAN-PUMP") c)
+                          (let ((n (funcall (%kiln-c "CHAN-AVAIL") c)))
+                            (when (plusp n)
+                              (let ((b (funcall (%kiln-c "CHAN-READ-EXACT") c n)))
+                                (push (map 'string #'code-char b) (car box))))))
+                      (error () nil))
+                    (push :eof (car box)))
+                  :name "ssh reader")))
+             (take-remote ()
+               ;; what the reader brought, oldest first, into lines
+               (let ((got (nreverse (shiftf (car inbox) nil))))
+                 (dolist (x got)
+                   (setf dirty t)
+                   (if (eq x :eof)
+                       (progn (when (plusp (length partial)) (add partial))
+                              (add (format nil "[~A closed the connection]" (third remote)))
+                              (ignore-errors (funcall (%kiln-c "DISCONNECT") (first remote)))
+                              (setf remote nil partial ""))
+                       (loop for ch across x
+                             do (cond ((char= ch #\Newline) (add partial) (setf partial ""))
+                                      ((char= ch #\Return))
+                                      (t (setf partial (concatenate 'string partial (string ch))))))))))
+             (send-remote (text)
+               (let ((bytes (map '(vector (unsigned-byte 8)) (lambda (ch) (logand (char-code ch) 255))
+                                 (concatenate 'string text (string #\Newline)))))
+                 (funcall (%kiln-c "CHAN-WRITE") (second remote) bytes)))
+             (redraw ()
+               (glass:fb-fill fb paper)
+               (let* ((w (- (glass:fb-width fb) (* 2 margin)))
+                      (rows (loop for l in lines append (or (%kiln-wrap l w size font) (list ""))))
+                      (in-rows (or (%kiln-wrap (concatenate 'string (prompt) input) w size font) (list "")))
+                      (fit (max 1 (floor (- (glass:fb-height fb) (* 2 margin)) lh)))
+                      (shown (last (append rows in-rows) fit))
+                      (y margin) (nshown (length shown)) (ninput (length in-rows)))
+                 (loop for r in shown for k from 0
+                       do (glass:fb-text fb margin y r :size size :color (if (>= k (- nshown ninput)) ink dim)
+                                         :font font)
+                          (incf y lh))
+                 ;; the caret after the input's last row
+                 (let ((last-row (car (last in-rows))))
+                   (glass:fb-rect fb (+ margin 1 (glass:text-width last-row :size size :font font))
+                                  (- y lh -2) 2 (- lh 3) caret))))
+             (enter ()
+               (when remote
+                 (add (concatenate 'string "$ " input))
+                 (if (string= input "~.")
+                     (progn (ignore-errors (funcall (%kiln-c "DISCONNECT") (first remote)))
+                            (add "[disconnected]") (setf remote nil))
+                     (handler-case (send-remote input)
+                       (error (c) (add (format nil "[~A]" c)) (setf remote nil))))
+                 (setf input "")
+                 (return-from enter))
+               (let ((all (concatenate 'string pending input)))
+                 (add (concatenate 'string (prompt) input))
+                 (if (%kiln-balanced-p all)
+                     (progn
+                       (push all history) (setf hpos -1 pending "" input "")
+                       (dolist (l (let ((*kiln-terminal-takeover* #'take-over))
+                                    (%kiln-terminal-eval all)))
+                         (add l)))
+                     (setf pending (concatenate 'string all (string #\Newline)) input ""))))
+             (key (ks)
+               (let ((ch (%kiln-keysym-char ks)))
+                 (cond ((= ks #xff08)                       ; BackSpace
+                        (when (plusp (length input)) (setf input (subseq input 0 (1- (length input))))))
+                       ((= ks #xff52)                       ; Up: the previous entry
+                        (when (< (1+ hpos) (length history))
+                          (incf hpos) (setf input (nth hpos history))))
+                       ((= ks #xff54)                       ; Down
+                        (if (plusp hpos)
+                            (progn (decf hpos) (setf input (nth hpos history)))
+                            (setf hpos -1 input "")))
+                       ((eql ch #\Newline) (enter))
+                       (ch (setf input (concatenate 'string input (string ch))))))
+               (setf dirty t)))
+      (values (lambda (down ks) (when down (key ks)))
+              nil
+              (lambda () (when remote (take-remote)) (when dirty (setf dirty nil) (redraw) t))
+              nil
+              (lambda () (when remote (ignore-errors (funcall (%kiln-c "DISCONNECT") (first remote)))))
+              t))))                       ; it takes typing
+
 (defun %kiln-blit-region (big k x0 y0 x y w h)
   "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
    pseudo-syscall 1005 reads the block in place, BIG's row length as its stride."
@@ -283,6 +492,8 @@
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
     (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app
                                   :width (if media dw (min dw 420)) :height 300)
+    (glass.desk:desk-register-app desk "Terminal" #'%kiln-terminal-app
+                                  :width (min dw 600) :height 320)
     ;; THE KEYBOARD follows the focus: the desk raises the phone's keyboard (pseudo-syscall 1006)
     ;; when a window that takes text is opened or tapped into, and puts it away when you tap
     ;; elsewhere; what is typed arrives as key events below
@@ -332,9 +543,14 @@
                   (x (logand e #xFFFFF)))
               (if (= type 4)
                   ;; a key: the keysym is the low 40 bits; a press and its release
-                  (let ((ks (logand e #xFFFFFFFFFF)))
-                    (glass.desk:desk-key desk t ks)
-                    (glass.desk:desk-key desk nil ks))
+                  (let ((ks (logand e #xFFFFFFFFFF)) (focus (glass.desk::desk-focus desk)))
+                    ;; ~ or / with no text window focused opens a Terminal (typed into one,
+                    ;; they are just characters)
+                    (if (and (or (= ks #x7e) (= ks #x2f))
+                             (not (and focus (glass.desk::win-text-p focus))))
+                        (glass.desk:desk-open desk "Terminal")
+                        (progn (glass.desk:desk-key desk t ks)
+                               (glass.desk:desk-key desk nil ks))))
                   (glass.desk:desk-pointer desk (if (or (= type 3) (= type 5)) 0 1)
                                            (floor (- x x0) k) (floor (- y y0) k))))))
        (error (c) (format t "~&kiln: ~A~%"

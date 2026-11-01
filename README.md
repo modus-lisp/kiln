@@ -270,7 +270,24 @@ QEMU, and the card is one FAT32 partition with the Raspberry Pi firmware, the
 kernel, the core and a `config.txt`.  It needs `sbcl`, `git`, `python3`, `curl`,
 `qemu-system-aarch64` (with its `raspi3b` machine) and `mtools`; it says which
 are missing before it starts.  Put the card in a Zero 2 W with HDMI and a USB hub
-holding a keyboard and mouse: the desk comes up in about a minute.  `~` or `/`
+holding a keyboard, a mouse and an Ethernet adapter: the desk comes up in about a minute.
+
+At power-on, before the desk, the card reads its `cmdline.txt` and brings itself
+onto the network: DHCP (else 10.0.0.2 via 10.0.0.1), an SSH server with a host key
+of its own that accepts only the keys you name, and -- once SNTP has set the clock --
+a NIP-17 gift-wrapped private message to you on your relays saying where it came up:
+its address, npub and SSH host key fingerprint.  Say who and where when you build:
+
+```sh
+bin/kiln zero --sd-image=zero.img --owner=npub1... --relay=wss://relay.example \
+    --ssh-key=~/.ssh/id_ed25519.pub [--nsec-file=board.nsec]
+```
+
+or edit `cmdline.txt` on the card afterwards -- one line, lists comma-separated:
+`NET=dhcp OWNER=npub1... RELAYS=wss://a,wss://b SSH_KEYS=AAAAC3Nza... NSEC=nsec1...`
+(`SSH_KEYS` is the base64 field of each `ssh-ed25519` line; `DESK=off` makes a
+headless board).  Without `NSEC` the board's npub and host key are new at every
+boot; with it both are stable.  Without `SSH_KEYS` its SSH accepts no one.  `~` or `/`
 opens a Terminal (a Lisp listener; `(ssh "user@host")` in it is an SSH client).
 `--workspace` builds from the sibling checkouts as they are instead of the pins.
 

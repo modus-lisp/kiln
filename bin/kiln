@@ -2444,6 +2444,84 @@ print("npub1" + "".join(CH[x] for x in out + [(pm >> 5 * (5 - i)) & 31 for i in 
 PY
 }
 
+# THE ZERO'S SOURCES, AT repos.lock's PINS.  kiln zero used to copy from whatever the sibling
+# checkouts held, so a workspace a few commits behind -- or ahead -- built a desk that never drew
+# (a glass that named a framebuffer function its scribe did not have).  Each repo it needs is
+# now a git checkout under $KILN_STATE/src, detached at its pin: fetched from the sibling
+# checkout when that has the commit (offline, instant), else from GitHub at that one commit.
+# A fresh clone of kiln needs nothing beside it.  --workspace builds from the siblings as they
+# are, for working on them.
+pin_of() { awk -v r="$1" '$1 == r { print $3 }' "$ROOT/repos.lock"; }
+
+pin_repo() {   # pin_repo REPO DIR -- DIR is a checkout of REPO at its pin
+  local r=$1 d=$2 pin; pin=$(pin_of "$r")
+  [[ -n $pin ]] || die "kiln zero: $r is not in repos.lock"
+  [[ -d $d/.git ]] || git init -q "$d" || die "kiln zero: cannot make $d"
+  [[ $(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null) == "$pin" ]] && return 0
+  if ! git -C "$d" cat-file -e "$pin^{commit}" 2>/dev/null; then
+    if [[ -d $KILN_ROOT/$r ]] && git -C "$KILN_ROOT/$r" cat-file -e "$pin^{commit}" 2>/dev/null; then
+      git -C "$d" fetch -q --depth 1 "file://$(cd "$KILN_ROOT/$r" && pwd)" "$pin" 2>/dev/null
+    fi
+    if ! git -C "$d" cat-file -e "$pin^{commit}" 2>/dev/null; then
+      note "zero: fetching $r ${pin:0:10} from github.com/${MODUS_ORG:-modus-lisp}"
+      git -C "$d" fetch -q --depth 1 "https://github.com/${MODUS_ORG:-modus-lisp}/$r" "$pin" \
+        || die "kiln zero: cannot fetch $r at $pin"
+    fi
+  fi
+  git -C "$d" -c advice.detachedHead=false checkout -q -f --detach "$pin" \
+    || die "kiln zero: cannot check $r out at $pin"
+}
+
+# the modus-lisp repos named by the :depends-on lists in DIR's .asd files (system "x/y" is in repo x)
+asd_repo_deps() {
+  python3 - "$1" "$ROOT/repos.lock" <<'PY'
+import glob, os, re, sys
+d, lock = sys.argv[1], sys.argv[2]
+repos = {l.split()[0] for l in open(lock) if l.strip() and not l.startswith("#")}
+out = set()
+for asd in glob.glob(os.path.join(d, "*.asd")):
+    t = re.sub(r";[^\n]*", "", open(asd, errors="replace").read())
+    for m in re.finditer(r":depends-on\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", t, re.I):
+        for a, b in re.findall(r'"([^"]+)"|#?:?([A-Za-z0-9.+_/-]+)', m.group(1)):
+            n = (a or b).lower().split("/")[0]
+            if n in repos: out.add(n)
+print(" ".join(sorted(out)))
+PY
+}
+
+# zero_sources BASE... -- WITH... : each BASE repo, each WITH repo and every modus-lisp repo a
+# WITH repo's systems depend on (transitively), at its pin under $KILN_STATE/src.  BASE repos'
+# dependencies are not followed: kiln zero takes a few files from each.
+zero_sources() {
+  local root=$KILN_STATE/src r dep
+  mkdir -p "$root"
+  while [[ $# -gt 0 && $1 != -- ]]; do pin_repo "$1" "$root/$1"; shift; done
+  [[ $# -gt 0 ]] && shift
+  local -a todo=("$@") done=()
+  while [[ ${#todo[@]} -gt 0 ]]; do
+    r=${todo[0]}; todo=("${todo[@]:1}")
+    [[ " ${done[*]} " == *" $r "* ]] && continue
+    pin_repo "$r" "$root/$r"; done+=("$r")
+    [[ $r == modus ]] && continue                 # the OS: its .asd files are not the desk's
+    for dep in $(asd_repo_deps "$root/$r"); do todo+=("$dep"); done
+  done
+  echo "$root"
+}
+
+# what a card build runs here, checked before an hour of it
+zero_prereqs() {
+  local -a miss=(); local c
+  have_sbcl || miss+=("sbcl")
+  for c in git python3 curl gzip qemu-system-aarch64 mformat mcopy; do
+    command -v "$c" >/dev/null 2>&1 || miss+=("$c")
+  done
+  [[ ${#miss[@]} -eq 0 ]] || die "kiln zero: missing ${miss[*]}.
+  Debian/Ubuntu:  sudo apt install sbcl git python3 curl gzip qemu-system-arm mtools
+  macOS:          brew install sbcl git python curl qemu mtools"
+  qemu-system-aarch64 -M help 2>/dev/null | grep -q '^raspi3b' \
+    || die "kiln zero: this qemu-system-aarch64 has no raspi3b machine (QEMU 6 or later has it)"
+}
+
 # zero_sd_image BOARD.img.gz CORE OUT.img -- a card the Zero boots from on its own:
 # one FAT32 partition holding the firmware, the kernel, the core and a config.txt.
 # The GPU firmware loads kernel8.img at 0x80000 and, through `initramfs`, the core
@@ -2557,7 +2635,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=0 owner=""
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0
   local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
@@ -2575,6 +2653,8 @@ cmd_zero() {
       --nsec-file) nsec_file=${val:?--nsec-file=PATH} ;;
       --owner) owner=${val:?--owner=NPUB or NAME@DOMAIN} ;;
       --threads) threads=1 ;;
+      --no-threads) threads=0 ;;
+      --workspace) workspace=1 ;;
       --jit-skip) IFS=, read -ra jit_skip <<< "${val:?--jit-skip=PKG,PKG,...}" ;;
       -h|--help)
         cat >&2 <<'USAGE'
@@ -2610,9 +2690,13 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     at 0x18000000 -- for `dd of=/dev/sdX`.  The Zero boots straight into
                     the desk; no network, no builder.  Takes --with; not --media (the
                     clips have no place to come from yet)
-  --threads         build the board image with SMP: threads on cores 1-3 (SB-THREAD and
-                    MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md).  The desk then
-                    runs input and the network on core 1, the screen on core 2, audio on core 3
+  --no-threads      build the board image without SMP.  The default is threads on cores 1-3
+                    (SB-THREAD and MODUS:MAKE-CHANNEL on them; modus test/rpi-smp/README.md):
+                    USB and the network on core 1, the screen on core 2, audio on core 3
+  --workspace       build from the sibling checkouts as they are (for working on them).  The
+                    default is every repo at repos.lock's pin, checked out under
+                    $KILN_STATE/src -- fetched from a sibling checkout that has the commit, or
+                    from GitHub -- so a fresh clone of kiln needs nothing beside it
   --jit-skip=P,...  with --build-core: leave functions whose names start with these
                     package prefixes as bytecode (jit-eager skips them; Quicklisp's
                     loader is always skipped).  The board's JIT arena is 64 MB and the
@@ -2649,6 +2733,22 @@ USAGE
   [[ -z $build_core || -n $netboot ]] || die "kiln zero: --build-core needs --netboot (the image to save the core on)"
   [[ -z $netboot ]] || netboot=$(realpath "$netboot")
   local r
+  if [[ -n $sd_image ]]; then
+    zero_prereqs
+    # a card's Terminal has an SSH client: (ssh "user@host")
+    [[ " ${withs[*]} " == *" conch "* ]] || withs+=(conch)
+  fi
+  if [[ $workspace == 0 ]]; then
+    local -a base=(brotli-pure cram scribe glass) wrepos=()
+    base+=(modus)
+    [[ $media == 1 || ${#withs[@]} -gt 0 ]] && base+=(pagetree cabinet)
+    [[ $media == 1 ]] && base+=(reed reel cassette warp)
+    local x; for x in "${withs[@]}"; do
+      [[ -n $(pin_of "${x%%/*}") ]] && wrepos+=("${x%%/*}")
+    done
+    KILN_ROOT=$(zero_sources "${base[@]}" -- "${wrepos[@]}") || exit 1
+    note "zero: sources at repos.lock's pins in $KILN_ROOT"
+  fi
   for r in brotli-pure cram scribe glass; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln zero: no $r checkout at $KILN_ROOT/$r"
   done
@@ -2666,7 +2766,7 @@ USAGE
       # the same flags as the rig's board images: the console on the mini UART (GPIO
       # 14/15), the network and SSH built in but not started
       (cd "$modus" && MODUS_RPI_THREADS=$threads MODUS_CL_REPL_OUT=$out/board.img MODUS_NET_BUILD=1 MODUS_SSH_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_RPI_CHAINLOAD=1 \
-         sbcl --dynamic-space-size 8192 --script mvm/build-rpi-cl-repl.lisp > "$out/board-build.log" 2>&1) \
+         sbcl --dynamic-space-size 12288 --script mvm/build-rpi-cl-repl.lisp > "$out/board-build.log" 2>&1) \
         || die "kiln zero: board image build failed (see $out/board-build.log)"
       gzip -kf "$out/board.img"; netboot=$out/board.img.gz
     fi

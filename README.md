@@ -255,6 +255,27 @@ host the one after.
 
 ## The Zero
 
+### A card, from a fresh clone
+
+```sh
+git clone https://github.com/modus-lisp/kiln && cd kiln
+bin/kiln zero --sd-image=zero.img        # ~40 min, no board needed
+sudo dd if=zero.img of=/dev/sdX bs=4M conv=fsync status=progress
+```
+
+That is the whole of it: every repo is fetched at `repos.lock`'s pin into
+`~/.kiln/src` (from a sibling checkout that has the commit, else from GitHub),
+the board image is built, the desk is installed, compiled native and saved under
+QEMU, and the card is one FAT32 partition with the Raspberry Pi firmware, the
+kernel, the core and a `config.txt`.  It needs `sbcl`, `git`, `python3`, `curl`,
+`qemu-system-aarch64` (with its `raspi3b` machine) and `mtools`; it says which
+are missing before it starts.  Put the card in a Zero 2 W with HDMI and a USB hub
+holding a keyboard and mouse: the desk comes up in about a minute.  `~` or `/`
+opens a Terminal (a Lisp listener; `(ssh "user@host")` in it is an SSH client).
+`--workspace` builds from the sibling checkouts as they are instead of the pins.
+
+### Over the board's link
+
 `kiln zero` puts the desk -- with `--media`, the media player -- on a Raspberry Pi
 Zero 2 W running bare-metal modus: its HDMI screen, its USB keyboard and mouse.
 The Zero cannot build, so kiln assembles one system here and the board installs it

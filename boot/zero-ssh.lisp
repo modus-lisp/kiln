@@ -8,9 +8,8 @@
 ;;;; ones over that client, at run time: conch is not loaded yet when kiln-zero is (it comes
 ;;;; with --with=conch, after), and its own calls reach the replacements by name.
 ;;;;
-;;;; WITH MODUS'S NETWORK SERVICE (a threaded board after (ssh-boot): modus net/net-service.lisp
-;;;; owns the NIC, and net/bare-sockets.lisp gives the image SB-BSD-SOCKETS over its many-connection
-;;;; TCP), conch keeps its own transport -- sockets, like anywhere else -- and nothing here touches
+;;;; WITH MODUS'S OWN NETWORK STACK (a threaded board after (ssh-boot): modus runs it on the I/O
+;;;; core, net/io-net.lisp, and net/bare-sockets.lisp gives the image SB-BSD-SOCKETS over it), conch keeps its own transport -- sockets, like anywhere else -- and nothing here touches
 ;;;; the NIC: no rings, no seams, no NET-UP.  The rest of this file is for a board without it.
 ;;;;
 ;;;; There is no filesystem for ~/.ssh either: the identity is an Ed25519 keypair generated
@@ -41,9 +40,11 @@
       (funcall fn)))
 
 (defun %service-p ()
-  "Whether modus's network service owns the NIC (its thread is running)."
-  (let ((s (find-symbol "*NS-THREAD*" "MODUS-INT")))
-    (and s (boundp s) (symbol-value s) t)))
+  "Whether modus runs the network itself: on the I/O core (ION-ON-P, net/io-net.lisp), or in
+   the older core-0 network service (its thread is running)."
+  (let ((on (find-symbol "ION-ON-P" "MODUS-INT")) (s (find-symbol "*NS-THREAD*" "MODUS-INT")))
+    (or (and on (fboundp on) (funcall on) t)
+        (and s (boundp s) (symbol-value s) t))))
 
 (defun %sym (name pkg) (or (find-symbol name pkg) (error "kiln-zero-ssh: no ~a::~a" pkg name)))
 (defun %kernel (name)

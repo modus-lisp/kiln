@@ -8,6 +8,11 @@
 ;;;; ones over that client, at run time: conch is not loaded yet when kiln-zero is (it comes
 ;;;; with --with=conch, after), and its own calls reach the replacements by name.
 ;;;;
+;;;; WITH MODUS'S NETWORK SERVICE (a threaded board after (ssh-boot): modus net/net-service.lisp
+;;;; owns the NIC, and net/bare-sockets.lisp gives the image SB-BSD-SOCKETS over its many-connection
+;;;; TCP), conch keeps its own transport -- sockets, like anywhere else -- and nothing here touches
+;;;; the NIC: no rings, no seams, no NET-UP.  The rest of this file is for a board without it.
+;;;;
 ;;;; There is no filesystem for ~/.ssh either: the identity is an Ed25519 keypair generated
 ;;;; here from the board's hardware RNG (natrium's DRBG), held in memory, and handed to conch
 ;;;; as bytes; the host key is trusted on first use and remembered for the session.
@@ -34,6 +39,11 @@
   (if *usb-executor*
       (funcall (%kernel "BT-CALL") *usb-executor* fn)
       (funcall fn)))
+
+(defun %service-p ()
+  "Whether modus's network service owns the NIC (its thread is running)."
+  (let ((s (find-symbol "*NS-THREAD*" "MODUS-INT")))
+    (and s (boundp s) (symbol-value s) t)))
 
 (defun %sym (name pkg) (or (find-symbol name pkg) (error "kiln-zero-ssh: no ~a::~a" pkg name)))
 (defun %kernel (name)
@@ -146,14 +156,20 @@
                     (list sk (funcall (%sym "ED25519-PUBLIC-KEY" "NATRIUM") sk)))
                   (multiple-value-list (funcall (%sym "ED25519-KEYPAIR" "NATRIUM"))))))))
 
+(defvar *conch-key-loader* nil "conch's own LOAD-PRIVATE-KEY, before SSH-INSTALL wrapped it.")
+
 (defun ssh-install ()
-  "Point conch's transport at the board's TCP client and let it take a key as bytes."
-  (let ((load-key (symbol-function (%sym "LOAD-PRIVATE-KEY" "CONCH"))))
+  "Let conch take a key as bytes, and -- without modus's network service -- point its transport
+   at the board's TCP client.  With the service conch's own transport (SB-BSD-SOCKETS) is used."
+  (unless *conch-key-loader*
+    (setf *conch-key-loader* (symbol-function (%sym "LOAD-PRIVATE-KEY" "CONCH"))))
+  (let ((load-key *conch-key-loader*))
+    (setf (symbol-function (%sym "LOAD-PRIVATE-KEY" "CONCH"))
+          (lambda (id) (if (consp id) (values (first id) (second id) "zero") (funcall load-key id)))))
+  (unless (%service-p)
     (setf (symbol-function (%sym "TCP-CONNECT" "CONCH")) #'%connect
           (symbol-function (%sym "SEND-RAW" "CONCH")) #'%send
-          (symbol-function (%sym "READ-EXACT" "CONCH")) #'%read-exact
-          (symbol-function (%sym "LOAD-PRIVATE-KEY" "CONCH"))
-          (lambda (id) (if (consp id) (values (first id) (second id) "zero") (funcall load-key id)))))
+          (symbol-function (%sym "READ-EXACT" "CONCH")) #'%read-exact))
   t)
 
 (defun %base64 (bytes)
@@ -382,10 +398,12 @@
 
 ;;; Put the three in front of the NIC.  MODUS.NET's NIC interface is a seam: every caller, the
 ;;; kernel's TCP included, now reaches these, which reach the driver through *NIC-RECEIVE* and
-;;; *NIC-SEND* (taken above, once) and %NIC-RX-BUF.
-(setf (fdefinition 'modus.net:nic-receive) #'%kz-nic-receive)
-(setf (fdefinition 'modus.net:nic-rx-buf) #'%kz-nic-rx-buf)
-(setf (fdefinition 'modus.net:nic-send) #'%kz-nic-send)
+;;; *NIC-SEND* (taken above, once) and %NIC-RX-BUF.  NOT with modus's network service: it owns
+;;; the NIC, and nothing overrides the OS's network stack.
+(unless (%service-p)
+  (setf (fdefinition 'modus.net:nic-receive) #'%kz-nic-receive)
+  (setf (fdefinition 'modus.net:nic-rx-buf) #'%kz-nic-rx-buf)
+  (setf (fdefinition 'modus.net:nic-send) #'%kz-nic-send))
 
 (defun net-up (&key (ip #x0200000A) (gateway #x0100000A))
   "Bring the hub's Ethernet up as CDC-ECM with a static address.  Returns T or signals.
@@ -395,7 +413,7 @@
   ;; else may touch the controller -- re-addressing the adapter here would pull it out from
   ;; under the engine
   (let ((r (find-symbol "USBE-RUNNING-P" "MODUS-INT")))
-    (when (and r (fboundp r) (funcall r))
+    (when (or (%service-p) (and r (fboundp r) (funcall r)))
       (return-from net-up (setf *net-up* t))))
   (%on-usb (lambda () (%net-up-1 ip gateway)))
   (setf (symbol-value (find-symbol "*KZ-NET-SERVICE*" "COMMON-LISP-USER")) #'%net-service)

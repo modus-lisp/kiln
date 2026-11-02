@@ -262,14 +262,26 @@
                (%kmsg (if (eq r :sent) 1 2) "RPRT" (if (eq r :sent) 1 0) (length results) 0)))))
        (setf *report-results* (nreverse results))))))
 
-(defun %report-main ()
+(defun %report-job ()
+  "The report, on the MAIN thread (a job: the REPL's idle, or the desk's SERVE-JOBS, runs it)."
   (handler-case
-      (progn
-        (loop repeat 300 until (%clock-set-p) do (%wait-ms 1000))
-        (if (%clock-set-p)
-            (report)
-            (%note "report" "the clock was never set (SNTP), and a relay drops an event dated 1900")))
+      (if (%clock-set-p)
+          (report)
+          (%note "report" "the clock was never set (SNTP), and a relay drops an event dated 1900"))
     (error (e) (%note "report" "failed: ~a" e))))
+
+(defun %report-waiter ()
+  "The function for a thread of its own: wait for SNTP, then hand the report to the main thread.
+   A thread may not store its own objects into shared memory (modus's shared-store guard:
+   *LOG*, the results, nostr's and seal's state, and the symbol table INTERN adds to are all
+   shared), so everything it needs is resolved HERE, on the main thread, and it does nothing
+   but wait and send the main thread one message through the jobs channel, as SSH does."
+  (let ((wait (%kernel "%NS-WAIT")) (send (%kernel "%NS-SEND"))
+        (jobs (symbol-value (%kernel-var "*NS-MAIN-JOBS*")))
+        (msg (list -1 "(kiln-zero-boot::%report-job)")))
+    (lambda ()
+      (loop repeat 300 until (> (get-universal-time) 3970000000) do (funcall wait 0 0 1000))
+      (funcall send jobs msg))))
 
 ;;; ---- the CA bundle: parsed when the core is made, used from memory ------------------------------
 (defun set-ca-pem (bytes)
@@ -305,5 +317,5 @@
       (when host-seed (%step "ssh" (ssh-start host-seed)))
       (when nostr
         (setf *report-thread*
-              (%step "report" (sb-thread:make-thread #'%report-main :name "boot report"))))))
+              (%step "report" (sb-thread:make-thread (%report-waiter) :name "boot report"))))))
   (when desk (funcall (intern "KILN-ZERO-MAIN" "COMMON-LISP-USER"))))

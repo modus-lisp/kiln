@@ -2647,7 +2647,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp ca_bundle=""
   local -a relays=() ssh_keys=()
   local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
@@ -2668,6 +2668,7 @@ cmd_zero() {
       --relay) relays+=("${val:?--relay=wss://...}") ;;
       --ssh-key) ssh_keys+=("${val:?--ssh-key=FILE.pub or a public key line}") ;;
       --net) net=${val:?--net=dhcp|static|off} ;;
+      --ca-bundle) ca_bundle=${val:?--ca-bundle=latest or FILE.pem} ;;
       --threads) threads=1 ;;
       --no-threads) threads=0 ;;
       --workspace) workspace=1 ;;
@@ -2732,6 +2733,9 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
   --ssh-key=KEY     an ssh-ed25519 public key the board's SSH server accepts: a .pub file or
                     the line itself (repeatable).  Without one the server accepts no one
   --net=MODE        dhcp (default), static (10.0.0.2 via 10.0.0.1) or off
+  --ca-bundle=WHICH the roots a relay's certificate is checked against, parsed into the core:
+                    latest (Mozilla's, as curl.se publishes it, checked against its published
+                    SHA-256), or a PEM file.  Default: this machine's bundle (KILN_CA_BUNDLE)
   --nsec-file=PATH  the board's identity -- an nsec1... key, written to the card's cmdline.txt
                     as NSEC=: its nostr key, and the seed of its SSH host key, so both survive
                     reboots.  Without it both are fresh at every boot
@@ -2935,6 +2939,8 @@ EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)
   cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" "$out/"
+  # the Terminal's monospace face (boot/app.lisp *KILN-MONO-FONT*), loaded into a core beside them
+  cp "$KILN_ROOT/scribe/fonts/LiberationMono-Regular.ttf" "$out/"
   # the clips, one manifest each: clip-<name>.<ext> -> pieces in clip-<name>/
   if [[ $media == 1 ]]; then
     for f in "$ROOT"/media/*; do [[ -f $f ]] && cp "$f" "$out/clip-$(basename "$f")"; done
@@ -3157,12 +3163,32 @@ EOF
     [[ -n $sd_image ]] && hookform=(--form="(progn (setq modus-int::*core-restart-hook* (quote $hook)) :hook)")
     # THE ROOTS a relay's certificate chains to: a board has no /etc/ssl, and a file call there
     # halts the core.  This machine's bundle, parsed into the core (kiln-zero-boot SET-CA-PEM).
+    # the Terminal's monospace face, 3 MB past the fonts (clear of the CA bundle below)
+    local mono=$out/LiberationMono-Regular.ttf ma=$(( fb + 3145728 ))
+    local -a monoblob=(--blob="$mono@$ma")
+    local -a monoform=(--form="(progn (setf cl-user::*kiln-mono-font* (scribe:open-font (ramv $ma $(stat -c %s "$mono")))) :mono)")
     local -a cablob=() caform=()
     if [[ -n $sd_image && -z ${ZERO_GATEWAY:-} ]]; then
       local cab="" c
-      for c in ${KILN_CA_BUNDLE:-} /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-        [[ -s $c ]] && { cab=$c; break; }
-      done
+      if [[ $ca_bundle == latest ]]; then
+        # Mozilla's root store, extracted by curl's maintainers: newer than any distro's
+        # package, and dated (a card keeps the roots it was built with until it is rebuilt)
+        local cad=$KILN_STATE/ca; mkdir -p "$cad"
+        curl -sSfL -o "$cad/cacert.pem.part" https://curl.se/ca/cacert.pem \
+          && curl -sSfL -o "$cad/cacert.pem.sha256" https://curl.se/ca/cacert.pem.sha256 \
+          || die "kiln zero: cannot fetch the latest CA bundle from curl.se"
+        [[ $(sha256sum < "$cad/cacert.pem.part" | cut -d' ' -f1) == $(cut -d' ' -f1 < "$cad/cacert.pem.sha256") ]] \
+          || die "kiln zero: the CA bundle from curl.se does not match its published SHA-256"
+        mv "$cad/cacert.pem.part" "$cad/cacert.pem"; cab=$cad/cacert.pem
+        note "zero: CA bundle: Mozilla's via curl.se ($(grep -m1 -o 'as of: .*' "$cab" || echo undated))"
+      elif [[ -n $ca_bundle ]]; then
+        [[ -s $ca_bundle ]] || die "kiln zero: --ca-bundle=$ca_bundle: no such file"
+        cab=$ca_bundle
+      else
+        for c in ${KILN_CA_BUNDLE:-} /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+          [[ -s $c ]] && { cab=$c; break; }
+        done
+      fi
       [[ -n $cab ]] || die "kiln zero: no CA bundle (KILN_CA_BUNDLE names one): the card could not check a relay's certificate"
       cp "$cab" "$out/ca.pem"
       local ca=$(( fb + 1048576 ))
@@ -3173,6 +3199,7 @@ EOF
     local -a coreargs=(
       --form="(progn (setf glass::*font-regular* (scribe:open-font (ramv $fa $(stat -c %s "$reg"))) glass::*font-bold* (scribe:open-font (ramv $fb $(stat -c %s "$bold")))) :fonts)"
       "${caform[@]}"
+      "${monoform[@]}"
       "${skipform[@]}"
       --form="(jit-eager)"
       --form="(list :glyphs (kiln-zero-prerender-glyphs))"
@@ -3193,19 +3220,19 @@ EOF
       local rdir=${KILN_BUILDER_DIR:-kiln-core}-$$   # KILN_BUILDER_DIR: a roomy scratch path on the builder
       note "zero: building the core on $builder"
       ssh "$builder" "mkdir -p $rdir/test $rdir/tars" || die "kiln zero: cannot reach $builder"
-      scp -q "$w/kernel8.img" "$reg" "$bold" "$builder:$rdir/" \
+      scp -q "$w/kernel8.img" "$reg" "$bold" "$mono" "$builder:$rdir/" \
         && scp -q "$modus/test/run-rpi-core.sh" "$modus/test/rpi-core-driver.py" "$builder:$rdir/test/" \
         && scp -q "$w"/tars/*.tar "$builder:$rdir/tars/" || die "kiln zero: cannot copy the build to $builder"
       local cmd; cmd="cd $rdir && TARS=tars ./test/run-rpi-core.sh kernel8.img out.core"
       [[ ${#cablob[@]} -gt 0 ]] && { scp -q "$out/ca.pem" "$builder:$rdir/" || die "kiln zero: cannot copy the CA bundle"; cablob=(--blob="ca.pem@$ca"); }
-      local x; for x in "${loads[@]}" "--blob=$(basename "$reg")@$fa" "--blob=$(basename "$bold")@$fb" "${cablob[@]}" "${coreargs[@]}"; do
+      local x; for x in "${loads[@]}" "--blob=$(basename "$reg")@$fa" "--blob=$(basename "$bold")@$fb" "--blob=$(basename "$mono")@$ma" "${cablob[@]}" "${coreargs[@]}"; do
         cmd+=" $(printf '%q' "$x")"; done
       ssh "$builder" "$cmd" | tee "$out/core.log"
       grep -q "^PASS" "$out/core.log" && scp -q "$builder:$rdir/out.core" "$build_core"
       ssh "$builder" "rm -rf $rdir"
     else
       TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
-        --blob="$reg@$fa" --blob="$bold@$fb" "${cablob[@]}" "${coreargs[@]}" | tee "$out/core.log"
+        --blob="$reg@$fa" --blob="$bold@$fb" "${monoblob[@]}" "${cablob[@]}" "${coreargs[@]}" | tee "$out/core.log"
     fi
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"

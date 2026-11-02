@@ -325,6 +325,10 @@
       (funcall *kiln-terminal-takeover* conn chan host)
       (intern (format nil "CONNECTED-TO-~:@(~A~)" host) "KEYWORD"))))
 
+;; The Terminal's typeface: Liberation Mono when the image carries it (kiln zero's core build
+;; loads it beside the desk's two faces), else the desk's own.
+(defvar *kiln-mono-font* nil)
+
 (defun %kiln-terminal-app (fb)
   "A Lisp listener: see %KILN-TERMINAL-EVAL."
   (let ((lines (list "Lisp.  Enter evaluates; (detach FORM :name \"x\") runs it in the background."
@@ -333,7 +337,7 @@
         ;; an SSH session in this window: (conn chan host), its reader's inbox (strings, newest
         ;; first, :EOF at the end), and the unfinished last line of what it printed
         (remote nil) (inbox (list nil)) (partial "")
-        (font (glass:default-font)) (size 14) (lh 18) (margin 8)
+        (font (or *kiln-mono-font* (glass:default-font))) (size 14) (lh 18) (margin 8)
         (ink #xe8e8e8) (dim #x9aa0a6) (paper #x16181c) (caret #xe0a800))
     (labels ((add (l) (setf lines (append lines (list l)))
                      (when (> (length lines) 400) (setf lines (last lines 400))))

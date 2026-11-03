@@ -138,7 +138,14 @@
 (defvar *zero-mb* 0)
 
 (defun %zero-keysym (c)
-  (cond ((= c 13) #xff0d) ((= c 127) #xff08) ((= c 9) #xff09) ((= c 27) #xff1b) (t c)))
+  "The X11 keysym for a code from modus's key ring: a character, a control code (Ctrl held,
+   passed on as itself), or 128 and up for a key with no character (net/usb-hid-split.lisp)."
+  (cond ((= c 13) #xff0d) ((= c 127) #xff08) ((= c 9) #xff09) ((= c 27) #xff1b)
+        ((<= 136 c 147) (+ #xffbe (- c 136)))             ; F1..F12
+        ((>= c 128)
+         (case c (128 #xff63) (129 #xff50) (130 #xff55) (131 #xffff) (132 #xff57) (133 #xff56)
+                 (134 #xff53) (135 #xff51) (148 #xff54) (149 #xff52) (t c)))
+        (t c)))
 
 (defun %zero-event (type x y) (+ (* type 1099511627776) (* y 1048576) x))
 

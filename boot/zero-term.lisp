@@ -64,7 +64,8 @@
   (let* ((font (or *kiln-mono-font* (glass:default-font)))
          (tm nil) (session nil) (history (quill:make-history))
          (qo (make-string-output-stream))
-         (remote nil) (inbox (list nil)) (line-start t) (tilde nil))
+         (remote nil) (inbox (list nil)) (line-start t) (tilde nil)
+         (esc-held nil))
     (labels ((feed (string)                       ; text for the screen (LF as CR LF, as a tty)
                (loop for ch across string
                      do (when (char= ch #\Newline) (glass-term::feed-cp tm 13))
@@ -126,6 +127,13 @@
                    (feed l) (feed (string #\Newline))))
                (unless remote (prompt)))
              (local-keys (string)
+               ;; Alt arrives as ESC and then the key, two events; quill reads a lone ESC as
+               ;; Escape, so an ESC is held for the key after it (ESC b is M-b)
+               (when (string= string (string (code-char 27)))
+                 (setf esc-held t)
+                 (return-from local-keys))
+               (when esc-held
+                 (setf string (concatenate 'string (string (code-char 27)) string) esc-held nil))
                (multiple-value-bind (text status) (quill:feed-line session (%kiln-utf8 string))
                  (drain)
                  (case status
@@ -146,7 +154,12 @@
       (feed (format nil "Lisp, edited with quill: Emacs keys, Up and C-r for history.~%~
                          (ssh \"user@host\") makes this window that host's terminal.~%"))
       (prompt)
-      (values (lambda (down ks) (glass-term:on-key tm down ks))
+      (values (lambda (down ks)
+                ;; a control code (the Zero's keyboard applies Ctrl itself) is sent as it is;
+                ;; glass/term makes them only from a held Control key and a letter
+                (if (< 0 ks 32)
+                    (when down (sink (string (code-char ks))))
+                    (glass-term:on-key tm down ks)))
               nil
               (lambda ()
                 (when remote (take-remote))

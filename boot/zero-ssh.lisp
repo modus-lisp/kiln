@@ -157,11 +157,55 @@
                     (list sk (funcall (%sym "ED25519-PUBLIC-KEY" "NATRIUM") sk)))
                   (multiple-value-list (funcall (%sym "ED25519-KEYPAIR" "NATRIUM"))))))))
 
+;; The curve arithmetic: natrium's portable X25519/Ed25519 takes 2.6 s for one X25519 and 9.3 s
+;; for one signature on the Zero, so a connection (a keypair, a shared secret, the host key's
+;; signature checked, ours made) spent ~35 s in it.  The kernel has its own, native and 70-90x
+;; faster (net/crypto.lisp: 37 ms per X25519, 50 ms per public key), and byte-identical to
+;; natrium's (checked on the board: public key, signature, X25519, SHA-256, a bad signature
+;; refused).  So natrium's entry points are pointed at it, when the kernel has them.  SHA-512
+;; too: natrium's works in 64-bit words, which are bignums on modus (172 ms a digest against
+;; the kernel's 3), and its DRBG makes three or four HMAC-SHA512s per RANDOM-BYTES -- 1.3 s
+;; each, 13 of the 15 s a connection still took with the curves replaced.
+(defvar *natrium-crypto* nil "natrium's own definitions, before %USE-KERNEL-CRYPTO replaced them.")
+
+(defun %u8 (v)
+  (let ((r (make-array (length v) :element-type '(unsigned-byte 8))))
+    (dotimes (i (length v) r) (setf (aref r i) (logand 255 (aref v i))))))
+
+(defun %use-kernel-crypto ()
+  (let ((k (lambda (n) (let ((s (find-symbol n "MODUS.CRYPTO"))) (and s (fboundp s) (symbol-function s))))))
+    (let ((x (funcall k "X25519")) (xpub (funcall k "X25519-PUBLIC-KEY"))
+          (pub (funcall k "ED25519-PUBLIC-KEY")) (sign (funcall k "ED25519-SIGN"))
+          (verify (funcall k "ED25519-VERIFY")) (sha512 (funcall k "SHA512")))
+      (when (and x xpub pub sign verify sha512 (not *natrium-crypto*))
+        (setq *natrium-crypto*
+              (mapcar (lambda (n) (cons n (symbol-function (%sym n "NATRIUM"))))
+                      '("X25519" "X25519-KEYPAIR" "ED25519-PUBLIC-KEY" "ED25519-SIGN"
+                        "ED25519-VERIFY" "ED25519-KEYPAIR" "SHA512" "HMAC-SHA512")))
+        (let ((random (symbol-function (%sym "RANDOM-BYTES" "NATRIUM")))
+              (hmac (symbol-function (%sym "HMAC" "NATRIUM")))
+              (digest (lambda (m) (%u8 (funcall sha512 m)))))
+          (flet ((put (n f) (setf (symbol-function (%sym n "NATRIUM")) f)))
+            (put "SHA512" digest)
+            (put "HMAC-SHA512" (lambda (key m) (funcall hmac digest 128 key m)))
+            (put "X25519" (lambda (scalar u) (%u8 (funcall x scalar u))))
+            (put "X25519-KEYPAIR"
+                 (lambda () (let ((sk (funcall random 32))) (values sk (%u8 (funcall xpub sk))))))
+            (put "ED25519-PUBLIC-KEY" (lambda (sk) (%u8 (funcall pub sk))))
+            (put "ED25519-SIGN" (lambda (sk m) (%u8 (funcall sign sk m (length m)))))
+            (put "ED25519-VERIFY"
+                 (lambda (pk m sig) (and (= (length pk) 32) (= (length sig) 64)
+                                         (funcall verify pk sig m (length m)) t)))
+            (put "ED25519-KEYPAIR"
+                 (lambda () (let ((sk (funcall random 32))) (values sk (%u8 (funcall pub sk))))))))
+        t))))
+
 (defvar *conch-key-loader* nil "conch's own LOAD-PRIVATE-KEY, before SSH-INSTALL wrapped it.")
 
 (defun ssh-install ()
   "Let conch take a key as bytes, and -- without modus's network service -- point its transport
    at the board's TCP client.  With the service conch's own transport (SB-BSD-SOCKETS) is used."
+  (%use-kernel-crypto)
   (unless *conch-key-loader*
     (setf *conch-key-loader* (symbol-function (%sym "LOAD-PRIVATE-KEY" "CONCH"))))
   (let ((load-key *conch-key-loader*))

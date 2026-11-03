@@ -306,16 +306,38 @@
   (list :net *net-mode* :address (address) :npub (npub) :host-key (host-key-fingerprint)
         :report *report-results* :log (reverse *log*)))
 
+(defun %use-kernel-crypto ()
+  "natrium's curves, SHA-512 and HMAC on the kernel's native crypto (kiln-zero-ssh): the
+   report's TLS handshake took 15 s on the Zero without it, 1.9 s with it."
+  (let ((f (and (find-package "KILN-ZERO-SSH") (find-symbol "%USE-KERNEL-CRYPTO" "KILN-ZERO-SSH"))))
+    (and f (fboundp f) (funcall f))))
+
+(defun %wait-for-clock (seconds)
+  "Wait up to SECONDS for SNTP to set the clock; whether it is set."
+  (let ((wait (%kernel "%NS-WAIT")))
+    (loop repeat seconds until (%clock-set-p) do (funcall wait 0 0 1000))
+    (%clock-set-p)))
+
 (defun boot-main (&key (desk (not (equalp (%bootarg "DESK") "off"))))
-  "The card's restart hook: network, SSH, the owner's message (on a thread), then the desk
-   (DESK NIL: back to the caller instead, for a test)."
+  "The card's restart hook: network, SSH, the owner's message, then the desk (DESK NIL: back
+   to the caller instead, for a test).
+
+   THE MESSAGE GOES BEFORE THE DESK.  It is the main thread's work (a thread may not touch
+   nostr's, seal's or the symbol table's shared state) -- a TLS handshake and a gift wrap, ~10 s
+   on the Zero -- and sent after the desk was up it froze the desk that long, with the clock on
+   screen and the mouse jerking.  The clock gets 30 s to be set (a relay drops an event dated
+   1900); if it is still not set, the message is sent later, from a thread's nudge, as before."
   (%step "trust" (%install-trust-store))
+  (%step "crypto" (%use-kernel-crypto))
   (multiple-value-bind (nostr host-seed how) (%step "identity" (%identity))
     (setf *nostr-secret* nostr)
     (when how (%note "identity" "~a (~(~a~))" (npub) how))
     (when (and (%step "net" (net-start)) (not (eq *net-mode* :off)))
       (when host-seed (%step "ssh" (ssh-start host-seed)))
       (when nostr
-        (setf *report-thread*
-              (%step "report" (sb-thread:make-thread (%report-waiter) :name "boot report"))))))
+        (if (%step "clock" (%wait-for-clock 30))
+            (progn (%note "report" "telling the owner the board is up (about 10 s)...")
+                   (%report-job))
+            (setf *report-thread*
+                  (%step "report" (sb-thread:make-thread (%report-waiter) :name "boot report")))))))
   (when desk (funcall (intern "KILN-ZERO-MAIN" "COMMON-LISP-USER"))))

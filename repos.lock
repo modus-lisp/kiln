@@ -18,6 +18,7 @@ conch           master  ba2fe9a2ea42d92ce96fa3c3c031c9f420684cbe
 cram            master  f8aad087400ea1a9e8a26c4d0e1290bf9490cca1
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc
 folio           master  f310b5838076b528aafa0b254447e4035c019d3e
+fs-fat          main    2d4b8248523b9b81d307099cbef5db4b748e3eb0
 gesso           master  6981f2d1fc5c0af7ffd2ea97666387226df08fb0
 glass           master  cd47b157578154f019caaae626a45da6c6476d30
 glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61

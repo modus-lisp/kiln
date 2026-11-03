@@ -173,7 +173,10 @@
     (dotimes (i (length v) r) (setf (aref r i) (logand 255 (aref v i))))))
 
 (defun %use-kernel-crypto ()
-  (let ((k (lambda (n) (let ((s (find-symbol n "MODUS.CRYPTO"))) (and s (fboundp s) (symbol-function s))))))
+  ;; INTERN, not FIND-SYMBOL: a kernel function whose name nothing has typed has no symbol yet
+  ;; (on a fresh card FIND-SYMBOL missed every one of these, and nothing was replaced)
+  (let ((k (lambda (n) (let ((s (and (find-package "MODUS.CRYPTO") (intern n "MODUS.CRYPTO"))))
+                         (and s (fboundp s) (symbol-function s))))))
     (let ((x (funcall k "X25519")) (xpub (funcall k "X25519-PUBLIC-KEY"))
           (pub (funcall k "ED25519-PUBLIC-KEY")) (sign (funcall k "ED25519-SIGN"))
           (verify (funcall k "ED25519-VERIFY")) (sha512 (funcall k "SHA512")))

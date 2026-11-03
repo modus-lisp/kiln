@@ -2791,7 +2791,7 @@ USAGE
     fi
   fi
   if [[ $workspace == 0 ]]; then
-    local -a base=(brotli-pure cram scribe glass) wrepos=()
+    local -a base=(brotli-pure cram scribe glass fs-fat) wrepos=()
     base+=(modus)
     [[ $media == 1 || ${#withs[@]} -gt 0 ]] && base+=(pagetree cabinet)
     [[ $media == 1 ]] && base+=(reed reel cassette warp)
@@ -2856,6 +2856,11 @@ EOF
   cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
   # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
   cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
+  # the card it booted from, mounted: fs-fat's FAT32 over modus's SD driver (net/emmc.lisp),
+  # so cmdline.txt can be edited from the board
+  [[ -f $KILN_ROOT/fs-fat/lib/fat32.lisp ]] || die "kiln zero: no fs-fat checkout at $KILN_ROOT/fs-fat"
+  cp "$KILN_ROOT/fs-fat/lib/fat32.lisp" "$sys/src/fs-fat32.lisp"
+  cp "$ROOT/boot/zero-card.lisp" "$sys/src/zero-card.lisp"
   # what a card does at power-on before the desk: network, SSH, the owner's message
   cp "$ROOT/boot/zero-boot.lisp" "$sys/src/zero-boot.lisp"
   cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
@@ -2933,7 +2938,8 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "zero-bt")
      $media_files
-     (:file "zero") (:file "app") (:file "zero-ssh") (:file "zero-boot") (:file "zero-rfb")
+     (:file "zero") (:file "app") (:file "zero-ssh") (:file "fs-fat32") (:file "zero-card")
+     (:file "zero-boot") (:file "zero-rfb")
      (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets") (:file "zero-rfbs")))))
 EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz

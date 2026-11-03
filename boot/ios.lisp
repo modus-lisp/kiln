@@ -13,7 +13,10 @@
 ;;;; In CL-USER on purpose: it calls modus internals (%GC-SAFE-BLOCK-6,
 ;;;; %GC-WORD-OF, %CLI-COLLECT-ARGV), which a script names unqualified.
 
-(defun %kiln-sys (n a b c &optional (d 0)) (modus-int::%gc-safe-block-6 n a b c d))
+(defun %kiln-sys (n a b c &optional (d 0) (e 8))
+  ;; E, bytes a pixel, is always 8 here: the iOS image does not pack (unsigned-byte 32) vectors
+  (declare (ignore e))
+  (modus-int::%gc-safe-block-6 n a b c d))
 
 (defun kiln-ios-main (&key autoplay)
   "The iPhone app (boot/app.lisp), below the status bar."

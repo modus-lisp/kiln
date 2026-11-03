@@ -46,10 +46,11 @@
              (incf addr k)
              (decf n k))))
 
-(defun %kiln-sys (n a b c &optional (d 0))
+(defun %kiln-sys (n a b c &optional (d 0) (e 8))
   (case n
     ;; BLIT: A is the first pixel, B = w | h<<16, C = x | y<<16, D the source's
-    ;; row length in pixels (0: rows are contiguous).
+    ;; row length in pixels (0: rows are contiguous).  E, bytes a pixel, is always 8 here: the
+    ;; Android image does not pack (unsigned-byte 32) vectors, and the shim takes tagged words.
     (1005 (let* ((w (logand b #xFFFF)) (h (floor b 65536))
                  (stride (if (zerop d) w d)))
             (%kiln-ui-send 1005 b c (* 8 w h))

@@ -708,16 +708,27 @@
         #xD341FD4A #xD341FD6B #x28812CEA #xD1000929 #x17FFFFFA #x8B050000 #x8B060021
         #xD1000484 #x17FFFFED #xD5033F9F #xD65F03C0))
 
+(defun %zero-blit-packed-words (scr)
+  ;; the same loop over a PACKED (unsigned-byte 32) vector: ldr w / ldp w, 4 bytes a pixel,
+  ;; no tag to shift off (the shifts are nops, so every branch keeps its offset)
+  (let ((w (%zero-blit-words scr)))
+    (setf (nth 10 w) #xB840450A (nth 11 w) #xD503201F                ; ldr w10,[x8],#4; nop
+          (nth 15 w) #x28C12D0A (nth 16 w) #xD503201F (nth 17 w) #xD503201F) ; ldp w10,w11,[x8],#8
+    w))
+
 (defun %zero-blit-code ()
-  "The exec page holding the row copier (at 0) and its arguments (at 512)."
+  "The exec page holding the row copiers (tagged words at 0, packed u32 at 256) and their
+   arguments (at 512)."
   (or *zero-blit-code*
       (let ((code (%mmap-exec-page 4096)))
         (modus-int::hcon-poke code (%zero-blit-words (+ code 512)))
+        (modus-int::hcon-poke (+ code 256) (%zero-blit-packed-words (+ code 512)))
         (%jit-icache-flush code 512)
         (setf *zero-blit-code* code))))
 
-(defun %zero-blit (addr wh xy stride)
-  "Copy a block of tagged pixel words at ADDR (row length STRIDE) to the screen at XY.
+(defun %zero-blit (addr wh xy stride &optional (bpp 8))
+  "Copy a block of pixels at ADDR (row length STRIDE) to the screen at XY: BPP 8, tagged
+   words (a general vector); 4, a packed (unsigned-byte 32) vector.
    NATIVE: a pixel at a time in Lisp was 85 ns, a 260x110 window 3.4 ms of every drag
    frame; the row copier is a few instructions a pixel.  Nothing between taking ADDR and
    the call allocates, so the vector cannot move under it."
@@ -734,8 +745,8 @@
         (modus-int::hcon-u64 (+ scr 16) cols)
         (modus-int::hcon-u64 (+ scr 24) rows)
         (modus-int::hcon-u64 (+ scr 32) (modus-int::hcon-get #x08))
-        (modus-int::hcon-u64 (+ scr 40) (* 8 stride))
-        (modus-int::%jit-call code)))
+        (modus-int::hcon-u64 (+ scr 40) (* bpp stride))
+        (modus-int::%jit-call (if (= bpp 4) (+ code 256) code))))
     (%zero-pointer-show)
     0))
 
@@ -776,7 +787,7 @@
 (defvar *kz-damage* 0)
 (defun %kz-say (s) (modus-int::write-string-serial s) (write-char-serial 10))
 
-(defun %kiln-sys (n a b c &optional (d 0))
+(defun %kiln-sys (n a b c &optional (d 0) (e 8))
   (when (member n '(1002 1005 1007)) (incf *kz-damage*))
   (let ((bit (case n (1001 1) (1002 2) (1004 4) (1005 8) (t 0))))
     (when (and (plusp bit) (zerop (logand *kz-said* bit)))
@@ -789,7 +800,7 @@
                            (modus-int::hcon-nfill (modus-int::hcon-get #x04) (* (modus-int::hcon-get #x10) (modus-int::hcon-get #x08)) c)
                            (%zero-pointer-show) 0)))
     (1004 (%zero-next-event))
-    (1005 (%kz-on-screen (lambda () (%zero-blit a b c d))))
+    (1005 (%kz-on-screen (lambda () (%zero-blit a b c d e))))
     ;; the FIRST present makes *ZY* (a list: main's, since a thread may not store its own
     ;; objects in a global); every later one is the screen thread's
     (1007 (cond ((null *kz-scr*) (%zero-present-yuv a))

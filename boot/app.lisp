@@ -25,13 +25,18 @@
           when (and (stringp a) (string= a "--core") (stringp b))
             do (return (directory-namestring b)))))
 
+(defun %kiln-px-bytes (px)
+  "Bytes a pixel in glass pixel vector PX: 4 where (unsigned-byte 32) vectors are packed
+   (subtag #x17), else 8, a tagged word."
+  (if (eql (modus-int::obj-subtag px) #x17) 4 8))
+
 (defun %kiln-blit (fb x y)
   "Copy glass framebuffer FB to the screen at (X, Y): pseudo-syscall 1005
    reads its pixel vector in place (element 0 is the vector's word + 7)."
   (let* ((px (glass::fb-pixels fb))
          (addr (+ (modus-int::%gc-word-of px (modus-int::%conv-addr #x100050A0)) 7)))
     (%kiln-sys 1005 addr (+ (glass::fb-width fb) (* (glass::fb-height fb) 65536))
-               (+ x (* y 65536)))))
+               (+ x (* y 65536)) 0 (%kiln-px-bytes px))))
 
 ;;; THE SPEAKER.  glass's mixer normally runs its own 20 ms clock thread, and on modus that
 ;;; thread's frames cannot be stored into the shared mix (the store guard).  So here the MAIN
@@ -445,10 +450,11 @@
   "Show desk rectangle (X,Y,W,H), already magnified by K into BIG, at screen offset (X0,Y0):
    pseudo-syscall 1005 reads the block in place, BIG's row length as its stride."
   (let* ((bw (glass:fb-width big))
-         (base (+ (modus-int::%gc-word-of (glass:fb-pixels big) (modus-int::%conv-addr #x100050A0)) 7))
-         (addr (+ base (* 8 (+ (* y k bw) (* x k))))))
+         (px (glass:fb-pixels big)) (bpp (%kiln-px-bytes px))
+         (base (+ (modus-int::%gc-word-of px (modus-int::%conv-addr #x100050A0)) 7))
+         (addr (+ base (* bpp (+ (* y k bw) (* x k))))))
     (%kiln-sys 1005 addr (+ (* w k) (* (* h k) 65536))
-               (+ (+ x0 (* x k)) (* (+ y0 (* y k)) 65536)) bw)))
+               (+ (+ x0 (* x k)) (* (+ y0 (* y k)) 65536)) bw bpp)))
 
 (defun kiln-app-main (&key autoplay (top 60) (media t))
   "The app: a glass desk (glass/desk) on the phone's screen -- windows dragged by their title

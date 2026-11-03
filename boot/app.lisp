@@ -274,6 +274,9 @@
 ;;; hands text to the window, which takes it each frame.
 (defvar *kiln-terminal-takeover* nil
   "Bound while a Terminal evaluates: a function of (conn chan host) that turns it into a session.")
+(defvar *kiln-terminal-pty* nil
+  "Bound while a terminal-emulating Terminal (zero-term.lisp) evaluates: (COLS ROWS), the size of
+   the pseudo-terminal SSH asks for before the shell.")
 
 (defun %kiln-c (name)
   (let ((sym (and (find-package "CONCH") (find-symbol name "CONCH"))))
@@ -321,6 +324,8 @@
                           :identity (funcall (find-symbol "%IDENTITY" zs))
                           :host-key-verifier (funcall (find-symbol "%VERIFIER" zs) host)))
            (chan (funcall (%kiln-c "OPEN-SESSION") conn)))
+      (when (and *kiln-terminal-pty* (fboundp '%kiln-ssh-pty))
+        (funcall '%kiln-ssh-pty conn chan (first *kiln-terminal-pty*) (second *kiln-terminal-pty*)))
       (%kiln-ssh-shell conn chan)
       (funcall *kiln-terminal-takeover* conn chan host)
       (intern (format nil "CONNECTED-TO-~:@(~A~)" host) "KEYWORD"))))
@@ -496,7 +501,11 @@
     (glass.desk:desk-register-app desk "Clock" #'%kiln-clock-app :width 260 :height 110)
     (glass.desk:desk-register-app desk "Notes" #'%kiln-notes-app
                                   :width (if media dw (min dw 420)) :height 300)
-    (glass.desk:desk-register-app desk "Terminal" #'%kiln-terminal-app
+    ;; the terminal-emulating Terminal (zero-term.lisp: glass/term + quill) where the image has it
+    (glass.desk:desk-register-app desk "Terminal"
+                                  (if (fboundp '%kiln-vt-terminal-app)
+                                      (symbol-function '%kiln-vt-terminal-app)
+                                      #'%kiln-terminal-app)
                                   :width (min dw 600) :height 320)
     ;; THE KEYBOARD follows the focus: the desk raises the phone's keyboard (pseudo-syscall 1006)
     ;; when a window that takes text is opened or tapped into, and puts it away when you tap

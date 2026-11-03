@@ -2791,7 +2791,7 @@ USAGE
     fi
   fi
   if [[ $workspace == 0 ]]; then
-    local -a base=(brotli-pure cram scribe glass fs-fat) wrepos=()
+    local -a base=(brotli-pure cram scribe glass fs-fat quill) wrepos=()
     base+=(modus)
     [[ $media == 1 || ${#withs[@]} -gt 0 ]] && base+=(pagetree cabinet)
     [[ $media == 1 ]] && base+=(reed reel cassette warp)
@@ -2861,6 +2861,16 @@ EOF
   [[ -f $KILN_ROOT/fs-fat/lib/fat32.lisp ]] || die "kiln zero: no fs-fat checkout at $KILN_ROOT/fs-fat"
   cp "$KILN_ROOT/fs-fat/lib/fat32.lisp" "$sys/src/fs-fat32.lisp"
   cp "$ROOT/boot/zero-card.lisp" "$sys/src/zero-card.lisp"
+  # the SSH shell's line editor: quill (Emacs keys, history, C-r, multi-line forms), fed by
+  # modus's session through its :INPUT
+  [[ -d $KILN_ROOT/quill/src ]] || die "kiln zero: no quill checkout at $KILN_ROOT/quill"
+  for f in package port keys buffer history render editor; do
+    cp "$KILN_ROOT/quill/src/$f.lisp" "$sys/src/quill-$f.lisp"; done
+  cp "$ROOT/boot/zero-shell.lisp" "$sys/src/zero-shell.lisp"
+  # the Terminal as a terminal: glass/term's portable core (grid, VT parser, rendering; not
+  # term-pty.lisp, which is the Unix pty) and the window over it with quill (zero-term.lisp)
+  cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
+  cp "$ROOT/boot/zero-term.lisp" "$sys/src/zero-term.lisp"
   # what a card does at power-on before the desk: network, SSH, the owner's message
   cp "$ROOT/boot/zero-boot.lisp" "$sys/src/zero-boot.lisp"
   cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
@@ -2939,6 +2949,9 @@ EOF
      (:file "zero-bt")
      $media_files
      (:file "zero") (:file "app") (:file "zero-ssh") (:file "fs-fat32") (:file "zero-card")
+     (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
+     (:file "quill-history") (:file "quill-render") (:file "quill-editor") (:file "zero-shell")
+     (:file "glass-term") (:file "zero-term")
      (:file "zero-boot") (:file "zero-rfb")
      (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets") (:file "zero-rfbs")))))
 EOF

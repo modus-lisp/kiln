@@ -58,9 +58,13 @@
 ;;; has minted in files, and the board's OPEN is a Linux syscall with nothing behind it: the core
 ;;; halts.  kiln's zero-cabinet (pagetree + cabinet + modus lib/cabinet-fs.lisp) routes OPEN to a
 ;;; cabinet filesystem; this one is on a RAM disk, so the stores last as long as the power does.
-;;; The disk is the region --media puts its clips on: past the core, inside the RAM the image maps.
-(defun mount-ram-cabinet (&key (base #x1B000000) (bytes 33554432))
-  "Mount a fresh cabinet on BASE..BASE+BYTES, with /glass and /tmp.  T, or NIL with no cabinet."
+;;; The disk is the board region of modus's Pi memory map (boot-rpi-cl.lisp): RAM modus leaves
+;;; alone for the board's own use, which %RPI-BOARD-RAM names -- the region --media puts its clips on.
+(defun mount-ram-cabinet (&key base bytes)
+  "Mount a fresh cabinet on BASE..BASE+BYTES (default: the image's board region), with /glass
+   and /tmp.  T, or NIL with no cabinet."
+  (multiple-value-bind (b n) (%call "MODUS-INT" "%RPI-BOARD-RAM")
+    (setq base (or base b) bytes (or bytes n)))
   (let ((cab (find-symbol "*CABFS*" "MODUS-INT")))
     (cond ((null cab) nil)
           ((symbol-value cab) t)

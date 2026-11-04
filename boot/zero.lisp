@@ -285,11 +285,17 @@
     (when *kz-frame-limit*                ; a test's bounded run: end after that many frames
       (when (<= *kz-frame-limit* 0) (throw 'kiln-zero-exit nil)))
     ;; THE FIRST CALL AFTER A FRAME IS INPUT'S TURN.  The app draws and then sleeps out the rest
-    ;; of its 16 ms, so by the next call a frame is always due again: without this window the
-    ;; branch that hands out events never ran, and every click queued up unread.
+    ;; of its 16 ms, so by the next call a frame is always due again: without this turn the
+    ;; branch that hands out events never ran, and every click queued up unread.  The turn is
+    ;; one event, not a fresh 16 ms: restarting the frame clock here put a whole frame of
+    ;; waiting after every frame's own -- a frame every 37 ms with nothing to draw, and a drag
+    ;; under 30 fps however fast the desk drew.  The clock runs from the START of each frame.
     (when *kz-just-drew*
-      (setf *kz-just-drew* nil *kz-frame-at* now)
-      (unless *zero-events* (%zero-poll)))
+      (setf *kz-just-drew* nil)
+      (unless *zero-events* (%zero-poll))
+      (when *zero-events*
+        (setf *kz-active-at* now)
+        (return-from %zero-next-event (pop *zero-events*))))
     (if (> (- now *kz-frame-at*) 16000)
         (progn (setf *kz-frame-at* now *kz-just-drew* t)
                (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))

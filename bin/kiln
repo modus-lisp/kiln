@@ -2792,7 +2792,7 @@ USAGE
     if [[ -n $core ]]; then
       # a card from a core already built (--sd-image once, then e.g. another owner or relay):
       # only cmdline.txt differs, and that is minutes, not the core's half hour
-      zero_sd_image "$(realpath "$netboot")" "$(realpath "$core")" "$sd_image" "$nsec_file" "$owner"
+      zero_sd_image "$(realpath "$netboot")" "$(realpath "$core")" "$sd_image" "$nsec_file" "$owner" "$site" "$nsite"
       return 0
     fi
   fi

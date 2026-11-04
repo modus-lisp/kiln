@@ -119,8 +119,8 @@
   (if *kz-main-net*
       (let ((until (+ (get-internal-real-time) (* ms 1000))))
         (loop while (< (get-internal-real-time) until)
-              do (unless (funcall *kz-main-net*) (%sleep-ms 1))))
-      (%sleep-ms ms)))
+              do (unless (funcall *kz-main-net*) (modus-int::%sleep-ms 1))))
+      (modus-int::%sleep-ms ms)))
 (defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
@@ -841,8 +841,8 @@
 ;;; leaves the board on the plain semispace collector.
 (defun kz-gen-gc-start ()
   (cond ((not (fboundp 'gc-tenure)) nil)              ; a modus without it
-        ((equal (ignore-errors (%cli-getenv "GC")) "plain") (%kz-say "KZ:gc plain") nil)
-        ((%gc-old-space-p) nil)                         ; already
+        ((equal (ignore-errors (modus-int::%cli-getenv "GC")) "plain") (%kz-say "KZ:gc plain") nil)
+        ((modus-int::%gc-old-space-p) nil)                         ; already
         (t (handler-case
                (let ((r (gc-tenure)))
                  (%kz-say (format nil "KZ:gc generational, old ~d KB, young 2 x ~d KB"

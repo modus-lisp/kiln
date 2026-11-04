@@ -10,7 +10,7 @@ cassette        master  a8353efdbd4b1e3d51fabd3661e721d2310c0bf9
 chord           master  fc5260fddb7d0d8fece924d53e27047e69f53a15
 cl-consensus    master  b08415f08963ca56b7d6e28f1d2dcde11d6637f0
 cl-frpc         main    c1dabcbcf4144dc78c5c8ce64843af00bbb02725
-cl-nostr        master  000a352acc3972e60ca4c41ddf9efcb000be63eb
+cl-nostr        master  85957d25365630abb0794fe5a756facc9d8da13c
 cl-sev-snp      main    b89b0cb20c0943bdbcbe9a34e2994ef57e5ba992
 cl-tor          master  a034795e9895038ecb5d8b832047286add1f5a28
 cl-transport    zero-event-loop  62d359a21632255c8781d2f099c82f0040bf2718

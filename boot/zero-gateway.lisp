@@ -129,7 +129,12 @@
   ;; THE USB THREAD, as on the board: core 1 drains the NIC into a ring all the time.  Without it
   ;; every reader is on core 0, and while a sender there encrypts, QEMU drops what arrives -- a
   ;; WebRTC session saw 1 SACK of the hundreds sent, and stalled at the congestion window.
-  (when (%call "COMMON-LISP-USER" "KZ-USB-START")
+  ;; A THREAD FIRST: on a restored core whose first thread is the executor pinned to core 1,
+  ;; the secondary cores came up through the primary's boot (BOOT/MODUS-CL on every core) and
+  ;; every core faulted within two seconds; one unpinned thread first and they do not (modus
+  ;; 3f6dd2c, QEMU).  Then the executor, not modus's I/O-core engine (KZ-USB-START says why).
+  (sb-thread:join-thread (sb-thread:make-thread (lambda () t)))
+  (when (%call "COMMON-LISP-USER" "KZ-USB-START" :engine nil)
     (%set-by-name "COMMON-LISP-USER" "*KZ-NET-SERVICE*"
                   (symbol-function (find-symbol "%NET-SERVICE" "KILN-ZERO-SSH"))))
   t)

@@ -129,14 +129,16 @@
     (when n (funcall n))                ; first: nothing may leave the NIC unread
     (when h (funcall h))))
 
-(defun kz-usb-start ()
+(defun kz-usb-start (&key (engine t))
   "Give the USB controller to core 1.  With modus's I/O core (net/usb-io-core.lisp) that is
    its ENGINE: one non-consing loop owns the controller -- the NIC, the keyboard and mouse,
    the hub -- and every thread sends and receives through its rings, so nothing here calls
    into a USB thread and *KZ-USB* is just :ENGINE.  Otherwise (an older image, or no
    RTL8153) an executor that polls the HID and drains the NIC, as before.  NIL without
-   threads."
-  (when (and (null *kz-usb*) (fboundp 'modus-int::usbe-start))
+   threads.  ENGINE NIL keeps the executor: a NIC bound outside modus's USB tree (QEMU's CDC
+   adapter, by NET-UP-QEMU) never got the engine's copy helpers, and the engine's hub scan
+   trips a QEMU assertion."
+  (when (and engine (null *kz-usb*) (fboundp 'modus-int::usbe-start))
     (let ((r (funcall 'modus-int::usbe-start)))
       (when (member r '(:started :already))
         (setf *kz-usb* :engine))))

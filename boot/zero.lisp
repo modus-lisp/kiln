@@ -290,12 +290,19 @@
     ;; one event, not a fresh 16 ms: restarting the frame clock here put a whole frame of
     ;; waiting after every frame's own -- a frame every 37 ms with nothing to draw, and a drag
     ;; under 30 fps however fast the desk drew.  The clock runs from the START of each frame.
+    ;; WITH NO INPUT, THE TURN IS THE IDLE WORK'S: evaluations (SSH, the serial REPL's jobs),
+    ;; main-thread sockets and the idle collection.  Its other home, below, is reached only
+    ;; when a frame is not yet due -- and with the clock running from each frame's start, a
+    ;; frame is always due by the end of the sleep, so without this nothing was evaluated.
     (when *kz-just-drew*
       (setf *kz-just-drew* nil)
       (unless *zero-events* (%zero-poll))
       (when *zero-events*
         (setf *kz-active-at* now)
-        (return-from %zero-next-event (pop *zero-events*))))
+        (return-from %zero-next-event (pop *zero-events*)))
+      (when *kz-main-net* (funcall *kz-main-net*))
+      (%kz-serve-jobs)
+      (%zero-idle-gc))
     (if (> (- now *kz-frame-at*) 16000)
         (progn (setf *kz-frame-at* now *kz-just-drew* t)
                (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))

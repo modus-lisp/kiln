@@ -3142,16 +3142,22 @@ EOF
       for x in $order; do
         loads+=(--load="$x")
         local y; for y in "${withs[@]}"; do
-          if [[ $y == "$x"/* ]]; then
+          if [[ $y == "$x"/* && " $order " != *" $y "* ]]; then   # once: the closure may name it too
             mkdir -p "$w/tars/${y%/*}"; cp "$w/tars/$x.tar" "$w/tars/$y.tar"; loads+=(--load="$y")
           fi
         done
       done
     fi
-    # the fonts go past the tarballs (run-rpi-core.sh puts tarball k at 0x1A000000 + 16 MB * k)
+    # the fonts go just past the last tarball (run-rpi-core.sh puts tarball k at 0x1A000000 +
+    # 16 MB * k), not a whole 16 MB slot on: the board image reads guest RAM only below
+    # 0x30000000, and a font past it reads back as something else ("not an sfnt")
     local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
-    local fa=$(( 0x1A000000 + 16777216 * ${#loads[@]} )) fb
+    local last=${loads[-1]#--load=} lastsz fa fb
+    lastsz=$(stat -L -c %s "$w/tars/$last.tar") || die "kiln zero: no tarball for $last"
+    fa=$(( 0x1A000000 + 16777216 * (${#loads[@]} - 1) + (lastsz + 1048575) / 1048576 * 1048576 ))
     fb=$(( fa + 1048576 ))
+    (( fb + 2 * 1048576 <= 0x30000000 )) \
+      || die "kiln zero: ${#loads[@]} systems leave no room below 0x30000000 for the fonts and CA bundle"
     # a standalone card's core starts the desk by itself after the restore
     local -a hookform=() skipform=()
     if [[ ${#jit_skip[@]} -gt 0 ]]; then

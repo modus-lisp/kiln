@@ -69,8 +69,7 @@
                   (multiple-value-bind (s m h) (decode-universal-time now)
                     (glass:fb-fill fb #x10141a)
                     (glass:fb-text fb 16 20 (format nil "~2,'0d:~2,'0d:~2,'0d" h m s)
-                                   :size 40 :color #xe6ebf2)
-                    (glass:fb-text fb 16 80 "modus on the phone" :size 13 :color #x8b949e))
+                                   :size 40 :color #xe6ebf2))
                   t))))))
 
 (defun %kiln-keysym-char (ks)

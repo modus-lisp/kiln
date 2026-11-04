@@ -152,9 +152,17 @@
 (defun %send-rows (c rows y0 y1)
   "Rows Y0..Y1-1 as one FramebufferUpdate of one rectangle, in the best encoding the client
    offered (ZRLE, TRLE, Raw)."
-  (let ((s (cl-stream c)) (w (floor (length (aref rows 0)) 4)) (enc (%encoding c)))
+  (let ((s (cl-stream c)))
     (%u8 s 0) (%u8 s 0) (%u16 s 1)                         ; FramebufferUpdate, 1 rectangle
-    (%u16 s 0) (%u16 s y0) (%u16 s w) (%u16 s (- y1 y0)) (%u32 s enc)
+    (%send-rect c 0 y0 rows y0 y1)
+    (force-output s)
+    (incf (cl-frames c))))
+
+(defun %send-rect (c x y rows y0 y1)
+  "One rectangle's header and pixels: ROWS Y0..Y1-1 (byte vectors, the rectangle's width) at
+   screen (X, Y)."
+  (let ((s (cl-stream c)) (w (floor (length (aref rows 0)) 4)) (enc (%encoding c)))
+    (%u16 s x) (%u16 s y) (%u16 s w) (%u16 s (- y1 y0)) (%u32 s enc)
     (case enc
       (16 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 64 (%cpixel-format c))
             (let ((zs (or (cl-zs c) (setf (cl-zs c) (cram:make-zstream :max-chain 16)))))
@@ -165,9 +173,63 @@
       (15 (multiple-value-bind (buf len) (%pack-tiles rows y0 y1 16 (%cpixel-format c))
             (write-sequence buf s :end len)
             (incf (cl-bytes c) len)))
-      (t (%send-raw-rows c rows y0 y1)))
-    (force-output s)
-    (incf (cl-frames c))))
+      (t (%send-raw-rows c rows y0 y1)))))
+
+;;; ---- damage: only what the desk drew ----------------------------------------------------------
+;;; The desk logs each draw's screen rectangle (kiln-zero KZ-DAMAGE-SINCE).  An incremental update
+;;; is those rectangles, merged, each copied out of the scanout on its own: no whole-screen copy,
+;;; no row comparison.  The scanout copy moves 64-byte blocks, so a rectangle is widened to
+;;; 16-pixel columns.
+
+(defun %merge-rects (rects)
+  "RECTS ((X Y W H) ...) with overlapping or touching ones joined; more than 8 left become their
+   bounding box."
+  (let ((out '()))
+    (dolist (r rects)
+      (destructuring-bind (x y w h) r
+        (loop
+          (let ((hit (find-if (lambda (o) (destructuring-bind (ox oy ow oh) o
+                                            (and (<= ox (+ x w)) (<= x (+ ox ow))
+                                                 (<= oy (+ y h)) (<= y (+ oy oh)))))
+                              out)))
+            (unless hit (return))
+            (setf out (remove hit out :test #'eq))
+            (destructuring-bind (ox oy ow oh) hit
+              (let ((x1 (max (+ x w) (+ ox ow))) (y1 (max (+ y h) (+ oy oh))))
+                (setf x (min x ox) y (min y oy) w (- x1 x) h (- y1 y))))))
+        (push (list x y w h) out)))
+    (if (> (length out) 8)
+        (let ((x0 (reduce #'min out :key #'first)) (y0 (reduce #'min out :key #'second))
+              (x1 (reduce #'max out :key (lambda (r) (+ (first r) (third r)))))
+              (y1 (reduce #'max out :key (lambda (r) (+ (second r) (fourth r))))))
+          (list (list x0 y0 (- x1 x0) (- y1 y0))))
+        out)))
+
+(defun %grab-rect (x y w h)
+  "Screen rectangle (X Y W H), X and W multiples of 16, as H row byte vectors."
+  (multiple-value-bind (fb pitch) (%geometry)
+    (let ((rows (make-array h)) (rb (* 4 w)))
+      (dotimes (r h rows)
+        (let ((row (make-array rb :element-type '(unsigned-byte 8))))
+          (%copy-row row (+ fb (* (+ y r) pitch) (* 4 x)) rb)
+          (setf (aref rows r) row))))))
+
+(defun %send-damage (c rects)
+  "One FramebufferUpdate of RECTS, widened to 16-pixel columns."
+  (multiple-value-bind (fb pitch sw) (%geometry)
+    (declare (ignore fb pitch))
+    (let ((rs (%merge-rects
+               (mapcar (lambda (r) (destructuring-bind (x y w h) r
+                                     (let ((x0 (* 16 (floor x 16))) (x1 (min sw (* 16 (ceiling (+ x w) 16)))))
+                                       (list x0 y (- x1 x0) h))))
+                       rects)))
+          (s (cl-stream c)))
+      (%u8 s 0) (%u8 s 0) (%u16 s (length rs))
+      (dolist (r rs)
+        (destructuring-bind (x y w h) r
+          (%send-rect c x y (%grab-rect x y w h) 0 h)))
+      (force-output s)
+      (incf (cl-frames c)))))
 
 (defun %send-raw-rows (c rows y0 y1)
   (let ((s (cl-stream c)))
@@ -206,20 +268,29 @@
   (and (boundp 'cl-user::*kz-damage*) (symbol-value 'cl-user::*kz-damage*)))
 
 (defun %sender (c)
-  ;; AN INCREMENTAL REQUEST ON A STILL SCREEN COSTS NOTHING: the screen is copied and compared
-  ;; only when the desk has drawn since the last look (*KZ-DAMAGE*), or once a second (the text
-  ;; console draws without the desk).  Copying 1.2 MB and comparing 480 rows every 30 ms was a
-  ;; steady load on core 0, which the gateway's threads share.
-  (let ((seen nil) (looked 0))
+  ;; WITH THE DESK, an incremental update is the rectangles it drew since the last one (its
+  ;; damage log), and a still screen costs a look at a counter every 10 ms.  WITHOUT IT (the text
+  ;; console draws on its own), the screen is copied and compared once a second.
+  (let ((seen nil) (looked 0)
+        (since (and (fboundp 'cl-user::kz-damage-since) (symbol-function 'cl-user::kz-damage-since))))
     (loop while (cl-open c)
           do (let ((want (cl-want c)) (dmg (%damage)) (now (get-internal-real-time)))
-               (if (or (null want)
-                       (and (eq want :incremental) (cl-prev c) (eql dmg seen)
-                            (< (- now looked) internal-time-units-per-second)))
-                   (sleep 0.03)
-                   (progn
-                     (setf seen dmg looked now)
-                     (%send-if-changed c want)))))))
+               (cond ((null want) (sleep 0.01))
+                     ((and since dmg seen (eq want :incremental))
+                      (if (eql dmg seen)
+                          (sleep 0.01)
+                          (multiple-value-bind (rects now-seen) (funcall since seen)
+                            (setf (cl-want c) nil)
+                            (if (eq rects :all)
+                                (%send-if-changed c :full)
+                                (%send-damage c rects))
+                            (setf seen now-seen))))
+                     ((and (eq want :incremental) (cl-prev c) (eql dmg seen)
+                           (< (- now looked) internal-time-units-per-second))
+                      (sleep 0.03))
+                     (t (let ((d (%damage)))
+                          (%send-if-changed c want)
+                          (setf seen d looked now))))))))
 
 (defun %send-if-changed (c want)
   "Grab the screen; send what changed (all of it for a :FULL request or a first update)."

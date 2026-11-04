@@ -782,13 +782,46 @@
 ;;; how far it got.  The board is single-threaded: when the app is wedged, serial is the only
 ;;; voice it has.
 (defvar *kz-said* 0)
-;;; Bumped whenever the desk draws on the screen: an RFB server (zero-rfbs.lisp) compares the
-;;; scanout only when this moved, instead of copying and comparing the whole screen every poll.
+;;; THE DAMAGE LOG.  *KZ-DAMAGE* counts the desk's draws on the screen (fill, blit, present), and
+;;; *KZ-DLOG* holds the last +KZ-DLOG-N+ of them as screen rectangles, X Y W H for draw number S at
+;;; 4*(S mod N): an RFB server (zero-rfbs.lisp) sends exactly those rectangles instead of copying
+;;; the whole screen and comparing it row by row (1.7 s a frame on the Zero).  A draw is logged
+;;; AFTER it reaches the screen -- main runs core 0's other threads while it waits for the screen
+;;; thread, and a sender that read the rectangle first would copy the pixels before they changed.
+;;; Fixnums in a vector made once: nothing here allocates.
+(defconstant +kz-dlog-n+ 64)
 (defvar *kz-damage* 0)
+(defvar *kz-dlog* (make-array (* 4 +kz-dlog-n+) :initial-element 0))
+
+(defun %kz-log-damage (x y w h)
+  (let* ((sw (modus-int::hcon-get #x0C)) (sh (modus-int::hcon-get #x10))
+         (x0 (max 0 x)) (y0 (max 0 y)) (x1 (min sw (+ x w))) (y1 (min sh (+ y h)))
+         (i (* 4 (mod (1+ *kz-damage*) +kz-dlog-n+))))
+    (when (and (< x0 x1) (< y0 y1))
+      (setf (svref *kz-dlog* i) x0 (svref *kz-dlog* (+ i 1)) y0
+            (svref *kz-dlog* (+ i 2)) (- x1 x0) (svref *kz-dlog* (+ i 3)) (- y1 y0))
+      (incf *kz-damage*))))
+
+(defun kz-damage-since (seen)
+  "The screen rectangles drawn after draw number SEEN, as a list of (X Y W H), and the current
+   draw number; :ALL instead of the list when the log no longer reaches back that far."
+  (let ((now *kz-damage*))
+    (values (if (> (- now seen) +kz-dlog-n+)
+                :all
+                (loop for s from (1+ seen) to now
+                      for i = (* 4 (mod s +kz-dlog-n+))
+                      collect (list (svref *kz-dlog* i) (svref *kz-dlog* (+ i 1))
+                                    (svref *kz-dlog* (+ i 2)) (svref *kz-dlog* (+ i 3)))))
+            now)))
 (defun %kz-say (s) (modus-int::write-string-serial s) (write-char-serial 10))
 
 (defun %kiln-sys (n a b c &optional (d 0) (e 8))
-  (when (member n '(1002 1005 1007)) (incf *kz-damage*))
+  (prog1 (%kiln-sys-1 n a b c d e)
+    (case n                                         ; logged once it is on the screen
+      ((1002 1007) (%kz-log-damage 0 0 (modus-int::hcon-get #x0C) (modus-int::hcon-get #x10)))
+      (1005 (%kz-log-damage (logand c #xFFFF) (floor c 65536) (logand b #xFFFF) (floor b 65536))))))
+
+(defun %kiln-sys-1 (n a b c d e)
   (let ((bit (case n (1001 1) (1002 2) (1004 4) (1005 8) (t 0))))
     (when (and (plusp bit) (zerop (logand *kz-said* bit)))
       (setf *kz-said* (logior *kz-said* bit))

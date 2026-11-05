@@ -3052,6 +3052,33 @@ EOF
     gunzip -c "$netboot" > "$w/kernel8.img" || die "kiln zero: cannot unzip $netboot"
     mkdir -p "$w/tars"; ln -s "$out/kiln-zero.tar" "$w/tars/kiln-zero.tar"
     local -a loads=(--load=kiln-zero)
+    # NATIVE BEFORE THE HEAVY INSTALL.  With natrium master, installing glass-webrtc/nostr-lean on
+    # the board image's 56 MB semispaces collected twice a second and did not finish in 90 min
+    # (54 s before), though live data before and after it is only ~30 MB: the JIT translator was
+    # always on the stack, compiling the installer's own hot code with the heap nearly full.
+    # JIT-EAGER first (230 s under QEMU), then JIT-PRUNE: it installs in 40 s.  The build's
+    # closing JIT-EAGER / JIT-PRUNE then has little left to do.  Tenuring for the install
+    # (generational GC) instead took 25 s but cannot be undone: the old area is at most one
+    # 56 MB semispace, ~34 MB of it live, and the install promotes more garbage than the rest,
+    # so GC-UNTENURE (which SAVE-IMAGE needs) never finds room to start (sd31, sd32).
+    # Each load takes a 16 MB slot below 0x30000000 (run-rpi-core.sh), so ONE small load right
+    # after kiln-zero wraps the installer: each system named in KILN_ZERO_PREJIT (default
+    # glass-webrtc/nostr-lean) installs after a JIT-EAGER and JIT-PRUNE.
+    local prejit=${KILN_ZERO_PREJIT-glass-webrtc/nostr-lean} pj="" x
+    for x in $prejit; do pj+=" \"$x\""; done
+    mkdir -p "$w/tars/zero-prejit"
+    printf '%s\n' ';;;; bin/kiln: NATIVE BEFORE THE HEAVY INSTALL.' '(in-package :cl-user)' \
+      "(let ((install (fdefinition 'modus-int::install-tarball-from-bytes)))" \
+      "  (setf (fdefinition 'modus-int::install-tarball-from-bytes)" \
+      "        (lambda (gz &optional sysname)" \
+      "          (when (member sysname '($pj) :test #'equal)" \
+      "            (jit-eager)" \
+      "            (when (fboundp 'jit-prune) (jit-prune))" \
+      "            (%kz-say (format nil \"KZ:native before ~a\" sysname)))" \
+      "          (funcall install gz sysname))))" > "$w/tars/zero-prejit/prejit.lisp"
+    printf '%s\n' '(asdf:defsystem :zero-prejit :components ((:file "prejit")))' > "$w/tars/zero-prejit/zero-prejit.asd"
+    (cd "$w/tars" && tar cf zero-prejit.tar zero-prejit)
+    loads+=(--load=zero-prejit)
     if [[ ${#withs[@]} -gt 0 ]]; then
       # the closure, dependencies first; kiln-zero (installed first) already carries zero-bt,
       # the one-thread bordeaux-threads, so the real one is left out

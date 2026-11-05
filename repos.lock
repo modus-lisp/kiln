@@ -25,7 +25,7 @@ glass-webrtc    event-loop  c46e861221cc47d7de18e3c59a36dea84c66edd0
 json-simple     master  3b99a79e05e633aedb9679df3a51fc876979fb34
 loom            master  9fd14de7d980aebfacb2aeaa2b73612412579621
 mill            master  3a3f8c91688b1738efd8991a604eea55c7a95ea7
-modus           bridge-bare-cache 033d930f62851f0f26a9bfe8a33ef1a39a0fcccc
+modus           bridge-bare-cache 72a1fac61adbfe5cf45845b7844162f7c2eb25d3
 natrium         master  19c2461f3c4175b2a4ce58c12b0dab793624b827
 operandi        main    d13e6eb064e85a50974a100ea44ae527881b411e
 pagetree        master  aee0f0fa897db04058a52f4670dcf724c115759e

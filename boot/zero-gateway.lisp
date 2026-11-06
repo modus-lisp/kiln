@@ -88,6 +88,7 @@
 ;;; START writes them to the cabinet and points the gateway's payload channel at them.
 (defvar *payload-js-b64* nil)
 (defvar *payload-gz-b64* nil)
+(defvar *payload-installed* nil "T once the payload is on the cabinet (the base64 is then dropped).")
 
 (defun %write-bytes (path bytes)
   (with-open-file (s path :direction :output :element-type '(unsigned-byte 8)
@@ -100,6 +101,9 @@
     (flet ((bytes (b64) (%call "CL-BASE64" "BASE64-STRING-TO-USB8-ARRAY" b64)))
       (%write-bytes "/glass/payload.js" (bytes *payload-js-b64*))
       (when *payload-gz-b64* (%write-bytes "/glass/payload.js.gz" (bytes *payload-gz-b64*))))
+    ;; On the cabinet now; the base64 (~660 KB) only crowded region 0 from here on.
+    (setf *payload-js-b64* nil *payload-gz-b64* nil *payload-installed* t))
+  (when *payload-installed*                      ; written by this call or an earlier START
     (%set-by-name "WEBRTC-DATA" "*PAYLOAD-FILE*" "/glass/payload.js")
     (%set-by-name "WEBRTC-DATA" "*PAYLOAD-CHANNEL-ENABLED*" t)))
 
@@ -125,17 +129,27 @@
   ;; THE USB THREAD, as on the board: core 1 drains the NIC into a ring all the time.  Without it
   ;; every reader is on core 0, and while a sender there encrypts, QEMU drops what arrives -- a
   ;; WebRTC session saw 1 SACK of the hundreds sent, and stalled at the congestion window.
-  (when (%call "COMMON-LISP-USER" "KZ-USB-START")
+  ;; A THREAD FIRST: on a restored core whose first thread is the executor pinned to core 1,
+  ;; the secondary cores came up through the primary's boot (BOOT/MODUS-CL on every core) and
+  ;; every core faulted within two seconds; one unpinned thread first and they do not (modus
+  ;; 3f6dd2c, QEMU).  Then the executor, not modus's I/O-core engine (KZ-USB-START says why).
+  (sb-thread:join-thread (sb-thread:make-thread (lambda () t)))
+  (when (%call "COMMON-LISP-USER" "KZ-USB-START" :engine nil)
     (%set-by-name "COMMON-LISP-USER" "*KZ-NET-SERVICE*"
                   (symbol-function (find-symbol "%NET-SERVICE" "KILN-ZERO-SSH"))))
   t)
 
 ;;; Where a link sends the phone: the published client kiln's gateway serves too (bin/kiln
-;;; local --nostr), on nsite.lol under its npub.
+;;; local --nostr), under its npub on an nsite gateway.  The card can name others (NSITE_NPUB=,
+;;; NSITE=), so moving the client is an edit to cmdline.txt, not a new core.  nsite.run, not
+;;; nsite.lol: nsite.lol caches a page for an hour and has gone on serving the previous client
+;;; after a publish (glass src/site.lisp says the same).
 (defparameter *client-npub* "npub1ajvjnhgcmdxkng22lzsh22qvl63es78gk6p9mwksepju974teguq4l4evc")
+(defparameter *client-nsite* "nsite.run")
 
 (defun start (&key secret owner relays turn (rfb-port 5900) (admission-port 5915) (rfb t)
-                   (login-url-base (format nil "https://~a.nsite.lol/" *client-npub*)))
+                   (login-ttl 3600)
+                   (login-url-base (format nil "https://~a.~a/" *client-npub* *client-nsite*)))
   "Serve this board's desk to OWNER's phone: identity and admission (glass/nostr, which DMs OWNER
    the login link), then the gateway on a thread of its own.  Returns the gateway thread."
   (unless (and (stringp secret) (= (length secret) 64))
@@ -147,9 +161,10 @@
       (error "zero-gateway: the board does not know the date and SNTP did not answer")))
   (setenv "NOSTR_SEC" secret)
   (setenv "GLASS_NOSTR_SEC" secret)
+  ;; OWNER may connect -- and is sent the link, but NOT through GLASS_LINK_TO: that DMs as the
+  ;; session starts, a minute before the gateway listens.  The gateway's ready hook sends it below.
   (when owner
-    (setenv "GLASS_NOSTR_ALLOW" owner)
-    (setenv "GLASS_LINK_TO" owner))
+    (setenv "GLASS_NOSTR_ALLOW" owner))
   (when relays (setenv "NOSTR_RELAYS" (format nil "~{~a~^,~}" relays)))
   ;; the desk and the admission service are in THIS image: loopback TCP
   (setenv "GLASS_HOST" "127.0.0.1")
@@ -193,17 +208,28 @@
   (%set-by-name "WEBRTC-DATA" "*GLASS-PORT*" rfb-port)
   (%set-by-name "WEBRTC-DATA" "*ADMISSION-PORT*" admission-port)
   (when login-url-base (%set-by-name "GLASS" "*LOGIN-URL-BASE*" login-url-base))
+  ;; An hour, not glass's 10 minutes: the link is DM'd at boot and the board is slow to come up,
+  ;; so a phone that opens it a little later should not find it already dead.  The board has no
+  ;; environment, so glass's GLASS_LOGIN_TTL cannot say this.
+  (when login-ttl (%set-by-name "GLASS" "*LOGIN-TTL*" login-ttl))
   ;; THE DESK, on loopback: kiln-zero's sockets RFB server (zero-rfbs.lisp), unless the caller
-  ;; serves RFB-PORT some other way.  And the desk's idle time is the gateway's: the desk owns
-  ;; the main thread, which is core 0's scheduler (modus net/bare-threads.lisp, CORE 0), so its
-  ;; idle hook yields to the gateway's threads.
+  ;; serves RFB-PORT some other way -- on the gateway's own event loop, so the desk costs no
+  ;; thread per session (modus never gives an exited thread's slot back).  And the desk's idle
+  ;; time is the gateway's: the desk owns the main thread, which is core 0's scheduler (modus
+  ;; net/bare-threads.lisp, CORE 0), so its idle hook yields to the gateway's threads.
   (when (and rfb (find-package "KILN-ZERO-RFBS"))
-    (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port))
+    (%call "KILN-ZERO-RFBS" "RFBS-START" :port rfb-port
+           :loop (%call "WEBRTC-DATA" "ENSURE-NET-LOOP")))
   (%set-by-name "COMMON-LISP-USER" "*KZ-MAIN-NET*"
                 (let ((y (symbol-function (intern "BT-YIELD" "MODUS-INT"))))
                   (lambda () (funcall y))))
   ;; identity, enrolments, admission on ADMISSION-PORT, the DM bot -- and the link to OWNER
   (%call "GLASS" "START-SESSION-NOSTR" :port admission-port)
+  ;; THE LINK, WHEN IT WORKS: once the gateway has its relays' stored offers behind it, so the
+  ;; owner's first tap is answered rather than queued behind a backlog or sent to nobody.
+  (when owner
+    (%set-by-name "WEBRTC-DATA" "*ON-READY*"
+                  (lambda () (%call "GLASS" "SEND-LOGIN-LINK" owner))))
   (bt:make-thread (lambda () (%call "WEBRTC-DATA" "START-NOSTR-GATEWAY"))
                   :name "nostr-gateway"))
 
@@ -215,6 +241,8 @@
 ;;;   TURN=turn:host:port,user,pass   (commas: a bootarg cannot hold a space)
 ;;;   RELAYS=wss://a,wss://b          optional
 ;;;   NET=qemu                        QEMU's usb-net instead of the hub's RTL8153
+;;;   NSITE_NPUB=npub1...             optional: the site serving the client the link opens
+;;;   NSITE=nsite.run                 optional: the nsite gateway the link names
 
 (defun %bootarg (name)
   (let ((v (ignore-errors (%call "MODUS-INT" "%CLI-GETENV" name))))
@@ -237,6 +265,8 @@
               (net-up-qemu)
               (%call "KILN-ZERO-SSH" "NET-UP"))
           (let ((turn (%bootarg "TURN")) (relays (%bootarg "RELAYS")))
+            (setf *client-npub* (or (%bootarg "NSITE_NPUB") *client-npub*)
+                  *client-nsite* (or (%bootarg "NSITE") *client-nsite*))
             (start :secret (%call "CL-NOSTR.UTIL" "BYTES->HEX"
                                   (%call "CL-NOSTR.BECH32" "NSEC-DECODE" nsec))
                    :owner owner

@@ -2529,7 +2529,7 @@ zero_prereqs() {
 # runs *CORE-RESTART-HOOK* (the desk).  gpu_mem=32 gives the ARM 480 MiB, the room
 # above 0x18000000 a core needs.  Built with mtools: no root, no loop devices.
 zero_sd_image() {
-  local img=$1 core=$2 out=$3 nsec_file=${4:-} owner=${5:-} fw w
+  local img=$1 core=$2 out=$3 nsec_file=${4:-} owner=${5:-} site=${6:-} nsite=${7:-} fw w
   fw=$(zero_firmware)
   w=$(mktemp -d)
   gunzip -c "$img" > "$w/kernel8.img" || die "kiln zero: cannot unzip $img"
@@ -2593,6 +2593,8 @@ TXT
         KILN_ETC="${KILN_ETC:-$HOME/.kiln}" . "$ROOT/boot/config.sh"; load_config
       fi
       [[ -n ${TURN_ICE:-} ]] && args+=" TURN=$(printf '%s' "$TURN_ICE" | tr ' ' ',')"
+      [[ -n $site ]] && args+=" NSITE_NPUB=$site"
+      [[ -n $nsite ]] && args+=" NSITE=$nsite"
     fi
   fi
   [[ -n ${ZERO_RELAYS:-} ]] && args+=" RELAYS=$ZERO_RELAYS"
@@ -2647,7 +2649,7 @@ cmd_zero() {
   # the rig's netboot-gz.py.  Large HTTP transfers to the board arrive
   # corrupted (an open modus NIC bug), so everything travels in 16 KB pieces,
   # each checked against an FNV-1a manifest and fetched again if it is wrong.
-  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp ca_bundle=""
+  local builder="" board=10.0.0.2 port=8098 netboot="" start=1 media=0 core="" build_core="" sd_image="" nsec_file="" threads=1 owner="" workspace=0 net=dhcp ca_bundle="" site="" nsite=""
   local -a relays=() ssh_keys=()
   local -a withs=() jit_skip=()
   while [[ $# -gt 0 ]]; do
@@ -2669,6 +2671,8 @@ cmd_zero() {
       --ssh-key) ssh_keys+=("${val:?--ssh-key=FILE.pub or a public key line}") ;;
       --net) net=${val:?--net=dhcp|static|off} ;;
       --ca-bundle) ca_bundle=${val:?--ca-bundle=latest or FILE.pem} ;;
+      --site)  site=${val:?--site=NPUB} ;;
+      --nsite) nsite=${val:?--nsite=HOST} ;;
       --threads) threads=1 ;;
       --no-threads) threads=0 ;;
       --workspace) workspace=1 ;;
@@ -2739,6 +2743,10 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
   --nsec-file=PATH  the board's identity -- an nsec1... key, written to the card's cmdline.txt
                     as NSEC=: its nostr key, and the seed of its SSH host key, so both survive
                     reboots.  Without it both are fresh at every boot
+  --site=NPUB       with --owner on a gateway card: the nsite serving the client the login link
+                    opens (the card's NSITE_NPUB=; default the published glass client)
+  --nsite=HOST      with --owner on a gateway card: the nsite gateway the link names (NSITE=;
+                    default nsite.run).  Both are bootargs: edit cmdline.txt to change them
 Output in $KILN_STATE/zero.
 USAGE
         return 0 ;;
@@ -2752,6 +2760,8 @@ USAGE
     owner=$(nip05_npub "$addr") || die "kiln zero: --owner=$addr: the NIP-05 lookup failed"
     note "zero: --owner $addr is $owner"
   fi
+  [[ -z $site || $site == npub1* ]] || die "kiln zero: --site wants an npub1... key"
+  [[ -z $site$nsite || -n $owner ]] || die "kiln zero: --site/--nsite need --owner (they name where its login link goes)"
   if [[ -n $sd_image ]]; then
     [[ $media == 0 ]] || die "kiln zero: --sd-image does not take --media yet (the clips have nowhere to come from on a standalone card)"
     [[ -z $build_core ]] || die "kiln zero: --sd-image builds its own core (or takes one with --core)"
@@ -2786,7 +2796,7 @@ USAGE
     if [[ -n $core ]]; then
       # a card from a core already built (--sd-image once, then e.g. another owner or relay):
       # only cmdline.txt differs, and that is minutes, not the core's half hour
-      zero_sd_image "$(realpath "$netboot")" "$(realpath "$core")" "$sd_image" "$nsec_file" "$owner"
+      zero_sd_image "$(realpath "$netboot")" "$(realpath "$core")" "$sd_image" "$nsec_file" "$owner" "$site" "$nsite"
       return 0
     fi
   fi
@@ -3067,6 +3077,33 @@ EOF
     gunzip -c "$netboot" > "$w/kernel8.img" || die "kiln zero: cannot unzip $netboot"
     mkdir -p "$w/tars"; ln -s "$out/kiln-zero.tar" "$w/tars/kiln-zero.tar"
     local -a loads=(--load=kiln-zero)
+    # NATIVE BEFORE THE HEAVY INSTALL.  With natrium master, installing glass-webrtc/nostr-lean on
+    # the board image's 56 MB semispaces collected twice a second and did not finish in 90 min
+    # (54 s before), though live data before and after it is only ~30 MB: the JIT translator was
+    # always on the stack, compiling the installer's own hot code with the heap nearly full.
+    # JIT-EAGER first (230 s under QEMU), then JIT-PRUNE: it installs in 40 s.  The build's
+    # closing JIT-EAGER / JIT-PRUNE then has little left to do.  Tenuring for the install
+    # (generational GC) instead took 25 s but cannot be undone: the old area is at most one
+    # 56 MB semispace, ~34 MB of it live, and the install promotes more garbage than the rest,
+    # so GC-UNTENURE (which SAVE-IMAGE needs) never finds room to start (sd31, sd32).
+    # Each load takes a 16 MB slot below 0x30000000 (run-rpi-core.sh), so ONE small load right
+    # after kiln-zero wraps the installer: each system named in KILN_ZERO_PREJIT (default
+    # glass-webrtc/nostr-lean) installs after a JIT-EAGER and JIT-PRUNE.
+    local prejit=${KILN_ZERO_PREJIT-glass-webrtc/nostr-lean} pj="" x
+    for x in $prejit; do pj+=" \"$x\""; done
+    mkdir -p "$w/tars/zero-prejit"
+    printf '%s\n' ';;;; bin/kiln: NATIVE BEFORE THE HEAVY INSTALL.' '(in-package :cl-user)' \
+      "(let ((install (fdefinition 'modus-int::install-tarball-from-bytes)))" \
+      "  (setf (fdefinition 'modus-int::install-tarball-from-bytes)" \
+      "        (lambda (gz &optional sysname)" \
+      "          (when (member sysname '($pj) :test #'equal)" \
+      "            (jit-eager)" \
+      "            (when (fboundp 'jit-prune) (jit-prune))" \
+      "            (%kz-say (format nil \"KZ:native before ~a\" sysname)))" \
+      "          (funcall install gz sysname))))" > "$w/tars/zero-prejit/prejit.lisp"
+    printf '%s\n' '(asdf:defsystem :zero-prejit :components ((:file "prejit")))' > "$w/tars/zero-prejit/zero-prejit.asd"
+    (cd "$w/tars" && tar cf zero-prejit.tar zero-prejit)
+    loads+=(--load=zero-prejit)
     if [[ ${#withs[@]} -gt 0 ]]; then
       # the closure, dependencies first; kiln-zero (installed first) already carries zero-bt,
       # the one-thread bordeaux-threads, so the real one is left out
@@ -3157,16 +3194,22 @@ EOF
       for x in $order; do
         loads+=(--load="$x")
         local y; for y in "${withs[@]}"; do
-          if [[ $y == "$x"/* ]]; then
+          if [[ $y == "$x"/* && " $order " != *" $y "* ]]; then   # once: the closure may name it too
             mkdir -p "$w/tars/${y%/*}"; cp "$w/tars/$x.tar" "$w/tars/$y.tar"; loads+=(--load="$y")
           fi
         done
       done
     fi
-    # the fonts go past the tarballs (run-rpi-core.sh puts tarball k at 0x1A000000 + 16 MB * k)
+    # the fonts go just past the last tarball (run-rpi-core.sh puts tarball k at 0x1A000000 +
+    # 16 MB * k), not a whole 16 MB slot on: the board image reads guest RAM only below
+    # 0x30000000, and a font past it reads back as something else ("not an sfnt")
     local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
-    local fa=$(( 0x1A000000 + 16777216 * ${#loads[@]} )) fb
+    local last=${loads[-1]#--load=} lastsz fa fb
+    lastsz=$(stat -L -c %s "$w/tars/$last.tar") || die "kiln zero: no tarball for $last"
+    fa=$(( 0x1A000000 + 16777216 * (${#loads[@]} - 1) + (lastsz + 1048575) / 1048576 * 1048576 ))
     fb=$(( fa + 1048576 ))
+    (( fb + 2 * 1048576 <= 0x30000000 )) \
+      || die "kiln zero: ${#loads[@]} systems leave no room below 0x30000000 for the fonts and CA bundle"
     # a standalone card's core starts the desk by itself after the restore
     local -a hookform=() skipform=()
     if [[ ${#jit_skip[@]} -gt 0 ]]; then
@@ -3256,7 +3299,7 @@ EOF
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"
     rm -rf "$w"
     if [[ -n $sd_image ]]; then
-      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file" "$owner"
+      zero_sd_image "$netboot" "$build_core" "$sd_image" "$nsec_file" "$owner" "$site" "$nsite"
       return 0
     fi
     note "zero: $build_core $(stat -c %s "$build_core") bytes -- deploy with --netboot=$netboot --core=$build_core"

@@ -53,6 +53,22 @@
 
 (defvar *kz-hw-cursor* nil)               ; T: the pointer is an HVS plane (the screen thread's)
 
+;;; WHICH ROWS CHANGED, for an RFB server (zero-rfbs.lisp).  Every draw on the scanout stamps the
+;;; rows it touched with a fresh number from *KZ-DAMAGE*, AFTER the pixels are written; the
+;;; server keeps the stamp it last sent per row and sends a row whose stamp moved.  Nothing is
+;;; reset, so a draw racing a send is simply sent on the next look.  Fixnums only: the screen
+;;; thread stamps too, and a thread may store an immediate into this (main's) vector.  Copying and
+;;; comparing a whole 640x480 screen to find the change was ~4 s a look on a QEMU board.
+(defvar *kz-damage* 0)
+;;; T while an RFB client is connected: it draws its own pointer, as RFB clients do, so the desk's
+;;; drawn into the scanout would be a second, lagging one -- and every move would be pixels to send.
+(defvar *kz-pointer-off* nil)
+(defvar *kz-row-gen* (make-array 2048 :initial-element 0))
+(defun %kz-touch (y0 y1)
+  (let ((g (setq *kz-damage* (+ *kz-damage* 1))) (v *kz-row-gen*))
+    (loop for y from (max 0 y0) below (min y1 (length v)) do (setf (svref v y) g))
+    nil))
+
 (defun %zero-pointer-hide ()
   (when *kz-hw-cursor* (return-from %zero-pointer-hide nil))
   (when *zero-under*
@@ -60,11 +76,12 @@
       (dotimes (r 16)
         (dotimes (c 11)
           (when (%zero-on-screen-p (+ x c) (+ y r))
-            (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) (svref saved (+ (* r 11) c)))))))
+            (setf (mem-ref (%zero-pixel-addr (+ x c) (+ y r)) :u32) (svref saved (+ (* r 11) c))))))
+      (%kz-touch y (+ y 16)))
     (setf *zero-under* nil)))
 
 (defun %zero-pointer-show ()
-  (when *kz-hw-cursor* (return-from %zero-pointer-show nil))
+  (when (or *kz-hw-cursor* *kz-pointer-off*) (return-from %zero-pointer-show nil))
   (let ((x *zero-px*) (y *zero-py*) (saved *zero-under-pixels*))
     (dotimes (r 16)
       (let ((line (nth r *zero-arrow*)))
@@ -75,7 +92,8 @@
               (case (char line c)
                 (#\2 (setf (mem-ref a :u32) #x000000))
                 (#\1 (setf (mem-ref a :u32) #xffffff))))))))
-    (setf *zero-under-x* x *zero-under-y* y *zero-under* t)))
+    (setf *zero-under-x* x *zero-under-y* y *zero-under* t)
+    (%kz-touch y (+ y 16))))
 
 ;;; --- the USB thread (a board image built with kiln zero --threads) ---------------------------
 ;;;
@@ -93,6 +111,16 @@
 (defvar *kz-usb-idle-hook* nil)    ; a function of no arguments, run on the USB thread each round
 (defvar *kz-event-source* nil)     ; a function returning events (the desk's encoding), main thread
 (defvar *kz-main-net* nil)         ; with sockets on the main thread: pump them while the desk idles
+
+(defun %kiln-frame-wait (ms)
+  "The rest of the app's frame, MS ms.  With sockets on this thread it is spent turning them: an
+   RFB update encoded while the frame waits is one not encoded on top of it (hosted, that was 14
+   of every 46 ms between updates)."
+  (if *kz-main-net*
+      (let ((until (+ (get-internal-real-time) (* ms 1000))))
+        (loop while (< (get-internal-real-time) until)
+              do (unless (funcall *kz-main-net*) (modus-int::%sleep-ms 1))))
+      (modus-int::%sleep-ms ms)))
 (defvar *kz-net-service* nil)      ; with the network up: drain the NIC into its ring (zero-ssh)
 
 (defun %kz-usb-idle ()
@@ -101,14 +129,16 @@
     (when n (funcall n))                ; first: nothing may leave the NIC unread
     (when h (funcall h))))
 
-(defun kz-usb-start ()
+(defun kz-usb-start (&key (engine t))
   "Give the USB controller to core 1.  With modus's I/O core (net/usb-io-core.lisp) that is
    its ENGINE: one non-consing loop owns the controller -- the NIC, the keyboard and mouse,
    the hub -- and every thread sends and receives through its rings, so nothing here calls
    into a USB thread and *KZ-USB* is just :ENGINE.  Otherwise (an older image, or no
    RTL8153) an executor that polls the HID and drains the NIC, as before.  NIL without
-   threads."
-  (when (and (null *kz-usb*) (fboundp 'modus-int::usbe-start))
+   threads.  ENGINE NIL keeps the executor: a NIC bound outside modus's USB tree (QEMU's CDC
+   adapter, by NET-UP-QEMU) never got the engine's copy helpers, and the engine's hub scan
+   trips a QEMU assertion."
+  (when (and engine (null *kz-usb*) (fboundp 'modus-int::usbe-start))
     (let ((r (funcall 'modus-int::usbe-start)))
       (when (member r '(:started :already))
         (setf *kz-usb* :engine))))
@@ -200,7 +230,9 @@
 ;;; collection.  Then the pause lands where nobody is moving anything, and a gesture that
 ;;; follows starts with the whole semispace free.
 
-(defparameter *kz-idle-gc-us* 500000)     ; quiet this long first (internal time units: µs)
+(defparameter *kz-idle-gc-us* 2000000)    ; quiet this long first (internal time units: µs): on a
+                                          ; board serving a phone, a slow drag's input came >0.5 s
+                                          ; apart and a collection landed in the middle of it
 (defparameter *kz-idle-gc-bytes* 4000000) ; and at least this much allocated since the last GC
 (defvar *kz-active-at* 0)
 (defvar *kz-frame-at* 0)
@@ -303,6 +335,15 @@
       (when *kz-main-net* (funcall *kz-main-net*))
       (%kz-serve-jobs)
       (%zero-idle-gc))
+    ;; A DUE FRAME LOOKS AT INPUT FIRST.  Input that arrived while the app slept out its frame
+    ;; goes before the draw, or the frame draws nothing new and the move waits a whole second
+    ;; frame: with the RFB client dragging at 60 Hz, every other tick drew nothing and updates came
+    ;; 34 ms apart.  Bounded: past a second frame's worth, the frame goes first whatever is queued.
+    (when (and (> (- now *kz-frame-at*) 16000) (< (- now *kz-frame-at*) 32000))
+      (unless *zero-events* (%zero-poll))
+      (when *zero-events*
+        (setf *kz-active-at* now)
+        (return-from %zero-next-event (pop *zero-events*))))
     (if (> (- now *kz-frame-at*) 16000)
         (progn (setf *kz-frame-at* now *kz-just-drew* t)
                (when *kz-frame-limit* (setq *kz-frame-limit* (- *kz-frame-limit* 1)))
@@ -759,7 +800,8 @@
         (modus-int::hcon-u64 (+ scr 24) rows)
         (modus-int::hcon-u64 (+ scr 32) (modus-int::hcon-get #x08))
         (modus-int::hcon-u64 (+ scr 40) (* bpp stride))
-        (modus-int::%jit-call (if (= bpp 4) (+ code 256) code))))
+        (modus-int::%jit-call (if (= bpp 4) (+ code 256) code))
+        (%kz-touch y0 (+ y0 rows))))
     (%zero-pointer-show)
     0))
 
@@ -795,46 +837,10 @@
 ;;; how far it got.  The board is single-threaded: when the app is wedged, serial is the only
 ;;; voice it has.
 (defvar *kz-said* 0)
-;;; THE DAMAGE LOG.  *KZ-DAMAGE* counts the desk's draws on the screen (fill, blit, present), and
-;;; *KZ-DLOG* holds the last +KZ-DLOG-N+ of them as screen rectangles, X Y W H for draw number S at
-;;; 4*(S mod N): an RFB server (zero-rfbs.lisp) sends exactly those rectangles instead of copying
-;;; the whole screen and comparing it row by row (1.7 s a frame on the Zero).  A draw is logged
-;;; AFTER it reaches the screen -- main runs core 0's other threads while it waits for the screen
-;;; thread, and a sender that read the rectangle first would copy the pixels before they changed.
-;;; Fixnums in a vector made once: nothing here allocates.
-(defconstant +kz-dlog-n+ 64)
-(defvar *kz-damage* 0)
-(defvar *kz-dlog* (make-array (* 4 +kz-dlog-n+) :initial-element 0))
-
-(defun %kz-log-damage (x y w h)
-  (let* ((sw (modus-int::hcon-get #x0C)) (sh (modus-int::hcon-get #x10))
-         (x0 (max 0 x)) (y0 (max 0 y)) (x1 (min sw (+ x w))) (y1 (min sh (+ y h)))
-         (i (* 4 (mod (1+ *kz-damage*) +kz-dlog-n+))))
-    (when (and (< x0 x1) (< y0 y1))
-      (setf (svref *kz-dlog* i) x0 (svref *kz-dlog* (+ i 1)) y0
-            (svref *kz-dlog* (+ i 2)) (- x1 x0) (svref *kz-dlog* (+ i 3)) (- y1 y0))
-      (incf *kz-damage*))))
-
-(defun kz-damage-since (seen)
-  "The screen rectangles drawn after draw number SEEN, as a list of (X Y W H), and the current
-   draw number; :ALL instead of the list when the log no longer reaches back that far."
-  (let ((now *kz-damage*))
-    (values (if (> (- now seen) +kz-dlog-n+)
-                :all
-                (loop for s from (1+ seen) to now
-                      for i = (* 4 (mod s +kz-dlog-n+))
-                      collect (list (svref *kz-dlog* i) (svref *kz-dlog* (+ i 1))
-                                    (svref *kz-dlog* (+ i 2)) (svref *kz-dlog* (+ i 3)))))
-            now)))
 (defun %kz-say (s) (modus-int::write-string-serial s) (write-char-serial 10))
 
 (defun %kiln-sys (n a b c &optional (d 0) (e 8))
-  (prog1 (%kiln-sys-1 n a b c d e)
-    (case n                                         ; logged once it is on the screen
-      ((1002 1007) (%kz-log-damage 0 0 (modus-int::hcon-get #x0C) (modus-int::hcon-get #x10)))
-      (1005 (%kz-log-damage (logand c #xFFFF) (floor c 65536) (logand b #xFFFF) (floor b 65536))))))
-
-(defun %kiln-sys-1 (n a b c d e)
+  (when (member n '(1002 1005 1007)) (incf *kz-damage*))
   (let ((bit (case n (1001 1) (1002 2) (1004 4) (1005 8) (t 0))))
     (when (and (plusp bit) (zerop (logand *kz-said* bit)))
       (setf *kz-said* (logior *kz-said* bit))
@@ -844,6 +850,7 @@
     (1002 (%kz-on-screen (lambda ()
                            (%zero-pointer-hide)
                            (modus-int::hcon-nfill (modus-int::hcon-get #x04) (* (modus-int::hcon-get #x10) (modus-int::hcon-get #x08)) c)
+                           (%kz-touch 0 (modus-int::hcon-get #x10))
                            (%zero-pointer-show) 0)))
     (1004 (%zero-next-event))
     (1005 (%kz-on-screen (lambda () (%zero-blit a b c d e))))
@@ -856,6 +863,24 @@
     (1010 1)
     (t 0)))
 
+;;; GENERATIONAL GC (modus docs/generational-gc.md).  The restored core is ~40 MB that
+;;; survives every collection; tenured, it is an OLD space that collections never copy.
+;;; Run once the threads are up: starting them carves the lock arena off region 0, and
+;;; region 0 cannot be carved after it has an old space (the young pair, the old area and
+;;; a major's copy are laid out inside the semispaces as they are at tenure).  The old
+;;; space is then the core plus the gateway's boot state.  The card argument GC=plain
+;;; leaves the board on the plain semispace collector.
+(defun kz-gen-gc-start ()
+  (cond ((not (fboundp 'gc-tenure)) nil)              ; a modus without it
+        ((equal (ignore-errors (modus-int::%cli-getenv "GC")) "plain") (%kz-say "KZ:gc plain") nil)
+        ((modus-int::%gc-old-space-p) nil)                         ; already
+        (t (handler-case
+               (let ((r (gc-tenure)))
+                 (%kz-say (format nil "KZ:gc generational, old ~d KB, young 2 x ~d KB"
+                                  (floor (- (second r) (first r)) 1024) (floor (third r) 1024)))
+                 r)
+             (error (e) (%kz-say (format nil "KZ:gc tenure failed: ~a" e)) nil)))))
+
 (defun kiln-zero-main (&key media autoplay (yuv t) frames)
   "The phone app on the Zero's screen, until a character arrives on the serial port.  MEDIA
    opens the media player on the files under /media/ of the mounted cabinet (kiln zero
@@ -867,6 +892,7 @@
   (unless (modus-int::hcon-ready-p) (modus-int::hcon-init))
   (setq *kz-frame-limit* frames)
   (kz-usb-start)                          ; threads: input on core 1 from here on
+  (kz-gen-gc-start)                       ; after the threads' lock arena is carved
   (kz-scr-start (and media yuv))          ; ... and the screen on core 2
   ;; ... and HDMI audio on core 3 -- except for media: there core 3 decodes (and with no mixer
   ;; on the Zero yet, a film plays silent anyway)

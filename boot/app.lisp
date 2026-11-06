@@ -553,9 +553,12 @@
                       ;; A Y'CbCr desk (glass :I420) is shown as it is: the platform scans
                       ;; the planes out (pseudo-syscall 1007, the Zero's HVS)
                       (%kiln-sys 1007 (glass.desk:desk-fb desk) 0 0))))
-              ;; a frame is 16 ms; sleep only what is left of it, not 16 ms on top of the work
+              ;; a frame is 16 ms; sleep only what is left of it, not 16 ms on top of the work --
+              ;; or spend it on the platform's own work (the Zero's sockets, when they share
+              ;; this thread) if it has a way to wait that does that
               (let ((left (- 16 (floor (- (get-internal-real-time) t0) 1000))))
-                (when (> left 1) (modus-int::%sleep-ms left))))
+                (when (> left 1)
+                  (if (fboundp '%kiln-frame-wait) (funcall '%kiln-frame-wait left) (modus-int::%sleep-ms left)))))
             (let ((type (floor e 1099511627776))
                   (y (logand (floor e 1048576) #xFFFFF))
                   (x (logand e #xFFFFF)))

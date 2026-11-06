@@ -3012,12 +3012,12 @@ EOF
 (progn (setq *kz-tar* nil) (setq *kz-reg* (kz-fetch "@BASE@" (quote @REG@))) (setq *kz-bold* (kz-fetch "@BASE@" (quote @BOLD@))) (if (and *kz-reg* *kz-bold*) (progn (setf glass::*font-regular* (scribe:open-font *kz-reg*) glass::*font-bold* (scribe:open-font *kz-bold*)) :fonts) :fonts-failed))
 (jit-eager)
 EOF
-  # THE CABINET: a 32 MB RAM disk of raw memory at 0x1B000000 (outside the Lisp heap,
-  # between the core save area and the I/O buffers), formatted, mounted under CL's OPEN,
-  # and each clip written to /media/ in one WRITE-FILE.
+  # THE CABINET: a 32 MB RAM disk of raw memory in the board region of modus's Pi memory
+  # map (%RPI-BOARD-RAM: outside the Lisp heap, below the thread stacks), formatted, mounted
+  # under CL's OPEN, and each clip written to /media/ in one WRITE-FILE.
   : > "$out/media.txt"
   if [[ $media == 1 ]]; then
-    echo '(progn (modus-int::cabinet-mount-device (modus-int::cabinet-raw-disk #x1B000000 33554432) :format t) (funcall (symbol-function (intern "MAKE-DIRECTORIES" "CABINET")) modus-int::*cabfs* "/media") :mounted)' >> "$out/media.txt"
+    echo '(progn (modus-int::cabinet-mount-device (multiple-value-call (function modus-int::cabinet-raw-disk) (modus-int::%rpi-board-ram)) :format t) (funcall (symbol-function (intern "MAKE-DIRECTORIES" "CABINET")) modus-int::*cabfs* "/media") :mounted)' >> "$out/media.txt"
     local c
     for c in "$ROOT"/media/*; do
       [[ -f $c ]] || continue
@@ -3200,13 +3200,17 @@ EOF
         done
       done
     fi
-    # the fonts go just past the last tarball (run-rpi-core.sh puts tarball k at 0x1A000000 +
-    # 16 MB * k), not a whole 16 MB slot on: the board image reads guest RAM only below
-    # 0x30000000, and a font past it reads back as something else ("not an sfnt")
+    # the fonts go just past the tarballs, which run-rpi-core.sh packs end to end from TAR_BASE,
+    # each at a 1 MB boundary.  TAR_BASE is above modus's Pi heap, which QEMU's 1 GiB raspi3b
+    # grows to 0x20000000 (boot-rpi-cl.lisp's memory map); the board image reads guest RAM
+    # only below 0x30000000, and a font past it reads back as something else ("not an sfnt")
+    local tar_base=0x20000000
     local reg=$out/LiberationSans-Regular.ttf bold=$out/LiberationSans-Bold.ttf
-    local last=${loads[-1]#--load=} lastsz fa fb
-    lastsz=$(stat -L -c %s "$w/tars/$last.tar") || die "kiln zero: no tarball for $last"
-    fa=$(( 0x1A000000 + 16777216 * (${#loads[@]} - 1) + (lastsz + 1048575) / 1048576 * 1048576 ))
+    local fa=$tar_base fb l sz
+    for l in "${loads[@]}"; do
+      sz=$(stat -L -c %s "$w/tars/${l#--load=}.tar") || die "kiln zero: no tarball for ${l#--load=}"
+      fa=$(( fa + (sz + 1048575) / 1048576 * 1048576 ))
+    done
     fb=$(( fa + 1048576 ))
     (( fb + 2 * 1048576 <= 0x30000000 )) \
       || die "kiln zero: ${#loads[@]} systems leave no room below 0x30000000 for the fonts and CA bundle"
@@ -3285,7 +3289,7 @@ EOF
       scp -q "$w/kernel8.img" "$reg" "$bold" "$mono" "$builder:$rdir/" \
         && scp -q "$modus/test/run-rpi-core.sh" "$modus/test/rpi-core-driver.py" "$builder:$rdir/test/" \
         && scp -q "$w"/tars/*.tar "$builder:$rdir/tars/" || die "kiln zero: cannot copy the build to $builder"
-      local cmd; cmd="cd $rdir && TARS=tars ./test/run-rpi-core.sh kernel8.img out.core"
+      local cmd; cmd="cd $rdir && TARS=tars TAR_BASE=$tar_base ./test/run-rpi-core.sh kernel8.img out.core"
       [[ ${#cablob[@]} -gt 0 ]] && { scp -q "$out/ca.pem" "$builder:$rdir/" || die "kiln zero: cannot copy the CA bundle"; cablob=(--blob="ca.pem@$ca"); }
       local x; for x in "${loads[@]}" "--blob=$(basename "$reg")@$fa" "--blob=$(basename "$bold")@$fb" "--blob=$(basename "$mono")@$ma" "${cablob[@]}" "${coreargs[@]}"; do
         cmd+=" $(printf '%q' "$x")"; done
@@ -3293,7 +3297,7 @@ EOF
       grep -q "^PASS" "$out/core.log" && scp -q "$builder:$rdir/out.core" "$build_core"
       ssh "$builder" "rm -rf $rdir"
     else
-      TARS=$w/tars "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
+      TARS=$w/tars TAR_BASE=$tar_base "$modus/test/run-rpi-core.sh" "$w/kernel8.img" "$build_core" "${loads[@]}" \
         --blob="$reg@$fa" --blob="$bold@$fb" "${monoblob[@]}" "${cablob[@]}" "${coreargs[@]}" | tee "$out/core.log"
     fi
     grep -q "^PASS" "$out/core.log" || die "kiln zero: core build failed (see $out/core.log)"

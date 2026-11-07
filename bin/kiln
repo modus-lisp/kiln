@@ -2574,7 +2574,7 @@ bootcode.bin, start.elf, fixup.dat and the device tree are the Raspberry Pi
 firmware (see LICENCE.broadcom); kernel8.img and desk.core are modus.
 TXT
   # THE CARD'S BOOTARGS: the firmware hands cmdline.txt to modus, and the card's power-on
-  # (boot/zero-boot.lisp, and zero-gateway on a gateway card) reads them.  ONE line of
+  # (vessel/src/zero-boot.lisp, and zero-gateway on a gateway card) reads them.  ONE line of
   # space-separated NAME=VALUE; lists are comma-separated (a bootarg holds no spaces).  The
   # secret comes from a FILE, so it is never in argv or a log; the card holds it in the clear.
   local boot_files="kernel8.img desk.core config.txt README.txt cmdline.txt"
@@ -2637,10 +2637,10 @@ PY
 
 cmd_zero() {
   # THE PHONE APP ON A RASPBERRY PI ZERO 2 W running bare-metal modus: the desk on
-  # the Zero's HDMI screen, its USB keyboard and mouse as input (boot/zero.lisp
+  # the Zero's HDMI screen, its USB keyboard and mouse as input (vessel/src/zero.lisp
   # is the platform layer, over modus's board drivers).  The Zero cannot build:
   # kiln assembles ONE system from this workspace -- brotli-pure, cram, scribe,
-  # glass's framebuffer, text and desk, boot/zero.lisp, boot/app.lisp -- and the
+  # glass's framebuffer, text and desk, vessel/src/zero.lisp, boot/app.lisp -- and the
   # board installs it over its network from the machine that hosts it
   # (--builder: the Pi 5 the Zero is wired to, which reaches it at 10.0.0.2).
   #
@@ -2724,7 +2724,7 @@ kiln zero --builder=USER@HOST [--board=IP] [--netboot=IMG.gz] [--media] [--no-st
                     core slot 96 MB: a desk+network core compiled whole fills both, so
                     e.g. --jit-skip=GLASS,SCRIBE,CRAM,BROTLI-PURE,KILN-ZERO-RFB keeps
                     the desk interpreted and the network stack native
-  A CARD'S POWER-ON (boot/zero-boot.lisp) reads the card's cmdline.txt, which these write:
+  A CARD'S POWER-ON (vessel/src/zero-boot.lisp) reads the card's cmdline.txt, which these write:
   the network (DHCP, else 10.0.0.2 via 10.0.0.1), an SSH server with a host key of its own
   that accepts only --ssh-key keys, and -- once SNTP has set the clock -- a NIP-17 gift-wrapped
   message to --owner on each --relay saying where the board is and how to reach it.  Edit
@@ -2801,7 +2801,7 @@ USAGE
     fi
   fi
   if [[ $workspace == 0 ]]; then
-    local -a base=(brotli-pure cram scribe glass fs-fat quill) wrepos=()
+    local -a base=(vessel brotli-pure cram scribe glass fs-fat quill) wrepos=()
     base+=(modus)
     [[ $media == 1 || ${#withs[@]} -gt 0 ]] && base+=(pagetree cabinet)
     [[ $media == 1 ]] && base+=(reed reel cassette warp)
@@ -2811,7 +2811,7 @@ USAGE
     KILN_ROOT=$(zero_sources "${base[@]}" -- "${wrepos[@]}") || exit 1
     note "zero: sources at repos.lock's pins in $KILN_ROOT"
   fi
-  for r in brotli-pure cram scribe glass; do
+  for r in vessel brotli-pure cram scribe glass; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln zero: no $r checkout at $KILN_ROOT/$r"
   done
   local out=$KILN_STATE/zero sys
@@ -2863,29 +2863,29 @@ EOF
   # zero-bt, the one-thread bordeaux-threads, goes in EVERY kiln-zero: --with drops the real
   # bordeaux-threads from each closure on the promise that the board already has it, and a
   # library that nicknames bt (cl-nostr) cannot even be READ without the package.
-  cp "$ROOT/boot/zero-bt.lisp" "$sys/src/zero-bt.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-bt.lisp" "$sys/src/zero-bt.lisp"
   # the SSH client's transport over the board's TCP (conch itself arrives with --with=conch)
-  cp "$ROOT/boot/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-ssh.lisp" "$sys/src/zero-ssh.lisp"
   # the card it booted from, mounted: fs-fat's FAT32 over modus's SD driver (net/emmc.lisp),
   # so cmdline.txt can be edited from the board
   [[ -f $KILN_ROOT/fs-fat/lib/fat32.lisp ]] || die "kiln zero: no fs-fat checkout at $KILN_ROOT/fs-fat"
   cp "$KILN_ROOT/fs-fat/lib/fat32.lisp" "$sys/src/fs-fat32.lisp"
-  cp "$ROOT/boot/zero-card.lisp" "$sys/src/zero-card.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-card.lisp" "$sys/src/zero-card.lisp"
   # the SSH shell's line editor: quill (Emacs keys, history, C-r, multi-line forms), fed by
   # modus's session through its :INPUT
   [[ -d $KILN_ROOT/quill/src ]] || die "kiln zero: no quill checkout at $KILN_ROOT/quill"
   for f in package port keys buffer history render editor; do
     cp "$KILN_ROOT/quill/src/$f.lisp" "$sys/src/quill-$f.lisp"; done
-  cp "$ROOT/boot/zero-shell.lisp" "$sys/src/zero-shell.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-shell.lisp" "$sys/src/zero-shell.lisp"
   # the Terminal as a terminal: glass/term's portable core (grid, VT parser, rendering; not
   # term-pty.lisp, which is the Unix pty) and the window over it with quill (zero-term.lisp)
   cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
-  cp "$ROOT/boot/zero-term.lisp" "$sys/src/zero-term.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
   # what a card does at power-on before the desk: network, SSH, the owner's message
-  cp "$ROOT/boot/zero-boot.lisp" "$sys/src/zero-boot.lisp"
-  cp "$ROOT/boot/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-boot.lisp" "$sys/src/zero-boot.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
   # ... and the same desk over SB-BSD-SOCKETS, for a gateway on the board itself (loopback)
-  cp "$ROOT/boot/zero-rfbs.lisp" "$sys/src/zero-rfbs.lisp"
+  cp "$KILN_ROOT/vessel/src/zero-rfbs.lisp" "$sys/src/zero-rfbs.lisp"
   # many TCP connections, UDP, and SB-BSD-SOCKETS over them: modus's bare-metal network layer,
   # taken from the modus checkout (its source of truth) -- the main thread's connections ride
   # zero-ssh's TX/RX rings
@@ -2933,7 +2933,7 @@ EOF
      (:file "media-package") (:file "media-engine") (:file "media-model") (:file "media-layout")
      (:file "media-glass")'
   fi
-  cp "$ROOT/boot/zero.lisp" "$sys/src/zero.lisp"
+  cp "$KILN_ROOT/vessel/src/zero.lisp" "$sys/src/zero.lisp"
   cp "$ROOT/boot/app.lisp" "$sys/src/app.lisp"
   cat > "$sys/kiln-zero.asd" <<EOF
 ;;;; kiln zero's desk, as ONE system in load order (the board installs one tarball).
@@ -3159,10 +3159,10 @@ EOF
         order=${o2# }
       fi
       # ...and the board's own half of that gateway, after it: an environment for the readers it
-      # was written with, and START (boot/zero-gateway.lisp).
+      # was written with, and START (vessel/src/zero-gateway.lisp).
       if [[ " $order " == *" glass-webrtc/nostr-lean "* ]]; then
         local gg="$w/tars/zero-gateway"; mkdir -p "$gg"
-        cp "$ROOT/boot/zero-gateway.lisp" "$gg/zero-gateway.lisp"
+        cp "$KILN_ROOT/vessel/src/zero-gateway.lisp" "$gg/zero-gateway.lisp"
         # THE ROOTS A RELAY'S CERTIFICATE CHAINS TO: a board has no /etc/ssl, and seal verifies
         # (it refuses every wss:// relay without them).  This machine's bundle, as a string in
         # the core; ZERO-GATEWAY:START writes it where seal looks, on the RAM cabinet.
@@ -3222,8 +3222,8 @@ EOF
       skipform=(--form="$sk) :skip)")
     fi
     # A CARD's power-on: the network, SSH and the owner's message, then the desk
-    # (boot/zero-boot.lisp BOOT-MAIN), from what its cmdline.txt says -- or, on a GATEWAY card,
-    # the nostr gateway's (boot/zero-gateway.lisp BOOT-MAIN)
+    # (vessel/src/zero-boot.lisp BOOT-MAIN), from what its cmdline.txt says -- or, on a GATEWAY card,
+    # the nostr gateway's (vessel/src/zero-gateway.lisp BOOT-MAIN)
     local hook=kiln-zero-boot:boot-main
     [[ -n ${ZERO_GATEWAY:-} ]] && hook=zero-gateway:boot-main
     [[ -n $sd_image ]] && hookform=(--form="(progn (setq modus-int::*core-restart-hook* (quote $hook)) :hook)")

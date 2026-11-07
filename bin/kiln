@@ -2893,10 +2893,14 @@ EOF
   # many TCP connections, UDP, and SB-BSD-SOCKETS over them: modus's bare-metal network layer,
   # taken from the modus checkout (its source of truth) -- the main thread's connections ride
   # zero-ssh's TX/RX rings
-  local mnet=${KILN_MODUS:-$KILN_ROOT/modus}/net
+  # (modus's bare-metal sources are moving to vessel's kernel/: a file is modus's if modus
+  # still has it, else vessel's -- the rule modus's own builds follow, lib/load-mvm.lisp)
+  local mnet=${KILN_MODUS:-$KILN_ROOT/modus}/net vnet=$KILN_ROOT/vessel/kernel/net src
   for f in tcp-conns sb-bsd-sockets-shim bare-sockets; do
-    [[ -f $mnet/$f.lisp ]] || die "kiln zero: no $mnet/$f.lisp (KILN_MODUS is a modus checkout with it)"
-    cp "$mnet/$f.lisp" "$sys/src/$f.lisp"
+    if [[ -f $mnet/$f.lisp ]]; then src=$mnet/$f.lisp
+    elif [[ -f $vnet/$f.lisp ]]; then src=$vnet/$f.lisp
+    else die "kiln zero: no $f.lisp in $mnet or $vnet"; fi
+    cp "$src" "$sys/src/$f.lisp"
   done
   local media_files=""
   if [[ $media == 1 ]]; then

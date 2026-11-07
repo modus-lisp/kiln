@@ -103,6 +103,9 @@ if [[ -n ${KILN_EXPOSE:-} ]]; then PUBLISH_ON=""; else PUBLISH_ON="127.0.0.1:"; 
 KILN_ROOT=${KILN_ROOT:-$(cd -- "$ROOT/.." && pwd)}
 # Where kiln keeps what it generates: the core, and the boot file per display.
 KILN_STATE=${KILN_STATE:-$HOME/.kiln}
+# vessel: what goes INTO an image (the desktop, the device app, the board glue).  kiln
+# only assembles, so it reads those files from the vessel checkout beside it.
+VESSEL=${KILN_VESSEL:-$KILN_ROOT/vessel}
 
 die() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 note() { printf '\033[36mkiln:\033[0m %s\n' "$*" >&2; }
@@ -1082,8 +1085,8 @@ cmd_local() {
     # CLIM debugger on the running desktop instead; main keeps the old, loud behaviour.
     # Installed HERE, before anything that spawns threads, and the port is looked up lazily
     # at crash time -- so it is safe this early even though glass has not started yet.
-    printf ';;; see boot/debugger.lisp for why this is not clim-debugger:install-debugger\n'
-    printf '(load "%s/boot/debugger.lisp")\n' "$ROOT"
+    printf ';;; see vessel'"'"'s src/debugger.lisp for why this is not clim-debugger:install-debugger\n'
+    printf '(load "%s/src/debugger.lisp")\n' "$VESSEL"
     printf '(kiln-install-debugger)\n\n'
 
     [[ -n $size || -n $wallpaper || -n $vnc || -n $vnc_sock || -n $view ]] &&
@@ -1093,7 +1096,7 @@ cmd_local() {
     # what the desktop wears in its corner and what an RFB client shows in its title bar,
     # so a screen says which session it is without being asked -- and if nostr is turned
     # on later, the key it signs with is the one this session already had.
-    printf '(load "%s/boot/session.lisp")\n' "$ROOT"
+    printf '(load "%s/src/session.lisp")\n' "$VESSEL"
     printf '(defvar *kiln-session-name* nil)\n'
     printf '(defvar *kiln-session-sec* nil)\n'
     printf '(multiple-value-bind (name sec npub fresh) (kiln-session)\n'
@@ -1398,7 +1401,7 @@ cmd_local() {
     # stops sshd.lisp self-starting, and more to the point stops its "refusing to
     # start" path calling QUIT on the whole image over a missing key file.
     [[ -n $sshd ]] && {
-      printf '(let ((f "%s/boot/sshd.lisp")\n' "$ROOT"
+      printf '(let ((f "%s/src/sshd.lisp")\n' "$VESSEL"
       printf '      (key "%s/host_ed25519"))\n' "$KILN_ETC"
       printf '  (cond ((not (probe-file f)) (format t "~&kiln: ssh      no sshd.lisp~%%"))\n'
       printf '        ((not (probe-file key)) (format t "~&kiln: ssh      no host key at ~a~%%" key))\n'
@@ -1671,7 +1674,7 @@ cmd_bundle() {
     n=$((n+1))
   done < "$ROOT/repos.lock"
   cp "$ROOT/repos.lock" "$out/repos.lock"
-  mkdir -p "$out/boot"; cp "$ROOT/boot/build.lisp" "$ROOT/boot/one.lisp" "$out/boot/"
+  mkdir -p "$out/boot"; cp "$ROOT/boot/build.lisp" "$out/boot/"
 
   cat > "$out/kiln-run" <<'LAUNCH'
 #!/usr/bin/env bash
@@ -1736,9 +1739,10 @@ RM
 # KILN_MOUNT_REPOS="conch glass" bind-mounts those local checkouts over the
 # image's cloned copies, so uncommitted work can be tested without a push and a
 # repin.  Development only — the image alone is no longer self-contained.
-# KILN_MOUNT_BOOT=1 does the same for kiln's own boot files (entrypoint.sh,
-# one.lisp, config.lisp), which are COPYed into the image rather than cloned --
-# so without it, changing how the image BOOTS costs a full rebuild to try once.
+# KILN_MOUNT_BOOT=1 does the same for kiln's own boot files (entrypoint.sh and the
+# scripts it sources), which are COPYed into the image rather than cloned -- so
+# without it, changing how the image BOOTS costs a full rebuild to try once.  The Lisp
+# the image runs (one.lisp, sshd.lisp, config.lisp ...) is vessel's: KILN_MOUNT_REPOS=vessel.
 #
 # Either of those means SOURCE NEWER THAN THE CORE, so ASDF recompiles it -- and the
 # rootfs is read-only, including the fasl cache under $HOME.  KILN_DEV_CACHE=1 puts a
@@ -1969,7 +1973,7 @@ cmd_sessions() {
   local LOCAL_CORE=$core
   MODUS_ROOT="$KILN_ROOT" KILN_HOME="$ROOT" KILN_ETC="$KILN_ETC" \
   sbcl --core "$core" --noinform --non-interactive --disable-debugger \
-       --eval "(load \"$ROOT/boot/session.lisp\")" \
+       --eval "(load \"$VESSEL/src/session.lisp\")" \
        --eval '(progn (funcall (read-from-string "kiln-session-report") *standard-output*) (sb-ext:exit))' \
     2>/dev/null | sed 's/^@@ //'
 }
@@ -2136,13 +2140,13 @@ USAGE
   if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
     note "loading and compiling the world on the Mac (a few minutes)"
     rm -f "$out/kiln.core"
-    KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+    KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
       "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
     grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true
   fi
 
-  # What the app runs: the snapshot, then the entry point (boot/ios.lisp).
+  # What the app runs: the snapshot, then the entry point (vessel/src/ios.lisp).
   if [[ -n $autoplay ]]; then
     printf '%s\n' --core @kiln.core --eval "(kiln-ios-main :autoplay \"$autoplay\")" > "$out/modus.args"
   else
@@ -2302,11 +2306,11 @@ USAGE
 
   if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
     rm -f "$out/kiln.core"
-    local repos="glass cram warp gesso scribe brotli-pure cassette reed reel cl-transport"
+    local repos="vessel glass cram warp gesso scribe brotli-pure cassette reed reel cl-transport"
     local warm="bbb360.webm wpt-test.webm t5-av.webm opus-ogg.ogg"
     if [[ $(uname -s) == Linux && $(uname -m) == aarch64 ]]; then
       note "loading and compiling the world here (a few minutes)"
-      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
         "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     elif [[ -n $builder ]]; then
       local rdir=${KILN_ANDROID_BUILDER_DIR:-.kiln-android-builder}
@@ -2325,13 +2329,13 @@ USAGE
       rsync -a --delete "$ROOT/boot" "$builder:$rdir/root/kiln/" &&
         rsync -a --delete "$ql/" "$builder:$rdir/ql/" &&
         rsync -a "$out/modus.elf" "$builder:$rdir/modus.elf" || die "kiln android: copying to $builder failed"
-      ssh "$builder" "cd $rdir && rm -f kiln.core && KILN_APP=android KILN_ROOT=\$PWD/root KILN_BOOT=\$PWD/root/kiln/boot KILN_QL=\$PWD/ql KILN_CORE=\$PWD/kiln.core ./modus.elf --script root/kiln/boot/ios-world.lisp" \
+      ssh "$builder" "cd $rdir && rm -f kiln.core && KILN_APP=android KILN_ROOT=\$PWD/root KILN_VESSEL=\$PWD/root/vessel/src KILN_QL=\$PWD/ql KILN_CORE=\$PWD/kiln.core ./modus.elf --script root/kiln/boot/ios-world.lisp" \
         > "$out/world.log" 2>&1
       rsync -a "$builder:$rdir/kiln.core" "$out/kiln.core" 2>/dev/null || true
     elif command -v qemu-aarch64-static >/dev/null || command -v qemu-aarch64 >/dev/null; then
       local q; q=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
       note "loading and compiling the world under $q (slow: tens of minutes; --builder=U@H is faster)"
-      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_BOOT="$ROOT/boot" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+      KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
         "$q" "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     else
       die "kiln android: the world needs an aarch64 Linux host: --builder=USER@HOST, or install qemu-user"
@@ -2640,7 +2644,7 @@ cmd_zero() {
   # the Zero's HDMI screen, its USB keyboard and mouse as input (vessel/src/zero.lisp
   # is the platform layer, over modus's board drivers).  The Zero cannot build:
   # kiln assembles ONE system from this workspace -- brotli-pure, cram, scribe,
-  # glass's framebuffer, text and desk, vessel/src/zero.lisp, boot/app.lisp -- and the
+  # glass's framebuffer, text and desk, vessel/src/zero.lisp, vessel/src/app.lisp -- and the
   # board installs it over its network from the machine that hosts it
   # (--builder: the Pi 5 the Zero is wired to, which reaches it at 10.0.0.2).
   #
@@ -2934,7 +2938,7 @@ EOF
      (:file "media-glass")'
   fi
   cp "$KILN_ROOT/vessel/src/zero.lisp" "$sys/src/zero.lisp"
-  cp "$ROOT/boot/app.lisp" "$sys/src/app.lisp"
+  cp "$KILN_ROOT/vessel/src/app.lisp" "$sys/src/app.lisp"
   cat > "$sys/kiln-zero.asd" <<EOF
 ;;;; kiln zero's desk, as ONE system in load order (the board installs one tarball).
 (asdf:defsystem :kiln-zero
@@ -2968,7 +2972,7 @@ EOF
   # a PLAIN tar: the board's installer does not find the .asd inside a .tar.gz
   (cd "$out" && tar cf kiln-zero.tar kiln-zero)
   cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" "$out/"
-  # the Terminal's monospace face (boot/app.lisp *KILN-MONO-FONT*), loaded into a core beside them
+  # the Terminal's monospace face (vessel/src/app.lisp *KILN-MONO-FONT*), loaded into a core beside them
   cp "$KILN_ROOT/scribe/fonts/LiberationMono-Regular.ttf" "$out/"
   # the clips, one manifest each: clip-<name>.<ext> -> pieces in clip-<name>/
   if [[ $media == 1 ]]; then

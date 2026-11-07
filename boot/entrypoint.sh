@@ -78,7 +78,7 @@ case "$cmd" in
     # From the CORE, not a bare sbcl: --script implies --no-userinit, so a plain
     # script sees no Quicklisp and cannot find jzon.  The core already has conch,
     # seal/http and jzon in it, which also makes this start instantly.
-    exec sbcl --core "$CORE" --dynamic-space-size 1024 --script /kiln/boot/sshd.lisp
+    exec sbcl --core "$CORE" --dynamic-space-size 1024 --script "$ROOT"/vessel/src/sshd.lisp
     ;;
 
   web)
@@ -112,7 +112,7 @@ case "$cmd" in
     # when the host mounted an identity for it.
     [ -f "${KILN_ETC:-/etc/kiln}/host_ed25519" ] && { KILN_SSHD=1; export KILN_SSHD; }
     exec sbcl --core "$CORE" --control-stack-size 256 \
-         --dynamic-space-size "${KILN_HEAP:-4096}" --load /kiln/boot/one.lisp
+         --dynamic-space-size "${KILN_HEAP:-4096}" --load "$ROOT"/vessel/src/one.lisp
     ;;
 
   repl)
@@ -158,7 +158,7 @@ case "$cmd" in
     echo "kiln: glass RFB on modus — 127.0.0.1:$port"
     MODUS_RFB_PORT=$port
     export MODUS_RFB_PORT
-    modus_lisp --script /kiln/boot/modus-rfb.lisp "$@"
+    modus_lisp --script "$ROOT"/vessel/src/modus-rfb.lisp "$@"
     ;;
 
   test)

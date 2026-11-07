@@ -32,14 +32,14 @@
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)
   (asdf:load-system s))
-;; The app (boot/app.lisp) and the platform's way to the screen: KILN_APP is
-;; "ios" (the default) or "android".  KILN_BOOT is this directory, so a kiln
-;; worktree loads its own files rather than $KILN_ROOT/kiln's.
+;; The app (vessel's src/app.lisp) and the platform's way to the screen: KILN_APP is
+;; "ios" (the default) or "android".  Both are vessel's -- kiln only assembles.  KILN_VESSEL
+;; names vessel's src/ (bin/kiln passes it); otherwise the vessel checkout beside kiln.
 (defvar *kiln-app* (let ((a (modus-int::%cli-getenv "KILN_APP"))) (if (and a (> (length a) 0)) a "ios")))
-(defvar *kiln-boot* (let ((b (modus-int::%cli-getenv "KILN_BOOT")))
-                      (if (and b (> (length b) 0)) b (concatenate 'string *kiln-root* "/kiln/boot"))))
-(load (concatenate 'string *kiln-boot* "/" *kiln-app* ".lisp"))
-(load (concatenate 'string *kiln-boot* "/app.lisp"))
+(defvar *kiln-vessel* (let ((v (modus-int::%cli-getenv "KILN_VESSEL")))
+                        (if (and v (> (length v) 0)) v (concatenate 'string *kiln-root* "/vessel/src"))))
+(load (concatenate 'string *kiln-vessel* "/" *kiln-app* ".lisp"))
+(load (concatenate 'string *kiln-vessel* "/app.lisp"))
 
 ;; THE FONTS, NOW.  glass and scribe open their faces lazily, by path into the
 ;; source tree -- which exists on this Mac and not on the phone.  Opened here,

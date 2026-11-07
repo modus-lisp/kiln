@@ -42,16 +42,25 @@ jobs:
       # difference from a self-test that fails with a shell error about line 44.
       - name: The image has the boot files its entrypoint reads
         run: |
-          need=$(grep -ohE '(boot/|\$KILN_HOME/boot/|dirname[^)]*\)/)[a-z-]+\.(sh|lisp)' \
-                   boot/entrypoint.sh boot/one.lisp | sed -E 's#.*/##' | sort -u | tr '\n' ' ')
+          # kiln's own boot files (scripts the entrypoint sources) are COPYed to /kiln/boot;
+          # the Lisp the image runs is vessel's, cloned at its pin into /opt/modus-lisp/vessel.
+          need=$(grep -ohE '(boot/|dirname[^)]*\)/)[a-z-]+\.sh' boot/entrypoint.sh \
+                   | sed -E 's#.*/##' | sort -u | tr '\n' ' ')
+          needv=$(grep -ohE 'vessel/src/[a-z-]+\.lisp' boot/entrypoint.sh | sed -E 's#.*/##' | sort -u | tr '\n' ' ')
           # tr on BOTH, because ls and grep separate with newlines while the case pattern
           # below matches on SPACES.  Without it nothing ever matches and every file reads
           # as missing — which is how this gate failed its first run against a correct image.
           have=$(docker run --rm --entrypoint /bin/sh modus-lisp/kiln -c 'ls /kiln/boot/' | tr '\n' ' ')
+          havev=$(docker run --rm --entrypoint /bin/sh modus-lisp/kiln -c 'ls /opt/modus-lisp/vessel/src/' | tr '\n' ' ')
           fail=0
           for f in $need; do
             case " $have " in *" $f "*) ;;
               *) echo "::error::boot/$f is read at runtime and is not in the image"; fail=1 ;;
+            esac
+          done
+          for f in $needv; do
+            case " $havev " in *" $f "*) ;;
+              *) echo "::error::vessel/src/$f is read at runtime and is not in the image"; fail=1 ;;
             esac
           done
           [ "$fail" = 0 ] && echo "every boot file the runtime reads is present"

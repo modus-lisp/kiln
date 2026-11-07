@@ -78,19 +78,8 @@ bash "$HERE/https-proxy.sh" || rc=1
 group "kiln sync: what it clones, moves, and leaves alone"
 bash "$HERE/sync-test.sh" || rc=1
 
-group "boot decisions (flags, identity file, payload)"
-if command -v sbcl >/dev/null; then
-  sbcl --script "$HERE/one-test.lisp" || rc=1
-else
-  printf '  skip no sbcl on PATH\n'
-fi
-
-group "ops (the image, described to whoever is inside it)"
-if command -v sbcl >/dev/null; then
-  sbcl --script "$HERE/ops-test.lisp" || rc=1
-else
-  printf '  skip no sbcl on PATH\n'
-fi
+# one-test and ops-test moved to vessel with one.lisp and ops.lisp (vessel/test/):
+# what goes into an image is vessel's, and so are its tests.
 
 printf '\n'
 [ "$rc" = 0 ] && printf '\033[32mall green\033[0m\n' || printf '\033[31mFAILURES\033[0m\n'

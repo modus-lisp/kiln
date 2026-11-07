@@ -84,4 +84,22 @@ status=$?
   && ok "a clone that fails is reported, exits non-zero, and leaves nothing behind" \
   || fail "hotel: exit $status: $out"
 
+# The guide: linked in at the root once .github has it, and a person's own file kept.
+mkdir -p "$WORK/gh"; g init -q --bare "$WORK/up/.github"
+g clone -q "$WORK/up/.github" "$WORK/gh/.github" 2>/dev/null
+echo guide > "$WORK/gh/.github/AGENTS.md"; g -C "$WORK/gh/.github" add AGENTS.md
+g -C "$WORK/gh/.github" commit -qm guide; g -C "$WORK/gh/.github" push -q origin main
+sed -i '/^hotel$/d' "$WORK/list"; printf '.github\n' >> "$WORK/list"
+echo mine > "$ws/CLAUDE.md"
+out=$(KILN_SYNC_LIST="$WORK/list" KILN_SYNC_URL="file://$WORK/up/" "$KILN" sync "$ws" 2>&1)
+[ "$(readlink "$ws/AGENTS.md")" = .github/AGENTS.md ] && [ "$(cat "$ws/AGENTS.md")" = guide ] \
+  && printf '%s\n' "$out" | grep -q "linked *AGENTS.md -> .github/AGENTS.md" \
+  && ok "the guide is linked in at the root" || fail "AGENTS.md: $out"
+[ ! -L "$ws/CLAUDE.md" ] && [ "$(cat "$ws/CLAUDE.md")" = mine ] \
+  && printf '%s\n' "$out" | grep -q "kept *CLAUDE.md is not a link" \
+  && ok "a CLAUDE.md that is the person's own is kept, and said so" || fail "CLAUDE.md: $out"
+out=$(KILN_SYNC_LIST="$WORK/list" KILN_SYNC_URL="file://$WORK/up/" "$KILN" sync "$ws" 2>&1)
+printf '%s\n' "$out" | grep -q "linked" && fail "second sync relinked: $out" \
+  || ok "a second sync leaves the link as it is"
+
 exit $rc

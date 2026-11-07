@@ -125,6 +125,24 @@ printf '%s\n' "$results" | awk '{ v=$1; $1=""; printf "  %-8s%s\n", v, $0 }'
 extra=$(cd "$DEST" && for d in */; do d=${d%/}; [ -d "$d/.git" ] || continue
           printf '%s\n' "$repos" | grep -qx "$d" || printf '%s ' "$d"; done)
 [ -n "$extra" ] && printf '  %-8s %s\n' "local" "not in the org list: $extra"
+
+# ---- the workspace guide ----------------------------------------------------------------
+#
+# The org's .github repo carries AGENTS.md: what is shared between the repos (where each
+# algorithm lives, how to measure on both Lisps).  Linked in at the root under both names
+# agents look for.  A file already there that is not our link is the person's, and stays.
+guide=.github/AGENTS.md
+if [ -f "$DEST/$guide" ]; then
+  for f in AGENTS.md CLAUDE.md; do
+    if [ -L "$DEST/$f" ] && [ "$(readlink "$DEST/$f")" = "$guide" ]; then :
+    elif [ -e "$DEST/$f" ] || [ -L "$DEST/$f" ]; then
+      printf '  %-8s %s\n' "kept" "$f is not a link to $guide; left as it is"
+    else
+      ln -s "$guide" "$DEST/$f" && printf '  %-8s %s\n' "linked" "$f -> $guide"
+    fi
+  done
+fi
+
 echo
 for v in cloned updated current kept skipped failed; do
   n=$(printf '%s\n' "$results" | grep -c "^$v ")

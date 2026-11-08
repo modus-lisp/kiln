@@ -3195,6 +3195,15 @@ EOF
         (cd "$w/tars" && tar cf zero-gateway.tar zero-gateway)
         order+=" zero-gateway"
       fi
+      # ...and git on the card: cairn's store and working tree on the board's FAT32 store, the
+      # pack streamed to it (vessel/src/zero-cairn.lisp), after cairn and kiln-zero's zero-card
+      if [[ " $order " == *" cairn "* ]]; then
+        local gc="$w/tars/zero-cairn"; mkdir -p "$gc"
+        cp "$KILN_ROOT/vessel/src/zero-cairn.lisp" "$gc/zero-cairn.lisp"
+        printf '%s\n' '(asdf:defsystem :zero-cairn :components ((:file "zero-cairn")))' > "$gc/zero-cairn.asd"
+        (cd "$w/tars" && tar cf zero-cairn.tar zero-cairn)
+        order+=" zero-cairn"
+      fi
       note "zero: --with ${withs[*]}: $order"
       # an x/test system goes in right after x, before anything heavier: cl-fips/test
       # installed after cl-marmot stalled for 90 minutes on the board image, and in

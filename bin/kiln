@@ -2072,7 +2072,7 @@ cmd_ios() {
   # THE IPHONE APP, built from this workspace: modus running glass on the
   # phone's own screen, with the media player.  Everything happens on THIS Mac:
   #   1. modus is built for the iOS address layout, PC-relative (one ELF);
-  #   2. the macOS build of that same ELF loads the world (boot/ios-world.lisp),
+  #   2. the macOS build of that same ELF loads the world (vessel's src/ios-world.lisp),
   #      compiles it to native code and saves a snapshot;
   #   3. the app is that ELF + the snapshot: the compiled code becomes signed,
   #      read-only pages in the app, and the heap is a file the app restores
@@ -2141,7 +2141,7 @@ USAGE
     note "loading and compiling the world on the Mac (a few minutes)"
     rm -f "$out/kiln.core"
     KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
-      "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+      "$out/modus-mac" --script "$VESSEL/src/ios-world.lisp" > "$out/world.log" 2>&1
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
     grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true
   fi
@@ -2244,7 +2244,7 @@ cmd_android() {
   # Android phone (aarch64).  Three steps, as for the iPhone:
   #   1. modus is built for hosted aarch64 Linux -- Android IS aarch64 Linux,
   #      so the image needs no Android layout;
-  #   2. that same image loads the world (boot/ios-world.lisp, KILN_APP=android)
+  #   2. that same image loads the world (vessel's src/ios-world.lisp, KILN_APP=android)
   #      on an aarch64 Linux host, compiles it to native code and saves a
   #      snapshot: this machine if it is one, else --builder=USER@HOST (over
   #      ssh), else qemu-aarch64 here (slow);
@@ -2311,7 +2311,7 @@ USAGE
     if [[ $(uname -s) == Linux && $(uname -m) == aarch64 ]]; then
       note "loading and compiling the world here (a few minutes)"
       KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
-        "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+        "$out/modus.elf" --script "$VESSEL/src/ios-world.lisp" > "$out/world.log" 2>&1
     elif [[ -n $builder ]]; then
       local rdir=${KILN_ANDROID_BUILDER_DIR:-.kiln-android-builder}
       note "loading and compiling the world on $builder (a few minutes)"
@@ -2329,14 +2329,14 @@ USAGE
       rsync -a --delete "$ROOT/boot" "$builder:$rdir/root/kiln/" &&
         rsync -a --delete "$ql/" "$builder:$rdir/ql/" &&
         rsync -a "$out/modus.elf" "$builder:$rdir/modus.elf" || die "kiln android: copying to $builder failed"
-      ssh "$builder" "cd $rdir && rm -f kiln.core && KILN_APP=android KILN_ROOT=\$PWD/root KILN_VESSEL=\$PWD/root/vessel/src KILN_QL=\$PWD/ql KILN_CORE=\$PWD/kiln.core ./modus.elf --script root/kiln/boot/ios-world.lisp" \
+      ssh "$builder" "cd $rdir && rm -f kiln.core && KILN_APP=android KILN_ROOT=\$PWD/root KILN_VESSEL=\$PWD/root/vessel/src KILN_QL=\$PWD/ql KILN_CORE=\$PWD/kiln.core ./modus.elf --script root/vessel/src/ios-world.lisp" \
         > "$out/world.log" 2>&1
       rsync -a "$builder:$rdir/kiln.core" "$out/kiln.core" 2>/dev/null || true
     elif command -v qemu-aarch64-static >/dev/null || command -v qemu-aarch64 >/dev/null; then
       local q; q=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
       note "loading and compiling the world under $q (slow: tens of minutes; --builder=U@H is faster)"
       KILN_APP=android KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
-        "$q" "$out/modus.elf" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+        "$q" "$out/modus.elf" --script "$VESSEL/src/ios-world.lisp" > "$out/world.log" 2>&1
     else
       die "kiln android: the world needs an aarch64 Linux host: --builder=USER@HOST, or install qemu-user"
     fi

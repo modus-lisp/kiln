@@ -2885,6 +2885,9 @@ EOF
   # term-pty.lisp, which is the Unix pty) and the window over it with quill (zero-term.lisp)
   cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
   cp "$KILN_ROOT/vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
+  # the Console: the board's serial console, kept in RAM dmesg style, in a window with a line to
+  # type into (vessel/src/zero-console.lisp over modus's serial ring)
+  cp "$KILN_ROOT/vessel/src/zero-console.lisp" "$sys/src/zero-console.lisp"
   # what a card does at power-on before the desk: network, SSH, the owner's message
   cp "$KILN_ROOT/vessel/src/zero-boot.lisp" "$sys/src/zero-boot.lisp"
   cp "$KILN_ROOT/vessel/src/zero-rfb.lisp" "$sys/src/zero-rfb.lisp"
@@ -2969,7 +2972,7 @@ EOF
      (:file "zero") (:file "app") (:file "zero-ssh") (:file "fs-fat32") (:file "zero-card")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor") (:file "zero-shell")
-     (:file "glass-term") (:file "zero-term")
+     (:file "glass-term") (:file "zero-term") (:file "zero-console")
      (:file "zero-boot") (:file "zero-rfb")
      (:file "tcp-conns") (:file "sb-bsd-sockets-shim") (:file "bare-sockets") (:file "zero-rfbs")))))
 EOF

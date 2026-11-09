@@ -18,8 +18,9 @@
                       (if (and r (> (length r) 0)) r (error "KILN_ROOT is not set"))))
 (defvar *kiln-ql* (modus-int::%cli-getenv "KILN_QL"))
 
-(dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
-                "cassette" "reed" "reel" "cl-transport"))
+;; No media in this world (warp, cassette and reel are left out): the desk, Clock and
+;; Terminal first.  reed stays -- glass's audio mixes with it.
+(dolist (repo '("glass" "cram" "gesso" "scribe" "brotli-pure" "reed" "cl-transport"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 (when (and *kiln-ql* (> (length *kiln-ql*) 0))
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
@@ -27,7 +28,7 @@
 
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
-    "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass" "glass/desk"))
+    "reed" "glass/audio" "glass/desk"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)
@@ -65,12 +66,6 @@
               (reed::aac-imdct-long-matrix) (reed::aac-imdct-short-matrix)
               (reed::aac-sf-decoder) (reed::aac-spec-decoder 0)
               (reed::aac-pow43 0) (reed::aac-ensure-windows)))
-(dolist (f '("wpt-test.webm" "t5-av.webm" "opus-ogg.ogg"))
-  (let ((path (concatenate 'string *kiln-root* "/cassette/vectors/" f)))
-    (when (probe-file path)
-      (%kiln-warm f (lambda ()
-                      (let ((wp (cassette:open-media path :audio t)))
-                        (loop (unless (cassette:next-audio-frame wp) (return)))))))))
 
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.

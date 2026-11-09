@@ -2129,18 +2129,28 @@ USAGE
     # THE iOS LAYOUT (modus docs/macos-hosting.md): low enough for an app's
     # 15 GB of address space, PC-relative so it runs wherever iOS slides it.
     note "building modus for iOS (several minutes)"
-    ( cd "$modus" && env MODUS_PCREL=1 MODUS_DARWIN=1 MODUS_CODE_BASE=300010000 \
-        MODUS_CONV_DELTA=2FA000000 MODUS_HEAP_BASE=33A000000 MODUS_JIT_ARENA_BASE=3AC000000 \
+    # THE LAYOUT, at about 4 GB: the phone's launchd refuses the image's reservations up
+    # near 13 GB (ENOMEM at spawn), and accepts them at 4.25 GB.  Overridable per build.
+    ( cd "$modus" && env MODUS_PCREL=1 MODUS_DARWIN=1 \
+        MODUS_CODE_BASE=${KILN_IOS_CODE_BASE:-100100000} \
+        MODUS_CONV_DELTA=${KILN_IOS_CONV_DELTA:-F5C00000} \
+        MODUS_HEAP_BASE=${KILN_IOS_HEAP_BASE:-135C00000} \
+        MODUS_JIT_ARENA_BASE=${KILN_IOS_ARENA_BASE:-175C00000} \
         MODUS_CLI_OUT="$out/modus.elf" \
         sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
       die "kiln ios: the modus build failed — see $out/build.log"
-    ( cd "$modus" && MODUS_IN_PLACE=1 host/macos/build-macos.sh "$out/modus.elf" "$out/modus-mac" ) \
+    # The Mac runner embeds the image (not in place): its fixed segments would meet dyld's
+    # shared cache, which this Mac maps at 6 GB.  The world runs slid instead (MODUS_SLIDE below).
+    ( cd "$modus" && host/macos/build-macos.sh "$out/modus.elf" "$out/modus-mac" ) \
       > "$out/runner.log" 2>&1 || die "kiln ios: the macOS runner failed — see $out/runner.log"
   fi
   if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
     note "loading and compiling the world on the Mac (a few minutes)"
     rm -f "$out/kiln.core"
+    # MODUS_SLIDE moves the whole image (and its region, heap and arena) up by this much, past
+    # the Mac's shared cache; the snapshot is relocated to the phone's layout when it is restored.
     KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+      MODUS_SLIDE="${KILN_MAC_SLIDE:-300000000}" \
       "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
     grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true

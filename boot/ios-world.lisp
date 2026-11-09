@@ -20,15 +20,18 @@
 
 ;; No media in this world (warp, cassette and reel are left out): the desk, Clock and
 ;; Terminal first.  reed stays -- glass's audio mixes with it.
-(dolist (repo '("glass" "cram" "gesso" "scribe" "brotli-pure" "reed" "cl-transport"))
+;; SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
+(dolist (repo '("glass" "cram" "gesso" "scribe" "brotli-pure" "reed" "cl-transport"
+                "natrium" "seal" "conch"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 (when (and *kiln-ql* (> (length *kiln-ql*) 0))
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
     (push d asdf:*central-registry*)))
 
+;; seal/http is loaded here, not at the phone's Terminal: the phone has no source tree to load from.
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
-    "reed" "glass/audio" "glass/desk"))
+    "reed" "glass/audio" "glass/desk" "conch" "seal/http"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)
@@ -41,6 +44,11 @@
                         (if (and v (> (length v) 0)) v (concatenate 'string *kiln-root* "/vessel/src"))))
 (load (concatenate 'string *kiln-vessel* "/" *kiln-app* ".lisp"))
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-ssh.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-objc.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
+(load (concatenate 'string *kiln-vessel* "/actions.lisp"))
 
 ;; THE FONTS, NOW.  glass and scribe open their faces lazily, by path into the
 ;; source tree -- which exists on this Mac and not on the phone.  Opened here,
@@ -66,6 +74,14 @@
               (reed::aac-imdct-long-matrix) (reed::aac-imdct-short-matrix)
               (reed::aac-sf-decoder) (reed::aac-spec-decoder 0)
               (reed::aac-pow43 0) (reed::aac-ensure-windows)))
+
+;; THE TLS TRUST STORE, now.  The phone has no CA bundle file (seal's :system reads
+;; /etc/ssl/cert.pem and its kin), so the Mac's bundle is parsed here and the parsed store is
+;; the snapshot's: https verifies against it with no file on the phone.
+(%kiln-warm "tls trust store"
+            (lambda ()
+              (setf seal.http:*trust-store*
+                    (seal::make-trust-store-from-pem (seal::read-file-string "/etc/ssl/cert.pem")))))
 
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.

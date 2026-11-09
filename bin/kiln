@@ -2136,6 +2136,8 @@ USAGE
         MODUS_CONV_DELTA=${KILN_IOS_CONV_DELTA:-F5C00000} \
         MODUS_HEAP_BASE=${KILN_IOS_HEAP_BASE:-135C00000} \
         MODUS_JIT_ARENA_BASE=${KILN_IOS_ARENA_BASE:-175C00000} \
+        MODUS_HEAP_SIZE=${KILN_IOS_HEAP_SIZE:-40000000} \
+        MODUS_GC_MIDPOINT=${KILN_IOS_GC_MIDPOINT:-1F800000} \
         MODUS_CLI_OUT="$out/modus.elf" \
         sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
       die "kiln ios: the modus build failed — see $out/build.log"

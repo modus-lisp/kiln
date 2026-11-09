@@ -76,7 +76,8 @@ expect_not() {  # expect_not LABEL: LABEL is not on screen
 }
 
 swipe_points() {  # swipe_points X1 Y1 X2 Y2: a drag, in points (a slider moves by dragging)
-  axe swipe --start-x "$1" --start-y "$2" --end-x "$3" --end-y "$4" --duration 0.5 --udid "$UDID" >/dev/null
+  # a second, not half of one: a quicker drag does not scroll a UIScrollView (it does move a slider)
+  axe swipe --start-x "$1" --start-y "$2" --end-x "$3" --end-y "$4" --duration 1.0 --udid "$UDID" >/dev/null
   sleep 1
 }
 
@@ -96,9 +97,21 @@ suite_storybook() {
   tap "tap me";    expect "tapped 2 times" 3
   tap "slider";    expect "value 50" 3
   swipe_points 199 255 300 255; expect_not "value 50" 3    # from the thumb (at 50) to the right
+  tap "stack";     expect "third" 3       # a stack lays its children out in a column
+  tap "scroll";    expect "item 1" 3
+  # the accessibility tree lists items below the fold too, so compare where item 30 is: below the scroll
+  # view's bottom edge (y 760) before a drag up, and inside it after.  The drag comes before the text
+  # story: a focused text field keeps the keyboard up, and the keyboard covers the scroll view's bottom.
+  p=$(center_of "item 30"); by=${p#* }
+  swipe_points 200 650 200 250
+  p=$(center_of "item 30"); ay=${p#* }
+  if [ "${by:-0}" -gt 760 ] && [ "${ay:-0}" -lt 760 ]; then ok "scrolled: item 30 at y $by, then $ay"
+  else fail "scroll: item 30 at y $by, then $ay"; fi
+  tap "image";     expect "star.fill" 3
   tap "text";      tap_at 199 218          # the field takes focus, and the keyboard comes up
   tap "H"; tap_at 300 618                  # the keys: H by its label, i at its place on the key row
   expect "Hi" 3                            # the field's text, mirrored by the story (keys are lowercase after the first)
+  tap "done";    expect_not "shift" 3      # "done" gives the keyboard up: its "shift" key is gone (OPEN: it does not yet)
   shot storybook-done
   tap "close";     expect_not "storybook"
 }

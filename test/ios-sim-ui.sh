@@ -103,7 +103,7 @@ suite_storybook() {
   # view's bottom edge (y 760) before a drag up, and inside it after.  The drag comes before the text
   # story: a focused text field keeps the keyboard up, and the keyboard covers the scroll view's bottom.
   p=$(center_of "item 30"); by=${p#* }
-  swipe_points 200 650 200 250
+  swipe_points 200 740 200 200             # a long drag: the deceleration varies, so a short one lands near the edge
   p=$(center_of "item 30"); ay=${p#* }
   if [ "${by:-0}" -gt 760 ] && [ "${ay:-0}" -lt 760 ]; then ok "scrolled: item 30 at y $by, then $ay"
   else fail "scroll: item 30 at y $by, then $ay"; fi

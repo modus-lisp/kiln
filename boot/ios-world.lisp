@@ -42,6 +42,15 @@
 (defvar *kiln-app* (let ((a (modus-int::%cli-getenv "KILN_APP"))) (if (and a (> (length a) 0)) a "ios")))
 (defvar *kiln-vessel* (let ((v (modus-int::%cli-getenv "KILN_VESSEL")))
                         (if (and v (> (length v) 0)) v (concatenate 'string *kiln-root* "/vessel/src"))))
+;; THE WIRE FORMAT (modus net/term.lisp): the bridge's data and events are terms, the same bytes the
+;; actor messages use.  KILN_MODUS is the modus checkout (bin/kiln passes it).  The codec needs a read cursor
+;; from its caller: a cell of ours (the events decode from theirs, see vessel's ios-swift.lisp).
+(defvar *kiln-modus* (let ((m (modus-int::%cli-getenv "KILN_MODUS")))
+                       (if (and m (> (length m) 0)) m (concatenate 'string *kiln-root* "/modus"))))
+(defvar *term-cursor* (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0))
+(defun decode-ptr-addr ()
+  (+ (modus-int::%gc-word-of *term-cursor* (modus-int::%conv-addr #x100050A0)) 7))
+(load (concatenate 'string *kiln-modus* "/net/term.lisp"))
 (load (concatenate 'string *kiln-vessel* "/" *kiln-app* ".lisp"))
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-ssh.lisp"))

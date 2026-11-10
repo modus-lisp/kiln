@@ -2152,6 +2152,7 @@ USAGE
     # MODUS_SLIDE moves the whole image (and its region, heap and arena) up by this much, past
     # the Mac's shared cache; the snapshot is relocated to the phone's layout when it is restored.
     KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+      KILN_MODUS="$modus" \
       MODUS_SLIDE="${KILN_MAC_SLIDE:-300000000}" \
       "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"

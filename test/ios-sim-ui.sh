@@ -109,9 +109,15 @@ suite_storybook() {
   else fail "scroll: item 30 at y $by, then $ay"; fi
   tap "image";     expect "star.fill" 3
   tap "list";      expect "row 1" 3
-  expect_not "row 20" 3                    # a table makes its cells as they scroll into view
-  swipe_points 200 740 200 200; expect "row 20" 3
-  tap "row 20";    expect "selected: row 20" 3   # a tap on a row is a select event with its index
+  # cells are made as they scroll into view, and the accessibility tree lists the prefetched ones too,
+  # so compare where row 18 is: below the list's bottom edge (y 760) before a drag up, inside it after
+  p=$(center_of "row 18"); ry=${p#* }
+  swipe_points 200 740 200 200
+  p=$(center_of "row 18"); ry2=${p#* }
+  if [ "${ry:-0}" -gt 760 ] && [ "${ry2:-0}" -lt 760 ]; then ok "rows scroll: row 18 at y $ry, then $ry2"
+  else fail "rows: row 18 at y $ry, then $ry2"; fi
+  expect "row 18" 3
+  tap "row 18";    expect "selected: row 18" 3   # a tap on a row is a select event with its index
   tap "text";      tap_at 199 218          # the field takes focus, and the keyboard comes up
   tap "H"; tap_at 300 618                  # the keys: H by its label, i at its place on the key row
   expect "Hi" 3                            # the field's text, mirrored by the story (keys are lowercase after the first)

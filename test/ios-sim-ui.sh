@@ -274,6 +274,22 @@ suite_storybook() {
   expect "pager 2" 3
   tap "done pages"; expect "closed: yes" 3
   tap "file";      expect "file" 3               # a shape saved to a file and shown from it: the button is the check
+  tap "next";      expect "edit rows" 3          # the seventh page: its first story, a list in editing mode
+  tap "edit rows"; sleep 1
+  expect "item 1" 3
+  tap "editmenu";  expect "long press for edit menu" 3
+  p=$(center_of "long press for edit menu"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 1.0 --udid "$UDID" >/dev/null
+  sleep 1
+  tap "paste";     expect "edit: paste" 3       # an edit menu opened by a long press
+  tap "popover";   expect "show popover" 3
+  tap "show popover"; expect "in the popover" 3  # a popover: a sheet on a phone
+  tap "done popover"; expect "popover: closed" 3
+  tap "split";     expect "show split" 3
+  tap "show split"; expect "secondary view" 3   # a split view: on a phone the secondary column shows first
+  p=$(center_of "Back"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.05 --udid "$UDID" >/dev/null   # a short press: held, it opens the menu
+  sleep 1
+  expect "primary view" 3                       # and Back shows the primary
+  tap "done split"; expect "show split" 3       # which closes the sheet
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

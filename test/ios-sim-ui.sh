@@ -309,6 +309,9 @@ suite_storybook() {
   p=$(center_of "Cancel"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
   sleep 1
   expect "open files" 3                         # its Cancel closes it
+  tap "collection"; expect "alpha" 3            # a collection view of sections: the header is on screen
+  tap "b2";        expect "tile: 5" 3           # the fifth tile of all six, in the beta section
+  expect "beta" 3
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

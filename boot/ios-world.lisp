@@ -57,6 +57,7 @@
 (load (concatenate 'string *kiln-vessel* "/ios-objc.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
+(load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))
 
 ;; THE FONTS, NOW.  glass and scribe open their faces lazily, by path into the

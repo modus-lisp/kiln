@@ -13,7 +13,7 @@
 # the framebuffer, so a desk step is a tap_at at a point read off a screenshot.
 set -eu
 
-UDID=${1:-$(xcrun simctl list devices booted | awk -F'[()]' '/Booted/ { print $2; exit }')}
+UDID=${1:-${UDID:-$(xcrun simctl list devices booted | awk -F'[()]' '/Booted/ { print $2; exit }')}}
 [ -n "$UDID" ] || { echo "no booted simulator" >&2; exit 2; }
 SHOTS=${SHOTS:-/tmp/ios-sim-ui}
 mkdir -p "$SHOTS"
@@ -105,6 +105,14 @@ tap() {  # tap LABEL: a held touch at the centre of the element labelled LABEL
   tap_at "${p% *}" "${p#* }"
 }
 
+key() {  # key LABEL [X Y]: a keyboard key, by its label, pressed briefly (a held key opens its accents: H gives Ħ);
+          # at X Y if no element has the label
+  p=$(center_of "$1"); [ -n "$p" ] || p="${2:-} ${3:-}"
+  [ -n "${p% *}" ] || { fail "key: no key labelled '$1'"; return 1; }
+  axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.05 --udid "$UDID" >/dev/null
+  sleep 1
+}
+
 expect() {  # expect LABEL [SECONDS]: LABEL is on screen within SECONDS (default 5)
   i=0
   while [ "$i" -lt "${2:-5}" ]; do
@@ -121,11 +129,25 @@ expect_not() {  # expect_not LABEL: LABEL is not on screen
   ok "gone: $1"
 }
 
+# The width of the app's screen, in points: 402 on an iPhone 17 Pro, 834 on an 11-inch iPad Pro.
+screen_width() {
+  tree | python3 -c 'import json, sys; t = json.load(sys.stdin); t = t[0] if isinstance(t, list) else t; print(int(t["frame"]["width"]))'
+}
+
+# The X that closes the system's out-of-process pickers (photos, files): a sheet's top left on a phone, the full
+# screen's on an iPad.  "X Y", in points.
+picker_close() {
+  if [ "$(screen_width)" -gt 600 ]; then echo "31 63"; else echo "38 100"; fi
+}
+
 swipe_points() {  # swipe_points X1 Y1 X2 Y2: a drag, in points (a slider moves by dragging)
   # a second, not half of one: a quicker drag does not scroll a UIScrollView (it does move a slider)
   axe swipe --start-x "$1" --start-y "$2" --end-x "$3" --end-y "$4" --duration 1.0 --udid "$UDID" >/dev/null
   sleep 1
 }
+
+# Sourced for these helpers alone (test/watch-sim-ui.sh): no suites, and no launch.
+[ -z "${SIM_UI_LIB:-}" ] || return 0
 
 # ---- the suites -------------------------------------------------------------------------------------
 
@@ -172,7 +194,7 @@ suite_storybook() {
   expect "row 18" 3
   p=$(row_center 18); tap_at "${p% *}" "${p#* }"; expect "selected: row 18" 3   # a tap on a row is a select event with its index
   tap "text";      tap_at 199 218          # the field takes focus, and the keyboard comes up
-  tap "H"; tap_at 300 618                  # the keys: H by its label, i at its place on the key row
+  key "H"; key "i" 300 618                 # the keys, by label (i at its place on the phone's key row if unlabelled)
   expect "Hi" 3                            # the field's text, mirrored by the story (keys are lowercase after the first)
   tap "done";    expect_not "shift" 3      # "done" gives the keyboard up: its "shift" key is gone (OPEN: it does not yet)
   shot storybook-done
@@ -329,9 +351,16 @@ suite_storybook() {
   else fail "keyboard: field at y $ky, raised to $ry, lowered to $ly"; fi
   tap "files";     expect "open files" 3
   tap "open files"; expect "Cancel" 3           # the system's document picker, over the app
-  p=$(center_of "Cancel"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  p=$(center_of "Cancel")
+  if [ "$(screen_width)" -gt 600 ]; then
+    # an iPad's picker is full screen and out of process (the tree's "Cancel" is a 1-point stub): its X, top left
+    c=$(picker_close); axe touch -x "${c% *}" -y "${c#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  else
+    axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  fi
   sleep 1
   expect "open files" 3                         # its Cancel closes it
+  expect_not "Cancel"                           # and it is gone (on an iPad "open files" shows behind it too)
   tap "collection"; expect "alpha" 3            # a collection view of sections: the header is on screen
   tap "b2";        expect "tile: 5" 3           # the fifth tile of all six, in the beta section
   expect "beta" 3
@@ -339,7 +368,7 @@ suite_storybook() {
   # the system's photo picker is out of process: the accessibility tree does not list it (checked by a screenshot,
   # where it shows the library), so it is closed by its X, at the top left, and the story is back under it
   tap "pick photo"; sleep 2
-  axe touch -x 38 -y 100 --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  c=$(picker_close); axe touch -x "${c% *}" -y "${c#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
   sleep 1
   expect "pick photo" 3
   tap "next";      expect "tap this label" 3     # the eighth page
@@ -356,17 +385,28 @@ suite_storybook() {
   tap "colors";    expect "color: none" 3
   # the colour and font pickers are out of process, not in the tree: a tap on a swatch or a font, by place,
   # then the picker's X (top left) closes it, and the readout under it has the pick
+  # on a phone they are sheets from the bottom; on an iPad, form sheets in the middle of the screen
+  if [ "$(screen_width)" -gt 600 ]; then swatch="393 508" shut="159 224" arial="230 724"
+  else swatch="224 620" shut="38 100" arial="52 569"; fi
   tap "pick color"; sleep 2
-  axe touch -x 224 -y 620 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
-  axe touch -x 38 -y 100 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
+  axe touch -x "${swatch% *}" -y "${swatch#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
+  axe touch -x "${shut% *}" -y "${shut#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
   expect "color: picked" 3
   tap "fonts";     expect "font: none" 3
   tap "pick font"; sleep 2
-  axe touch -x 52 -y 569 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # Arial: picking closes it
+  axe touch -x "${arial% *}" -y "${arial#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # Arial: picking closes it
   expect "font: picked" 3
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }
+
+# LAUNCH=1: (re)launch the app with the storybook open (KILN_STORYBOOK, passed through simctl as SIMCTL_CHILD_*),
+# instead of expecting it open: the desk's way in has places that depend on the screen, an iPhone's or an iPad's.
+if [ -n "${LAUNCH:-}" ]; then
+  xcrun simctl terminate "$UDID" org.modus-lisp.modus >/dev/null 2>&1 || true
+  SIMCTL_CHILD_KILN_STORYBOOK=1 xcrun simctl launch "$UDID" org.modus-lisp.modus >/dev/null
+  sleep 12
+fi
 
 SUITE=${SUITE:-}
 for name in $(sed -n 's/^suite_\([A-Za-z0-9_]*\)() {.*/\1/p' "$0"); do

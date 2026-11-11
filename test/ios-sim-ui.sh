@@ -290,6 +290,12 @@ suite_storybook() {
   sleep 1
   expect "primary view" 3                       # and Back shows the primary
   tap "done split"; expect "show split" 3       # which closes the sheet
+  tap "dynamics";  expect "drop me" 3
+  p=$(center_of "drop me"); dy=${p#* }
+  tap "drop";      sleep 2                       # the fall runs on the animator: two seconds is ample
+  p=$(center_of "drop me"); ey=${p#* }
+  if [ "${ey:-0}" -gt "${dy:-0}" ]; then ok "fell: drop me from y $dy to y $ey"
+  else fail "dynamics: drop me at y $dy, then $ey"; fi
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

@@ -69,6 +69,31 @@ walk(json.load(sys.stdin))
 
 on_screen() { tree | grep -qF "\"AXLabel\" : \"$1\""; }
 
+# back LABEL SHOWN: a navigation back button, labelled LABEL, pressed until SHOWN is on screen.  A short press pops;
+# a press UIKit takes as held opens the back menu instead, whose item of the same label (the last in the tree) pops.
+back() {
+  p=$(center_of "$1"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.05 --udid "$UDID" >/dev/null
+  sleep 1
+  on_screen "$2" && return 0
+  p=$(tree | python3 -c '
+import json, sys
+want, last = sys.argv[1], None
+def walk(node):
+    global last
+    if isinstance(node, dict):
+        if node.get("AXLabel") == want and node.get("frame"):
+            f = node["frame"]; last = (int(f["x"] + f["width"] / 2), int(f["y"] + f["height"] / 2))
+        for child in node.get("children") or []:
+            walk(child)
+    elif isinstance(node, list):
+        for child in node:
+            walk(child)
+walk(json.load(sys.stdin))
+if last: print(*last)
+' "$1" 2>/dev/null)
+  [ -n "$p" ] && tap_at "${p% *}" "${p#* }"
+}
+
 tap_at() {  # tap_at X Y: a held touch at a point, in points
   axe touch -x "$1" -y "$2" --down --up --delay 0.3 --udid "$UDID" >/dev/null
   sleep 1
@@ -256,8 +281,7 @@ suite_storybook() {
   tap "open nav";  expect "root view" 3          # a navigation controller, shown as a sheet
   tap "push view"; expect "second view" 3
   # the back button pops on a short press; a held one (the 0.3 s used elsewhere) opens its menu of earlier titles
-  p=$(center_of "start"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.05 --udid "$UDID" >/dev/null
-  sleep 1
+  back "start" "root view"
   expect "root view" 3
   tap "dismiss";   expect "closed: yes" 3
   tap "next";      expect "underlined text" 3    # the sixth page: attributed text first
@@ -286,8 +310,7 @@ suite_storybook() {
   tap "done popover"; expect "popover: closed" 3
   tap "split";     expect "show split" 3
   tap "show split"; expect "secondary view" 3   # a split view: on a phone the secondary column shows first
-  p=$(center_of "Back"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.05 --udid "$UDID" >/dev/null   # a short press: held, it opens the menu
-  sleep 1
+  back "Back" "primary view"
   expect "primary view" 3                       # and Back shows the primary
   tap "done split"; expect "show split" 3       # which closes the sheet
   tap "dynamics";  expect "drop me" 3
@@ -319,6 +342,28 @@ suite_storybook() {
   axe touch -x 38 -y 100 --down --up --delay 0.3 --udid "$UDID" >/dev/null
   sleep 1
   expect "pick photo" 3
+  tap "next";      expect "tap this label" 3     # the eighth page
+  tap "tap this label"; expect "label taps: 1" 3 # a tap gesture on a label
+  tap "edge";      expect "edge: no" 3
+  # the edge pan itself is not exercised: AXe's edge swipe (its preset, or a drag from x 1) does not start a screen-edge
+  # pan here; the touch reaches the desk under the story instead
+  tap "calendar";  expect "November 2026" 3
+  tap "Friday, November 20"; expect "day: 20" 3  # a day picked in the calendar
+  tap "empty";     expect "No mail" 3            # a content-unavailable view
+  tap "keys";      expect "typed: nothing" 3
+  tap_at 199 218                                 # the field: its keyboard is the story's input view
+  tap "2";         expect "typed: 2" 3           # a key of the input view types into the field
+  tap "colors";    expect "color: none" 3
+  # the colour and font pickers are out of process, not in the tree: a tap on a swatch or a font, by place,
+  # then the picker's X (top left) closes it, and the readout under it has the pick
+  tap "pick color"; sleep 2
+  axe touch -x 224 -y 620 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
+  axe touch -x 38 -y 100 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
+  expect "color: picked" 3
+  tap "fonts";     expect "font: none" 3
+  tap "pick font"; sleep 2
+  axe touch -x 52 -y 569 --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # Arial: picking closes it
+  expect "font: picked" 3
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

@@ -2132,8 +2132,12 @@ USAGE
   # its shared cache privately from 6 GB to past 9 GB, over the phone's heap and arena ("no dyld cache", and
   # SwiftUI is not found) and over an image at 9 GB.  The slides below find it room on the Mac.  Overridable
   # per build.
-  local code_base=100100000 conv_delta=F5C00000 heap_base=135C00000 arena_base=175C00000 slide=300000000 fasl_dir=""
-  local heap_size=40000000 midpoint=1F800000 world=ios-world.lisp layout_extra=""
+  local code_base=100100000 conv_delta=F5C00000 heap_base=135C00000 arena_base=196000000 slide=300000000 fasl_dir=""
+  # THE PHONE's heap is 1.5 GB (760 MB semispaces): a media player's threads carve their regions and a lock
+  # arena off region 0, which keeps at least half a semispace -- with 1 GB, the world's ~200 MB of live data
+  # left the lock arena no room, and the first decoder thread stopped the app.  The runtime region is compact
+  # (17 MB, not 822: it touches 96 KB of it), so the app reserves less address space than it did with 1 GB.
+  local heap_size=60000000 midpoint=2F800000 world=ios-world.lisp layout_extra="MODUS_REGION_SIZE=1100000"
   if [[ $kind == watch ]]; then
     out=$KILN_STATE/watch
     code_base=300010000 conv_delta=2FA000000 heap_base=33A000000 arena_base=3AC000000

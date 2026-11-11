@@ -18,11 +18,10 @@
                       (if (and r (> (length r) 0)) r (error "KILN_ROOT is not set"))))
 (defvar *kiln-ql* (modus-int::%cli-getenv "KILN_QL"))
 
-;; No media in this world (warp, cassette and reel are left out): the desk, Clock and
-;; Terminal first.  reed stays -- glass's audio mixes with it.
-;; SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
-(dolist (repo '("glass" "cram" "gesso" "scribe" "brotli-pure" "reed" "cl-transport"
-                "natrium" "seal" "conch"))
+;; The media player: warp's window over cassette (containers) and reel/reed (video and audio decoders);
+;; glass's audio mixes it.  SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
+(dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
+                "cassette" "reed" "reel" "cl-transport" "natrium" "seal" "conch"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 (when (and *kiln-ql* (> (length *kiln-ql*) 0))
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
@@ -31,7 +30,8 @@
 ;; seal/http is loaded here, not at the phone's Terminal: the phone has no source tree to load from.
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
-    "reed" "glass/audio" "glass/desk" "conch" "seal/http"))
+    "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass"
+    "glass/desk" "conch" "seal/http"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)
@@ -85,6 +85,14 @@
               (reed::aac-imdct-long-matrix) (reed::aac-imdct-short-matrix)
               (reed::aac-sf-decoder) (reed::aac-spec-decoder 0)
               (reed::aac-pow43 0) (reed::aac-ensure-windows)))
+
+;; Opus, and the containers' first-use tables, by decoding a few files' audio through (their sizes are CELT's)
+(dolist (f '("wpt-test.webm" "t5-av.webm" "opus-ogg.ogg"))
+  (let ((path (concatenate 'string *kiln-root* "/cassette/vectors/" f)))
+    (when (probe-file path)
+      (%kiln-warm f (lambda ()
+                      (let ((wp (cassette:open-media path :audio t)))
+                        (loop (unless (cassette:next-audio-frame wp) (return)))))))))
 
 ;; THE TLS TRUST STORE, now.  The phone has no CA bundle file (seal's :system reads
 ;; /etc/ssl/cert.pem and its kin), so the Mac's bundle is parsed here and the parsed store is

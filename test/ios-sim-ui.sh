@@ -386,15 +386,17 @@ suite_storybook() {
   # the colour and font pickers are out of process, not in the tree: a tap on a swatch or a font, by place,
   # then the picker's X (top left) closes it, and the readout under it has the pick
   # on a phone they are sheets from the bottom; on an iPad, form sheets in the middle of the screen
-  if [ "$(screen_width)" -gt 600 ]; then swatch="393 508" shut="159 224" arial="230 724"
-  else swatch="224 620" shut="38 100" arial="52 569"; fi
+  # the font is the list's FIRST row: once a font has been picked the list opens with a Recents section, which
+  # moves every other row, but its first row sits where the A section's first row did
+  if [ "$(screen_width)" -gt 600 ]; then swatch="393 508" shut="159 224" font="230 416"
+  else swatch="224 620" shut="38 100" font="52 263"; fi
   tap "pick color"; sleep 2
   axe touch -x "${swatch% *}" -y "${swatch#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
   axe touch -x "${shut% *}" -y "${shut#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 1
   expect "color: picked" 3
   tap "fonts";     expect "font: none" 3
   tap "pick font"; sleep 2
-  axe touch -x "${arial% *}" -y "${arial#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # Arial: picking closes it
+  axe touch -x "${font% *}" -y "${font#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # picking closes it
   expect "font: picked" 3
   tap "gpu";       expect "gpu: drawing" 5       # Metal: ten frames of a turning triangle, drawn by the GPU
   shot storybook-gpu

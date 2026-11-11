@@ -2166,8 +2166,10 @@ USAGE
     # The Mac's own reservations move from run to run, so a slide can be in their way (the shim cannot map the
     # image, or the JIT arena cannot be placed and nothing compiles); and a load can fault for no reason a second
     # load has (a transient runner failure).  So each slide is tried, twice round, until a snapshot is saved.
+    # Not C00000000: the world load traps there every time, at the same image offset (a layout-dependent bug,
+    # open).
     local s
-    for s in ${KILN_MAC_SLIDE:-$slide 600000000 900000000 C00000000 $slide 600000000 900000000 C00000000}; do
+    for s in ${KILN_MAC_SLIDE:-$slide 600000000 900000000 A00000000 $slide 600000000 900000000 A00000000}; do
       env ${fasl_dir:+MODUS_FASL_DIR="$fasl_dir"} \
         KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
         KILN_MODUS="$modus" \

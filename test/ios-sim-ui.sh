@@ -400,6 +400,18 @@ suite_storybook() {
   expect "font: picked" 3
   tap "gpu";       expect "gpu: drawing" 5       # Metal: ten frames of a turning triangle, drawn by the GPU
   shot storybook-gpu
+  # the platform's voice and ear, without a microphone: a sentence said into a file, then the file transcribed.  The
+  # first use asks for speech recognition (simctl cannot grant it); the alert is in the tree, so Allow is tapped.  A
+  # Simulator has no recognizer that runs (SFSpeechRecognizer: kLSRErrorDomain 300; SpeechAnalyzer: no locales), so
+  # here the check is the VOICE and that the ear says so; on a phone the readout is the sentence
+  tap "speech";    expect "said: nothing yet" 3
+  tap "round trip"; sleep 3
+  if on_screen "Allow"; then tap "Allow"; fi
+  expect "said: to a file" 15
+  i=0; while [ $i -lt 30 ] && on_screen "heard: ..."; do sleep 1; i=$((i + 1)); done
+  if on_screen "heard: the quick brown fox jumps over the lazy dog"; then ok "heard: the sentence it said"
+  elif on_screen "heard: no recognizer here"; then ok "heard: no recognizer in this Simulator (as expected)"
+  else fail "heard: neither the sentence nor 'no recognizer'"; fi
   tap "next";      expect "A plain label." 3     # round to the first page (the GPU view goes; its frame hook too)
   tap "close";     expect_not "storybook"
 }

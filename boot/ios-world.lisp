@@ -31,7 +31,7 @@
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
     "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass"
-    "glass/desk" "conch" "seal/http"))
+    "glass/desk" "glass/voice-apps" "conch" "seal/http"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)
@@ -57,6 +57,7 @@
 (load (concatenate 'string *kiln-vessel* "/ios-objc.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
 (load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
+(load (concatenate 'string *kiln-vessel* "/speech.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))

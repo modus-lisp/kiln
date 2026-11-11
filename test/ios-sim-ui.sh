@@ -296,6 +296,19 @@ suite_storybook() {
   p=$(center_of "drop me"); ey=${p#* }
   if [ "${ey:-0}" -gt "${dy:-0}" ]; then ok "fell: drop me from y $dy to y $ey"
   else fail "dynamics: drop me at y $dy, then $ey"; fi
+  tap "keyboard";  expect "bottom field" 3
+  p=$(center_of "bottom field"); ky=${p#* }
+  tap "raise keyboard"; sleep 1                  # posts the keyboard's notification: the field lifts out of its way
+  p=$(center_of "bottom field"); ry=${p#* }
+  tap "lower keyboard"; sleep 1                  # and the keyboard going down returns it
+  p=$(center_of "bottom field"); ly=${p#* }
+  if [ "${ry:-9999}" -lt "${ky:-0}" ] && [ "${ly:-0}" -eq "${ky:-0}" ]; then ok "keyboard: field lifted from y $ky to y $ry, then back to $ly"
+  else fail "keyboard: field at y $ky, raised to $ry, lowered to $ly"; fi
+  tap "files";     expect "open files" 3
+  tap "open files"; expect "Cancel" 3           # the system's document picker, over the app
+  p=$(center_of "Cancel"); axe touch -x "${p% *}" -y "${p#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  sleep 1
+  expect "open files" 3                         # its Cancel closes it
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

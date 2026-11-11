@@ -312,6 +312,13 @@ suite_storybook() {
   tap "collection"; expect "alpha" 3            # a collection view of sections: the header is on screen
   tap "b2";        expect "tile: 5" 3           # the fifth tile of all six, in the beta section
   expect "beta" 3
+  tap "photos";    expect "pick photo" 3
+  # the system's photo picker is out of process: the accessibility tree does not list it (checked by a screenshot,
+  # where it shows the library), so it is closed by its X, at the top left, and the story is back under it
+  tap "pick photo"; sleep 2
+  axe touch -x 38 -y 100 --down --up --delay 0.3 --udid "$UDID" >/dev/null
+  sleep 1
+  expect "pick photo" 3
   tap "next";      expect "A plain label." 3     # round to the first page
   tap "close";     expect_not "storybook"
 }

@@ -396,7 +396,9 @@ suite_storybook() {
   tap "pick font"; sleep 2
   axe touch -x "${arial% *}" -y "${arial#* }" --down --up --delay 0.3 --udid "$UDID" >/dev/null; sleep 2   # Arial: picking closes it
   expect "font: picked" 3
-  tap "next";      expect "A plain label." 3     # round to the first page
+  tap "gpu";       expect "gpu: drawing" 5       # Metal: ten frames of a turning triangle, drawn by the GPU
+  shot storybook-gpu
+  tap "next";      expect "A plain label." 3     # round to the first page (the GPU view goes; its frame hook too)
   tap "close";     expect_not "storybook"
 }
 

@@ -2079,12 +2079,14 @@ cmd_ios() {
   #      at launch, relocated to wherever iOS put it.
   # The phone never compiles anything to native code (it cannot); it runs what
   # the Mac compiled, and interprets anything new.
-  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay=""
+  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay="" ota=0
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
     case $arg in
       sim|device|watch|watch-device) kind=$arg ;;
+      serve)      KILN_STATE=$KILN_STATE exec python3 "$ROOT/bin/kiln-ota-serve.py" ;;
+      --ota)      ota=1; kind=device ;;
       --install)  install=1 ;;
       --device)   dev=${val:?--device=ID}; install=1; [[ $kind == watch-device ]] || kind=device ;;
       --reuse)    reuse=1 ;;
@@ -2094,8 +2096,9 @@ cmd_ios() {
       --autoplay) autoplay=${val:?--autoplay=FILE} ;;
       -h|--help)
         cat >&2 <<'USAGE'
-kiln ios [sim|device|watch|watch-device] [--install] [--device=ID] [--reuse]
+kiln ios [sim|device|watch|watch-device] [--install] [--device=ID] [--ota] [--reuse]
          [--identity=NAME] [--profile=FILE] [--autoplay=FILE] — the iPhone app, built here.
+kiln ios serve — install the last --ota build on a phone over the network (bin/kiln-ota-serve.py).
 
   sim          (default) an app for the iOS Simulator
   watch        an app for the watchOS Simulator: the watch's storybook (vessel/src/watch-storybook.lisp)
@@ -2105,6 +2108,9 @@ kiln ios [sim|device|watch|watch-device] [--install] [--device=ID] [--reuse]
                the provisioning profile for its bundle id (found automatically;
                --identity / --profile to choose)
   --install    install it (and launch it): the booted Simulator, or the device
+  --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa, which
+               `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
+               after a one-time certificate setup at http://THIS-MAC.local:8080/
   --device=ID  which iPhone (`xcrun devicectl list devices`); implies device
   --reuse      keep the modus build and snapshot from last time; repackage only
   --reuse-modus  keep the modus build; load and snapshot the world again
@@ -2296,6 +2302,19 @@ USAGE
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
   note "app       $out/Modus-$kind.app"
 
+  # THE OVER-THE-AIR PACKAGE: the signed app under Payload/, written beside and moved into place, so
+  # a running `kiln ios serve' never hands out half a file
+  if [[ $ota == 1 ]]; then
+    local stage=$out/ota-stage
+    rm -rf "$stage" && mkdir -p "$stage/Payload" "$KILN_STATE/ota"
+    cp -R "$out/Modus-device.app" "$stage/Payload/"
+    ( cd "$stage" && zip -qry -X "$KILN_STATE/ota/modus.ipa.new" Payload ) ||
+      die "kiln ios: packaging the .ipa failed"
+    mv "$KILN_STATE/ota/modus.ipa.new" "$KILN_STATE/ota/modus.ipa"
+    rm -rf "$stage"
+    note "ota       $KILN_STATE/ota/modus.ipa — \`kiln ios serve' offers it at https://$(scutil --get LocalHostName 2>/dev/null || echo this-mac).local:8443/"
+  fi
+
   [[ $install == 1 ]] || return 0
   if [[ $kind == sim ]]; then
     # The booted IPHONE: `booted' alone may pick a booted watch or iPad.
@@ -2306,7 +2325,12 @@ USAGE
     xcrun simctl launch "$sim" "$bundle_id" >/dev/null && note "launched in the Simulator ($sim)"
   else
     if [[ -z $dev ]]; then
-      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /available|connected/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F-]{36}$/) { print $i; exit } }')
+      # a PHYSICAL iPhone, by any of its UDID's forms: 8-16 hex (A12 on), a 36-character UUID, or
+      # 40 hex (older).  Matching only the 36-character form found the booted iPhone SIMULATOR
+      # (a UUID, and "connected") and never the phone, so --install went to the Simulator.
+      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /physical/ && /available|connected/ {
+              for (i = 1; i <= NF; i++)
+                if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/ || $i ~ /^[0-9A-F-]{36}$/ || $i ~ /^[0-9a-f]{40}$/) { print $i; exit } }')
       [[ -n $dev ]] || die "kiln ios: no iPhone found — connect one, or pass --device=ID"
     fi
     xcrun devicectl device install app --device "$dev" "$out/Modus-device.app" >/dev/null ||

@@ -2079,7 +2079,7 @@ cmd_ios() {
   #      at launch, relocated to wherever iOS put it.
   # The phone never compiles anything to native code (it cannot); it runs what
   # the Mac compiled, and interprets anything new.
-  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay="" ota=0
+  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay="" ota=0 app=""
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -2087,6 +2087,7 @@ cmd_ios() {
       sim|device|watch|watch-device) kind=$arg ;;
       serve)      KILN_STATE=$KILN_STATE exec python3 "$ROOT/bin/kiln-ota-serve.py" ;;
       --ota)      ota=1; kind=device ;;
+      --app)      app=${val:?--app=NAME} ;;
       --install)  install=1 ;;
       --device)   dev=${val:?--device=ID}; install=1; [[ $kind == watch-device ]] || kind=device ;;
       --reuse)    reuse=1 ;;
@@ -2098,7 +2099,7 @@ cmd_ios() {
         cat >&2 <<'USAGE'
 kiln ios [sim|device|watch|watch-device] [--install] [--device=ID] [--ota] [--reuse]
          [--identity=NAME] [--profile=FILE] [--autoplay=FILE] — the iPhone app, built here.
-kiln ios serve — install the last --ota build on a phone over the network (bin/kiln-ota-serve.py).
+kiln ios serve — install the last --ota builds on a phone over the network (bin/kiln-ota-serve.py).
 
   sim          (default) an app for the iOS Simulator
   watch        an app for the watchOS Simulator: the watch's storybook (vessel/src/watch-storybook.lisp)
@@ -2108,8 +2109,10 @@ kiln ios serve — install the last --ota build on a phone over the network (bin
                the provisioning profile for its bundle id (found automatically;
                --identity / --profile to choose)
   --install    install it (and launch it): the booted Simulator, or the device
-  --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa, which
-               `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
+  --app=ferry  another app on the same runtime, instead of the modus desk: ferry, the SFTP client (the
+               ferry repo; boot/ferry-world.lisp), org.modus-lisp.ferry, built in $KILN_STATE/ferry
+  --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa (or
+               ferry.ipa, with --app=ferry), which `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
                after a one-time certificate setup at http://THIS-MAC.local:8080/
   --device=ID  which iPhone (`xcrun devicectl list devices`); implies device
   --reuse      keep the modus build and snapshot from last time; repackage only
@@ -2131,14 +2134,26 @@ USAGE
   local modus=${KILN_MODUS:-$KILN_ROOT/modus}
   [[ -f $modus/mvm/build-aarch64-cli.lisp ]] || die "kiln ios: no modus checkout at $modus (set KILN_MODUS)"
   local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
-  local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus}
+  local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus} app_name=modus entry='(kiln-ios-main)'
+  # ANOTHER APP on the same runtime and layout: its own world, entry point, bundle id and name, built beside
+  local app_world="" rotates=0
+  case $app in
+    "") ;;
+    ferry) out=$KILN_STATE/ferry bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.ferry} app_name=Ferry
+           entry='(ferry:main)' app_world=ferry-world.lisp rotates=1 ;;
+    *) die "kiln ios: no app named $app (try --help)" ;;
+  esac
+  [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
   # THE LAYOUT, at about 4 GB: the phone's launchd refuses the image's reservations up near 13 GB (ENOMEM at
   # spawn), and accepts them at 4.25 GB.  The Mac runner slides it by 12 GB, past the Mac's shared cache.
   # THE WATCH's is up at 12 GB (host/watch/build-watch.sh), a build of its own: the watch Simulator's dyld maps
   # its shared cache privately from 6 GB to past 9 GB, over the phone's heap and arena ("no dyld cache", and
   # SwiftUI is not found) and over an image at 9 GB.  The slides below find it room on the Mac.  Overridable
   # per build.
-  local code_base=100100000 conv_delta=F5C00000 heap_base=108000000 arena_base=168000000 slide=300000000 fasl_dir=""
+  # THE CODE BASE is 1 MB above the app's own Mach-O segments (__TEXT and __DATA from 0x100000000): at
+  # 0x100100000 the image's syscall page (__MODUSS, a page below it) met __DATA once the Swift side grew
+  # past 1 MB ("custom segments overlap" at link).  The image ends ~50 MB on, well below the region.
+  local code_base=100200000 conv_delta=F5C00000 heap_base=108000000 arena_base=168000000 slide=300000000 fasl_dir=""
   # THE PHONE's heap is 1.5 GB (760 MB semispaces): a media player's threads carve their regions and a lock
   # arena off region 0, which keeps at least half a semispace -- with 1 GB, the world's ~200 MB of live data
   # left the lock arena no room, and the first decoder thread stopped the app.  The runtime region is compact
@@ -2148,7 +2163,7 @@ USAGE
   # without the extended-virtual-addressing entitlement, so the kernel would not create the process (launchd
   # spawn ENOMEM; no crash report, the app just closes).  Moved down, it ends near 0x185000000, below the 1 GB
   # layout that ran.  (A 32 MB arena would have done it too, but the Mac's world load faults in one.)
-  local heap_size=60000000 midpoint=2F800000 world=ios-world.lisp layout_extra="MODUS_REGION_SIZE=1100000"
+  local heap_size=60000000 midpoint=2F800000 world=${app_world:-ios-world.lisp} layout_extra="MODUS_REGION_SIZE=1100000"
   if [[ $kind == watch ]]; then
     out=$KILN_STATE/watch
     code_base=300010000 conv_delta=2FA000000 heap_base=33A000000 arena_base=3AC000000
@@ -2217,12 +2232,13 @@ USAGE
     printf '%s\n' --core @kiln.core --eval '(kiln-watch-main)' > "$out/modus.args"
   elif [[ $kind == watch-device ]]; then
     printf '%s\n' --core @kiln.core --eval '(kiln-watch-run)' > "$out/modus.args"   # vessel/src/watch.lisp
-  elif [[ -n $autoplay ]]; then
+  elif [[ -n $autoplay && -z $app ]]; then
     printf '%s\n' --core @kiln.core --eval "(kiln-ios-main :autoplay \"$autoplay\")" > "$out/modus.args"
   else
-    printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
+    printf '%s\n' --core @kiln.core --eval "$entry" > "$out/modus.args"
   fi
   rm -rf "$out/media"; mkdir -p "$out/media"
+  if [[ -z $app ]]; then                       # the films are the desk's media player's; another app has none
   # a picture, and a picture with sound (VP8 + Vorbis) to hear the speaker by
   for f in bbb360.webm wpt-test.webm; do
     cp "$KILN_ROOT/cassette/vectors/$f" "$out/media/" 2>/dev/null || true
@@ -2230,6 +2246,7 @@ USAGE
   # kiln's own: test-pattern.mkv, VP8 + a 440 Hz beep a second as mono 48 kHz FLAC -- audible,
   # and FLAC because it is the codec modus decodes fastest (wpt-test's Vorbis track is silent)
   cp "$KILN_ROOT/kiln/media/"* "$out/media/" 2>/dev/null || true
+  fi
 
   local app_id=$bundle_id
   [[ $kind == watch-device ]] && app_id=$bundle_id.watch
@@ -2297,6 +2314,7 @@ USAGE
     return 0
   fi
   ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
+      MODUS_IOS_NAME="$app_name" MODUS_IOS_ROTATES="$rotates" \
       MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media" \
       host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
@@ -2308,11 +2326,13 @@ USAGE
     local stage=$out/ota-stage
     rm -rf "$stage" && mkdir -p "$stage/Payload" "$KILN_STATE/ota"
     cp -R "$out/Modus-device.app" "$stage/Payload/"
-    ( cd "$stage" && zip -qry -X "$KILN_STATE/ota/modus.ipa.new" Payload ) ||
+    # one .ipa per app (modus.ipa, ferry.ipa): the install page offers each
+    local ipa=$KILN_STATE/ota/${app:-modus}.ipa
+    ( cd "$stage" && zip -qry -X "$ipa.new" Payload ) ||
       die "kiln ios: packaging the .ipa failed"
-    mv "$KILN_STATE/ota/modus.ipa.new" "$KILN_STATE/ota/modus.ipa"
+    mv "$ipa.new" "$ipa"
     rm -rf "$stage"
-    note "ota       $KILN_STATE/ota/modus.ipa — \`kiln ios serve' offers it at https://$(scutil --get LocalHostName 2>/dev/null || echo this-mac).local:8443/"
+    note "ota       $ipa — \`kiln ios serve' offers it at https://$(scutil --get LocalHostName 2>/dev/null || echo this-mac).local:8443/"
   fi
 
   [[ $install == 1 ]] || return 0

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """kiln-ota-serve.py -- install the phone build over the network: Apple's over-the-air install.
 
-    kiln ios device --ota      build, and package $KILN_STATE/ota/modus.ipa
+    kiln ios device --ota      build, and package $KILN_STATE/ota/modus.ipa (--app=ferry: ferry.ipa)
     kiln ios serve             run this: from then on, any phone on the LAN (or a VPN into it)
 
   http://HOST:8080/    the local CA's certificate -- once per phone: Safari, Settings > Profile
                        Downloaded > Install, then General > About > Certificate Trust Settings > on
-  https://HOST:8443/   the install page; the manifest is made per request from the Host the phone
-                       used, so any address of this Mac works
+  https://HOST:8443/   the install page, a button per .ipa in $KILN_STATE/ota; each manifest is made
+                       per request from the Host the phone used, so any address of this Mac works
 
 The CA and the server certificate live in $KILN_STATE/ota-ca (the CA's key 0600), made on first run.
 Three things about iOS that each cost a silent failure (nothing on the phone but "Unable to Install"):
@@ -25,7 +25,7 @@ import html, http.server, os, plistlib, re, ssl, subprocess, sys, threading, tim
 STATE = os.environ.get('KILN_STATE') or os.path.expanduser('~/.kiln')
 OTA = os.path.join(STATE, 'ota')
 CA = os.path.join(STATE, 'ota-ca')
-IPA = os.path.join(OTA, 'modus.ipa')
+
 HTTP_PORT = int(os.environ.get('KILN_OTA_HTTP_PORT', '8080'))
 HTTPS_PORT = int(os.environ.get('KILN_OTA_HTTPS_PORT', '8443'))
 
@@ -82,9 +82,19 @@ def issue_server_cert(addrs):
     print(f'kiln-ota: certificate for {", ".join(addrs)}, {host}.local', flush=True)
 
 
-def ipa_info():
-    """The bundle id and build number of the app in the .ipa being served."""
-    with zipfile.ZipFile(IPA) as z:
+def ipas():
+    """The apps on offer: NAME for each NAME.ipa in the OTA directory, modus first."""
+    names = sorted(f[:-4] for f in os.listdir(OTA) if f.endswith('.ipa')) if os.path.isdir(OTA) else []
+    return sorted(names, key=lambda n: n != 'modus')
+
+
+def ipa_path(name):
+    return os.path.join(OTA, name + '.ipa')
+
+
+def ipa_info(name):
+    """The bundle id, build number and name of the app in NAME.ipa."""
+    with zipfile.ZipFile(ipa_path(name)) as z:
         name = next(n for n in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/Info\.plist', n))
         info = plistlib.loads(z.read(name))
     return info['CFBundleIdentifier'], info['CFBundleVersion'], info.get('CFBundleName', 'app')
@@ -94,7 +104,7 @@ def page(body):
     return ('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<style>body{font:18px -apple-system,sans-serif;margin:2em;line-height:1.5}'
             'a.b{display:block;padding:.8em;margin:1em 0;background:#0a7;color:#fff;text-align:center;'
-            'border-radius:10px;text-decoration:none;font-weight:600}</style>' + body).encode()
+            'border-radius:10px;text-decoration:none;font-weight:600}p.w{margin-top:-.6em;color:#888;font-size:15px}</style>' + body).encode()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -140,13 +150,18 @@ class InstallHandler(Handler):
 
     def do_GET(self):
         base = f'https://{self.headers.get("Host") or "localhost"}'
-        if not os.path.exists(IPA):
+        names = ipas()
+        if not names:
             self.send_bytes(page('<h2>No build yet</h2><p>Run <code>kiln ios device --ota</code> on the Mac.</p>'),
                             'text/html; charset=utf-8')
             return
-        bundle, version, title = ipa_info()
-        if self.path == '/manifest.plist':
-            plist = {'items': [{'assets': [{'kind': 'software-package', 'url': f'{base}/modus.ipa'},
+        # /NAME.manifest.plist and /NAME.ipa; /manifest.plist is modus's (the links of older pages)
+        m = re.fullmatch(r'/(?:([A-Za-z0-9_-]+)\.)?manifest\.plist', self.path)
+        i = re.fullmatch(r'/([A-Za-z0-9_-]+)\.ipa', self.path)
+        if m and (m.group(1) or 'modus') in names:
+            name = m.group(1) or 'modus'
+            bundle, version, title = ipa_info(name)
+            plist = {'items': [{'assets': [{'kind': 'software-package', 'url': f'{base}/{name}.ipa'},
                                            {'kind': 'display-image', 'url': f'{base}/icon-57.png'},
                                            {'kind': 'full-size-image', 'url': f'{base}/icon-512.png'}],
                                 'metadata': {'bundle-identifier': bundle, 'bundle-version': version,
@@ -154,21 +169,26 @@ class InstallHandler(Handler):
             self.send_bytes(plistlib.dumps(plist), 'application/xml')
         elif self.path in ('/icon-57.png', '/icon-512.png'):
             self.send_bytes(square_png(57 if '57' in self.path else 512), 'image/png')
-        elif self.path == '/modus.ipa':
-            size = os.path.getsize(IPA)
+        elif i and i.group(1) in names:
+            path = ipa_path(i.group(1))
+            size = os.path.getsize(path)
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
             self.send_header('Content-Length', str(size))
             self.end_headers()
             if self.command != 'HEAD':
-                with open(IPA, 'rb') as f:
+                with open(path, 'rb') as f:
                     while chunk := f.read(1 << 20):
                         self.wfile.write(chunk)
         else:
-            when = time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(IPA)))
-            link = f'itms-services://?action=download-manifest&url={base}/manifest.plist'
-            self.send_bytes(page(f'''<h2>{html.escape(title)}</h2><p>build of {when}</p>
-<a class=b href="{html.escape(link)}">Install {html.escape(title)}</a>
+            apps = []
+            for name in names:
+                title = ipa_info(name)[2]
+                when = time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(ipa_path(name))))
+                link = f'itms-services://?action=download-manifest&url={base}/{name}.manifest.plist'
+                apps.append(f'<a class=b href="{html.escape(link)}">Install {html.escape(title)}</a>'
+                            f'<p class=w>build of {when}</p>')
+            self.send_bytes(page(f'''<h2>Apps</h2>{"".join(apps)}
 <p>Not trusted yet? <a href="http://{html.escape(self.host())}:{HTTP_PORT}/">Set up the certificate</a> first.</p>'''),
                             'text/html; charset=utf-8')
 

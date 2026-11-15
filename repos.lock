@@ -23,6 +23,7 @@ gesso           master  6981f2d1fc5c0af7ffd2ea97666387226df08fb0
 glass           master  edc68bfe425a4fe31bf7aa8732ce2c25c5035ef9
 glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61
 glass-webrtc    master  055433193ade5219a42dfb300b8269fbbdc12c82
+illatio         main    3baed4beff987a72b24a15dd3e1d1cb8a2c45410
 json-simple     master  3b99a79e05e633aedb9679df3a51fc876979fb34
 loom            master  9fd14de7d980aebfacb2aeaa2b73612412579621
 mill            master  3a3f8c91688b1738efd8991a604eea55c7a95ea7
@@ -50,4 +51,5 @@ webp-pure       master  bf1d898c945c48348b742ecd350e1513ab919173
 webrtc-data     main    f29057d4a0c1906c9a2672218410217ae8e9943f
 webrtc-media    master  f7247562fbe05714116f2ed1576d06863a1269fb
 weft            master  bdfddd4fdb4b2dd46a7303dd5c08c26d350daefe
+witness         master  8b5267740d02147d79ef81ae39a3d34da09d023c
 zstd-pure       master  ebbd28eab4401caf3ad6fba34d5d5353602cc8ff

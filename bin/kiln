@@ -2136,11 +2136,12 @@ USAGE
   local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
   local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus} app_name=modus entry='(kiln-ios-main)'
   # ANOTHER APP on the same runtime and layout: its own world, entry point, bundle id and name, built beside
-  local app_world="" rotates=0
+  local app_world="" rotates=0 icon="" icon_dark=""
   case $app in
     "") ;;
     ferry) out=$KILN_STATE/ferry bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.ferry} app_name=Ferry
-           entry='(ferry:main)' app_world=ferry-world.lisp rotates=1 ;;
+           entry='(ferry:main)' app_world=ferry-world.lisp rotates=1
+           icon=$KILN_ROOT/ferry/ios/AppIcon.png icon_dark=$KILN_ROOT/ferry/ios/AppIcon-dark.png ;;
     *) die "kiln ios: no app named $app (try --help)" ;;
   esac
   [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
@@ -2315,6 +2316,7 @@ USAGE
   fi
   ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
       MODUS_IOS_NAME="$app_name" MODUS_IOS_ROTATES="$rotates" \
+      MODUS_IOS_ICON="$icon" MODUS_IOS_ICON_DARK="$icon_dark" \
       MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media" \
       host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"

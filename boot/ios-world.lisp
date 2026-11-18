@@ -21,7 +21,7 @@
 ;; The media player: warp's window over cassette (containers) and reel/reed (video and audio decoders);
 ;; glass's audio mixes it.  SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
 (dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
-                "cassette" "reed" "reel" "cl-transport" "natrium" "seal" "conch"))
+                "cassette" "reed" "reel" "cl-transport" "natrium" "seal" "conch" "chirp"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 (when (and *kiln-ql* (> (length *kiln-ql*) 0))
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
@@ -58,6 +58,9 @@
 (load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
 (load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
 (load (concatenate 'string *kiln-vessel* "/speech.lisp"))
+;; THE NATIVE KIT (screens, tables, forms; and Bluetooth), and the bitchat chat over it: the desk's "Bitchat"
+(load (concatenate 'string *kiln-vessel* "/ios-native.lisp"))
+(asdf:load-system "chirp/app")
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))

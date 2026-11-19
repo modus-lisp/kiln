@@ -40,7 +40,7 @@
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
     "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass"
-    "glass/desk" "glass/voice-apps" "glass/mixer-desk" "conch" "seal/http"))
+    "glass/desk" "glass/wm-core" "glass/voice-apps" "glass/mixer-desk" "conch" "seal/http"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)

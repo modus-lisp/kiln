@@ -2243,6 +2243,10 @@ USAGE
   # and FLAC because it is the codec modus decodes fastest (wpt-test's Vorbis track is silent)
   cp "$KILN_ROOT/kiln/media/"* "$out/media/" 2>/dev/null || true
   fi
+  # scribe's fallback faces -- every script's Noto face, CJK and emoji: 27 MB -- as FILES, not in the snapshot.
+  # A face is opened only when a page needs one of its characters (vessel's browser.lisp asks main to open it).
+  rm -rf "$out/fonts"; mkdir -p "$out/fonts"
+  cp "$KILN_ROOT/scribe/fonts/"Noto*.ttf "$out/fonts/" 2>/dev/null || true
 
   local app_id=$bundle_id
   [[ $kind == watch-device ]] && app_id=$bundle_id.watch
@@ -2312,7 +2316,7 @@ USAGE
   ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
       MODUS_IOS_NAME="$app_name" MODUS_IOS_ROTATES="$rotates" \
       MODUS_IOS_ICON="$icon" MODUS_IOS_ICON_DARK="$icon_dark" \
-      MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media" \
+      MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media $out/fonts" \
       host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
   note "app       $out/Modus-$kind.app"

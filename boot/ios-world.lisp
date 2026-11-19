@@ -18,14 +18,23 @@
                       (if (and r (> (length r) 0)) r (error "KILN_ROOT is not set"))))
 (defvar *kiln-ql* (modus-int::%cli-getenv "KILN_QL"))
 
-;; The media player: warp's window over cassette (containers) and reel/reed (video and audio decoders);
-;; glass's audio mixes it.  SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
-(dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
-                "cassette" "reed" "reel" "cl-transport" "natrium" "seal" "conch" "chirp"))
-  (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
+;; Quicklisp's FIRST, so the workspace's repos are pushed after it and found before it: quicklisp has
+;; other libraries under some of our names (its folio is a 2013 utility library, not the PDF renderer).
 (when (and *kiln-ql* (> (length *kiln-ql*) 0))
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
     (push d asdf:*central-registry*)))
+;; The media player: warp's window over cassette (containers) and reel/reed (video and audio decoders);
+;; glass's audio mixes it.  SSH in the Terminal: conch, with its crypto (natrium) and host-key sibling (seal).
+(dolist (repo '("glass" "cram" "warp" "warp/glass" "warp/media" "gesso" "scribe" "brotli-pure"
+                "cassette" "reed" "reel" "cl-transport" "natrium" "seal" "conch" "chirp"
+                ;; operandi, the agent (vessel's operandi.lisp), and what it takes that the rest does not
+                "operandi" "operandi-gui" "json-simple" "cl-sev-snp" "witness" "cl-nostr" "secp256k1-fast"
+                "pigment" "stencil" "webp-pure" "png-pure" "quill"
+                ;; Files: warren, the column file browser (gesso, glass, scribe, pigment: all here already)
+                "warren"
+                ;; Web: loom, the browser, over weft (the engine) and shuttle (its JavaScript)
+                "loom" "weft" "shuttle" "folio" "zstd-pure"))
+  (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 
 ;; seal/http is loaded here, not at the phone's Terminal: the phone has no source tree to load from.
 (defvar *kiln-systems*
@@ -61,6 +70,29 @@
 ;; THE NATIVE KIT (screens, tables, forms; and Bluetooth), and the bitchat chat over it: the desk's "Bitchat"
 (load (concatenate 'string *kiln-vessel* "/ios-native.lisp"))
 (asdf:load-system "chirp/app")
+;; OPERANDI: the agent's chat as a desk window (operandi-gui over warp-glass), the phone's input for its text.
+;; Its worker thread starts at the window's first open, not here.
+(format t "~&kiln: operandi-gui~%")
+(asdf:load-system "operandi-gui")
+(load (concatenate 'string *kiln-vessel* "/operandi.lisp"))
+;; FILES: warren in a desk window, rooted at the app's Documents (vessel's files.lisp)
+(format t "~&kiln: warren~%")
+(asdf:load-system "warren")
+(load (concatenate 'string *kiln-vessel* "/files.lisp"))
+;; WEB: loom in a desk window (vessel's browser.lisp); its threads become the window's steps there
+(format t "~&kiln: loom~%")
+(asdf:load-system "loom/glass")
+(load (concatenate 'string *kiln-vessel* "/browser.lisp"))
+;; THREAD HEAPS: 64 MB each rather than modus's 16.  The phone's workers hold real data -- a picture
+;; Imagine fetched, a web page loom renders -- and 16 MB ended the app (GC: HEAP EXHAUSTED).  64 is what
+;; Wikipedia's Lisp machine article needs on a page worker (measured on modus-mac, with loom painting a
+;; band and the fallback faces opened on main; 48 thrashed).  Read when the first thread starts, on the
+;; phone; the carve then fits five (MODUS_THREAD_HEAP overrides).
+(setq modus-int::*thread-heap-bytes* (* 64 1024 1024))
+;; NO KEY RIDES IN THE SNAPSHOT.  operandi reads a provider's key when a backend is chosen, at run time; a world
+;; build that had chosen one would carry this Mac's key inside the app.
+(when (symbol-value (find-symbol "*LLM-AUTH-TOKEN*" "OPERANDI.LLM"))
+  (error "kiln: operandi has an API key set while building the world; it would be saved into the app"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))
@@ -103,8 +135,18 @@
 ;; the snapshot's: https verifies against it with no file on the phone.
 (%kiln-warm "tls trust store"
             (lambda ()
-              (setf seal.http:*trust-store*
-                    (seal::make-trust-store-from-pem (seal::read-file-string "/etc/ssl/cert.pem")))))
+              (let ((store (seal::make-trust-store-from-pem (seal::read-file-string "/etc/ssl/cert.pem"))))
+                (setf seal.http:*trust-store* store)
+                ;; AND seal's :SYSTEM store is this one, as the Pi's core does (vessel's zero-boot): a library that
+                ;; calls SEAL:CONNECT without :TRUST-STORE -- weft's fetch, so every page the Web window loads --
+                ;; asked for the OS bundle, found no file, and every https page failed "no system CA bundle".
+                ;; The store is immutable, so page workers share it.
+                (setf (symbol-function 'seal::load-system-trust-store) (lambda () store)))))
+
+;; BROTLI'S DICTIONARY, now.  brotli-pure reads data/dictionary.bin on first use by the build Mac's path, which the
+;; phone does not have, so every brotli-encoded response (example.com, most of the web) failed in the Web window.
+;; Read here, it is the snapshot's (122 KB), and page workers read main's copy.
+(%kiln-warm "brotli dictionary" (lambda () (funcall (find-symbol "LOAD-DICT" "BROTLI-PURE"))))
 
 ;; One more pass for anything the per-system passes left: modus's JIT-EAGER runs to a
 ;; fixpoint, retrying a failed module once its callees have gone native.

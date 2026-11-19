@@ -33,14 +33,18 @@
                 ;; Files: warren, the column file browser (gesso, glass, scribe, pigment: all here already)
                 "warren"
                 ;; Web: loom, the browser, over weft (the engine) and shuttle (its JavaScript)
-                "loom" "weft" "shuttle" "folio" "zstd-pure"))
+                "loom" "weft" "shuttle" "folio" "zstd-pure"
+                ;; Media's Stations: spool's radio
+                "spool"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 
 ;; seal/http is loaded here, not at the phone's Terminal: the phone has no source tree to load from.
 (defvar *kiln-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
     "warp" "warp-glass" "reel" "reed" "cassette" "glass/audio" "warp-media" "warp-media/glass"
-    "glass/desk" "glass/wm-core" "glass/voice-apps" "glass/mixer-desk" "conch" "seal/http"))
+    "glass/desk" "glass/wm-core" "glass/voice-apps" "glass/mixer-desk" "conch" "seal/http"
+    ;; Media's other tabs: Stations (spool's radio), Pictures, Documents
+    "spool" "glass/media-pictures" "glass/media-documents"))
 
 (dolist (s *kiln-systems*)
   (format t "~&kiln: ~A~%" s)

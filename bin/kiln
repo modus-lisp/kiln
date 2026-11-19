@@ -2079,14 +2079,17 @@ cmd_ios() {
   #      at launch, relocated to wherever iOS put it.
   # The phone never compiles anything to native code (it cannot); it runs what
   # the Mac compiled, and interprets anything new.
-  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay=""
+  local kind=sim install=0 reuse=0 dev="" ident="" profile="" autoplay="" ota=0 app=""
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
     case $arg in
-      sim|device) kind=$arg ;;
+      sim|device|watch|watch-device) kind=$arg ;;
+      serve)      KILN_STATE=$KILN_STATE exec python3 "$ROOT/bin/kiln-ota-serve.py" ;;
+      --ota)      ota=1; kind=device ;;
+      --app)      app=${val:?--app=NAME} ;;
       --install)  install=1 ;;
-      --device)   dev=${val:?--device=ID}; install=1; kind=device ;;
+      --device)   dev=${val:?--device=ID}; install=1; [[ $kind == watch-device ]] || kind=device ;;
       --reuse)    reuse=1 ;;
       --reuse-modus) reuse=2 ;;
       --identity) ident=${val:?--identity=NAME} ;;
@@ -2094,14 +2097,23 @@ cmd_ios() {
       --autoplay) autoplay=${val:?--autoplay=FILE} ;;
       -h|--help)
         cat >&2 <<'USAGE'
-kiln ios [sim|device] [--install] [--device=ID] [--reuse]
+kiln ios [sim|device|watch|watch-device] [--install] [--device=ID] [--ota] [--reuse]
          [--identity=NAME] [--profile=FILE] [--autoplay=FILE] — the iPhone app, built here.
+kiln ios serve — install the last --ota builds on a phone over the network (bin/kiln-ota-serve.py).
 
   sim          (default) an app for the iOS Simulator
+  watch        an app for the watchOS Simulator: the watch's storybook (vessel/src/watch-storybook.lisp)
+  watch-device an app for a real watch (arm64_32): the storybook alone, in a slim world (boot/watch-world.lisp),
+               signed with your development identity; --install puts it on the paired watch (awake)
   device       an app for an iPhone, signed with your development identity and
                the provisioning profile for its bundle id (found automatically;
                --identity / --profile to choose)
   --install    install it (and launch it): the booted Simulator, or the device
+  --app=ferry  another app on the same runtime, instead of the modus desk: ferry, the SFTP client (the
+               ferry repo; boot/ferry-world.lisp), org.modus-lisp.ferry, built in $KILN_STATE/ferry
+  --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa (or
+               ferry.ipa, with --app=ferry), which `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
+               after a one-time certificate setup at http://THIS-MAC.local:8080/
   --device=ID  which iPhone (`xcrun devicectl list devices`); implies device
   --reuse      keep the modus build and snapshot from last time; repackage only
   --reuse-modus  keep the modus build; load and snapshot the world again
@@ -2109,7 +2121,7 @@ kiln ios [sim|device] [--install] [--device=ID] [--reuse]
   Env: KILN_MODUS (the modus checkout; default $KILN_ROOT/modus),
        KILN_QL (Quicklisp's software dir; default ~/quicklisp/dists/quicklisp/software),
        MODUS_IOS_BUNDLE_ID (default org.modus-lisp.modus).
-  Output in $KILN_STATE/ios.
+  Output in $KILN_STATE/ios (the watch's in $KILN_STATE/watch).
 USAGE
         return 0 ;;
       *) die "kiln ios: unknown argument $arg (try --help)" ;;
@@ -2122,37 +2134,112 @@ USAGE
   local modus=${KILN_MODUS:-$KILN_ROOT/modus}
   [[ -f $modus/mvm/build-aarch64-cli.lisp ]] || die "kiln ios: no modus checkout at $modus (set KILN_MODUS)"
   local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
-  local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus}
+  local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus} app_name=modus entry='(kiln-ios-main)'
+  # ANOTHER APP on the same runtime and layout: its own world, entry point, bundle id and name, built beside
+  local app_world="" rotates=0 icon="" icon_dark=""
+  case $app in
+    "") ;;
+    ferry) out=$KILN_STATE/ferry bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.ferry} app_name=Ferry
+           entry='(ferry:main)' app_world=ferry-world.lisp rotates=1
+           icon=$KILN_ROOT/ferry/ios/AppIcon.png icon_dark=$KILN_ROOT/ferry/ios/AppIcon-dark.png ;;
+    *) die "kiln ios: no app named $app (try --help)" ;;
+  esac
+  [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
+  # THE LAYOUT, at about 4 GB: the phone's launchd refuses the image's reservations up near 13 GB (ENOMEM at
+  # spawn), and accepts them at 4.25 GB.  The Mac runner slides it by 12 GB, past the Mac's shared cache.
+  # THE WATCH's is up at 12 GB (host/watch/build-watch.sh), a build of its own: the watch Simulator's dyld maps
+  # its shared cache privately from 6 GB to past 9 GB, over the phone's heap and arena ("no dyld cache", and
+  # SwiftUI is not found) and over an image at 9 GB.  The slides below find it room on the Mac.  Overridable
+  # per build.
+  # THE CODE BASE is 1 MB above the app's own Mach-O segments (__TEXT and __DATA from 0x100000000): at
+  # 0x100100000 the image's syscall page (__MODUSS, a page below it) met __DATA once the Swift side grew
+  # past 1 MB ("custom segments overlap" at link).  The image ends ~50 MB on, well below the region.
+  local code_base=100200000 conv_delta=F5C00000 heap_base=108000000 arena_base=168000000 slide=300000000 fasl_dir=""
+  # THE PHONE's heap is 1.5 GB (760 MB semispaces): a media player's threads carve their regions and a lock
+  # arena off region 0, which keeps at least half a semispace -- with 1 GB, the world's ~200 MB of live data
+  # left the lock arena no room, and the first decoder thread stopped the app.  The runtime region is compact
+  # (17 MB, not 822: it touches 96 KB of it), so the app reserves less address space than it did with 1 GB.
+  # AND THE HEAP SITS RIGHT ABOVE THE COMPACT REGION (it stayed where the 822 MB region had put it, leaving a
+  # 760 MB hole): above it, the 473 MB arena ran the layout to 0x1B6000000 -- past what a phone grants an app
+  # without the extended-virtual-addressing entitlement, so the kernel would not create the process (launchd
+  # spawn ENOMEM; no crash report, the app just closes).  Moved down, it ends near 0x185000000, below the 1 GB
+  # layout that ran.  (A 32 MB arena would have done it too, but the Mac's world load faults in one.)
+  local heap_size=60000000 midpoint=2F800000 world=${app_world:-ios-world.lisp} layout_extra="MODUS_REGION_SIZE=1100000"
+  if [[ $kind == watch ]]; then
+    out=$KILN_STATE/watch
+    code_base=300010000 conv_delta=2FA000000 heap_base=33A000000 arena_base=3AC000000
+    # and its own FASL cache: one the phone's image recorded faults when this one replays it
+    fasl_dir=$out/fasl
+  fi
+  # A REAL WATCH (arm64_32: 4 GB of address space, ~300 MB of memory): a compact layout, linked above 4 GB
+  # and placed below 340 MB (build-watch.sh device), with a 17 MB runtime region, 80 MB semispaces (a hosted
+  # core must have more than 64: hosted-sync.lisp %CORE-GEOMETRY-OK-P), a 32 MB arena and the TSD key a 4-byte
+  # slot needs -- modus docs/macos-hosting.md, "On a real watch".  And a slim world: the storybook alone (the
+  # phone's snapshot is 200 MB).
+  if [[ $kind == watch-device ]]; then
+    out=$KILN_STATE/watch-device fasl_dir=$KILN_STATE/watch-device/fasl world=watch-world.lisp
+    code_base=300010000 conv_delta=2F5000000 heap_base=306000000 arena_base=312000000
+    heap_size=B000000 midpoint=5000000
+    layout_extra="MODUS_REGION_SIZE=1100000 MODUS_JIT_ARENA_SIZE=2000000 MODUS_DARWIN_TSD_KEY=150"
+  fi
   mkdir -p "$out"
 
   if [[ $reuse == 0 || ! -f $out/modus-mac ]]; then
     # THE iOS LAYOUT (modus docs/macos-hosting.md): low enough for an app's
     # 15 GB of address space, PC-relative so it runs wherever iOS slides it.
     note "building modus for iOS (several minutes)"
-    ( cd "$modus" && env MODUS_PCREL=1 MODUS_DARWIN=1 MODUS_CODE_BASE=300010000 \
-        MODUS_CONV_DELTA=2FA000000 MODUS_HEAP_BASE=33A000000 MODUS_JIT_ARENA_BASE=3AC000000 \
+    # shellcheck disable=SC2086  # layout_extra is a list of assignments
+    ( cd "$modus" && env MODUS_PCREL=1 MODUS_DARWIN=1 $layout_extra \
+        MODUS_CODE_BASE=${KILN_IOS_CODE_BASE:-$code_base} \
+        MODUS_CONV_DELTA=${KILN_IOS_CONV_DELTA:-$conv_delta} \
+        MODUS_HEAP_BASE=${KILN_IOS_HEAP_BASE:-$heap_base} \
+        MODUS_JIT_ARENA_BASE=${KILN_IOS_ARENA_BASE:-$arena_base} \
+        MODUS_HEAP_SIZE=${KILN_IOS_HEAP_SIZE:-$heap_size} \
+        MODUS_GC_MIDPOINT=${KILN_IOS_GC_MIDPOINT:-$midpoint} \
         MODUS_CLI_OUT="$out/modus.elf" \
         sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
       die "kiln ios: the modus build failed — see $out/build.log"
-    ( cd "$modus" && MODUS_IN_PLACE=1 host/macos/build-macos.sh "$out/modus.elf" "$out/modus-mac" ) \
+    # The Mac runner embeds the image (not in place): its fixed segments would meet dyld's
+    # shared cache, which this Mac maps at 6 GB.  The world runs slid instead (MODUS_SLIDE below).
+    ( cd "$modus" && host/macos/build-macos.sh "$out/modus.elf" "$out/modus-mac" ) \
       > "$out/runner.log" 2>&1 || die "kiln ios: the macOS runner failed — see $out/runner.log"
   fi
   if [[ $reuse != 1 || ! -f $out/kiln.core ]]; then
     note "loading and compiling the world on the Mac (a few minutes)"
     rm -f "$out/kiln.core"
-    KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
-      "$out/modus-mac" --script "$ROOT/boot/ios-world.lisp" > "$out/world.log" 2>&1
+    # MODUS_SLIDE moves the whole image (and its region, heap and arena) up by this much, past
+    # the Mac's shared cache; the snapshot is relocated to the phone's layout when it is restored.
+    # The Mac's own reservations move from run to run, so a slide can be in their way (the shim cannot map the
+    # image, or the JIT arena cannot be placed and nothing compiles); and a load can fault for no reason a second
+    # load has (a transient runner failure).  So each slide is tried, twice round, until a snapshot is saved.
+    # Not C00000000: the world load traps there every time, at the same image offset (a layout-dependent bug,
+    # open).
+    local s
+    for s in ${KILN_MAC_SLIDE:-$slide 600000000 900000000 A00000000 $slide 600000000 900000000 A00000000}; do
+      env ${fasl_dir:+MODUS_FASL_DIR="$fasl_dir"} \
+        KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
+        KILN_MODUS="$modus" \
+        MODUS_SLIDE="$s" \
+        "$out/modus-mac" --script "$ROOT/boot/$world" > "$out/world.log" 2>&1 || true
+      [[ -f $out/kiln.core ]] && break
+      note "no snapshot with the world slid by $s on the Mac: trying the next"
+    done
     [[ -f $out/kiln.core ]] || die "kiln ios: no snapshot was saved — see $out/world.log"
     grep -a "compiled" "$out/world.log" | sed 's/^kiln: /  /' >&2 || true
   fi
 
   # What the app runs: the snapshot, then the entry point (vessel/src/ios.lisp).
-  if [[ -n $autoplay ]]; then
+  if [[ $kind == watch ]]; then
+    printf '%s\n' --core @kiln.core --eval '(kiln-watch-main)' > "$out/modus.args"
+  elif [[ $kind == watch-device ]]; then
+    printf '%s\n' --core @kiln.core --eval '(kiln-watch-run)' > "$out/modus.args"   # vessel/src/watch.lisp
+  elif [[ -n $autoplay && -z $app ]]; then
     printf '%s\n' --core @kiln.core --eval "(kiln-ios-main :autoplay \"$autoplay\")" > "$out/modus.args"
   else
-    printf '%s\n' --core @kiln.core --eval '(kiln-ios-main)' > "$out/modus.args"
+    printf '%s\n' --core @kiln.core --eval "$entry" > "$out/modus.args"
   fi
   rm -rf "$out/media"; mkdir -p "$out/media"
+  if [[ -z $app ]]; then                       # the films are the desk's media player's; another app has none
   # a picture, and a picture with sound (VP8 + Vorbis) to hear the speaker by
   for f in bbb360.webm wpt-test.webm; do
     cp "$KILN_ROOT/cassette/vectors/$f" "$out/media/" 2>/dev/null || true
@@ -2160,8 +2247,15 @@ USAGE
   # kiln's own: test-pattern.mkv, VP8 + a 440 Hz beep a second as mono 48 kHz FLAC -- audible,
   # and FLAC because it is the codec modus decodes fastest (wpt-test's Vorbis track is silent)
   cp "$KILN_ROOT/kiln/media/"* "$out/media/" 2>/dev/null || true
+  fi
+  # scribe's fallback faces -- every script's Noto face, CJK and emoji: 27 MB -- as FILES, not in the snapshot.
+  # A face is opened only when a page needs one of its characters (vessel's browser.lisp asks main to open it).
+  rm -rf "$out/fonts"; mkdir -p "$out/fonts"
+  cp "$KILN_ROOT/scribe/fonts/"Noto*.ttf "$out/fonts/" 2>/dev/null || true
 
-  if [[ $kind == device ]]; then
+  local app_id=$bundle_id
+  [[ $kind == watch-device ]] && app_id=$bundle_id.watch
+  if [[ $kind == device || $kind == watch-device ]]; then
     if [[ -z $ident ]]; then
       ident=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ { print $2; exit }')
       [[ -n $ident ]] || die "kiln ios: no Apple Development signing identity (Xcode > Settings > Accounts)"
@@ -2175,19 +2269,77 @@ USAGE
         plist=$(security cms -D -i "$p" 2>/dev/null) || continue
         appid=$(plutil -extract Entitlements.application-identifier raw - <<<"$plist" 2>/dev/null) || continue
         exp=$(plutil -extract ExpirationDate raw - <<<"$plist" 2>/dev/null) || continue
-        if [[ ${appid#*.} == "$bundle_id" && $exp > $now ]]; then profile=$p; break; fi
+        if [[ ${appid#*.} == "$app_id" && $exp > $now ]]; then profile=$p; break; fi
       done
-      [[ -n $profile ]] || die "kiln ios: no provisioning profile for $bundle_id — build any app with that bundle id in Xcode once, or pass --profile"
+      [[ -n $profile ]] || die "kiln ios: no provisioning profile for $app_id — build any app with that bundle id in Xcode once, or pass --profile"
     fi
     note "signing as $ident"
   fi
 
   note "packaging the $kind app"
+  if [[ $kind == watch-device ]]; then
+    ( cd "$modus" && MODUS_CORE="$out/kiln.core" MODUS_WATCH_BUNDLE_ID="$app_id" \
+        MODUS_WATCH_FILES="$out/kiln.core $out/modus.args" \
+        host/watch/build-watch.sh "$out/modus.elf" "$out/Modus-watch.app" device "$ident" "$profile" ) \
+      > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
+    note "app       $out/Modus-watch.app"
+    [[ $install == 1 ]] || return 0
+    # The paired watch, over the network through its phone.  ASLEEP it refuses launches and drops off the network,
+    # so both steps retry for a few minutes: raise your wrist.
+    if [[ -z $dev ]]; then
+      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/Apple Watch/ && /physical/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) { print $i; exit } }')
+      [[ -n $dev ]] || die "kiln ios: no paired Apple Watch — pair one with the phone, or pass --device=ID"
+    fi
+    local i
+    for i in $(seq 1 20); do
+      xcrun devicectl device install app --device "$dev" "$out/Modus-watch.app" >/dev/null 2>&1 && break
+      [[ $i == 1 ]] && note "the watch is not answering: wake it (raise your wrist)"
+      sleep 10
+    done
+    [[ $i -lt 20 ]] || die "kiln ios: install on the watch $dev failed"
+    for i in $(seq 1 20); do
+      xcrun devicectl device process launch --terminate-existing --device "$dev" "$app_id" >/dev/null 2>&1 &&
+        { note "launched on the watch $dev"; return 0; }
+      sleep 10
+    done
+    die "kiln ios: the watch would not launch the app (is it awake and unlocked?)"
+  fi
+  if [[ $kind == watch ]]; then
+    ( cd "$modus" && MODUS_CORE="$out/kiln.core" MODUS_WATCH_BUNDLE_ID="$bundle_id.watch" \
+        MODUS_WATCH_FILES="$out/kiln.core $out/modus.args" \
+        host/watch/build-watch.sh "$out/modus.elf" "$out/Modus-watch.app" ) \
+      > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
+    note "app       $out/Modus-watch.app"
+    [[ $install == 1 ]] || return 0
+    local watch
+    watch=$(xcrun simctl list devices booted 2>/dev/null | awk -F'[()]' '/Watch/ { print $2; exit }')
+    [[ -n $watch ]] || die "kiln ios: no Apple Watch Simulator is booted"
+    xcrun simctl install "$watch" "$out/Modus-watch.app" || die "kiln ios: install on the watch Simulator failed"
+    xcrun simctl launch "$watch" "$bundle_id.watch" >/dev/null && note "launched in the watch Simulator ($watch)"
+    return 0
+  fi
   ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
-      MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media" \
+      MODUS_IOS_NAME="$app_name" MODUS_IOS_ROTATES="$rotates" \
+      MODUS_IOS_ICON="$icon" MODUS_IOS_ICON_DARK="$icon_dark" \
+      MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media $out/fonts" \
       host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
   note "app       $out/Modus-$kind.app"
+
+  # THE OVER-THE-AIR PACKAGE: the signed app under Payload/, written beside and moved into place, so
+  # a running `kiln ios serve' never hands out half a file
+  if [[ $ota == 1 ]]; then
+    local stage=$out/ota-stage
+    rm -rf "$stage" && mkdir -p "$stage/Payload" "$KILN_STATE/ota"
+    cp -R "$out/Modus-device.app" "$stage/Payload/"
+    # one .ipa per app (modus.ipa, ferry.ipa): the install page offers each
+    local ipa=$KILN_STATE/ota/${app:-modus}.ipa
+    ( cd "$stage" && zip -qry -X "$ipa.new" Payload ) ||
+      die "kiln ios: packaging the .ipa failed"
+    mv "$ipa.new" "$ipa"
+    rm -rf "$stage"
+    note "ota       $ipa — \`kiln ios serve' offers it at https://$(scutil --get LocalHostName 2>/dev/null || echo this-mac).local:8443/"
+  fi
 
   [[ $install == 1 ]] || return 0
   if [[ $kind == sim ]]; then
@@ -2199,7 +2351,12 @@ USAGE
     xcrun simctl launch "$sim" "$bundle_id" >/dev/null && note "launched in the Simulator ($sim)"
   else
     if [[ -z $dev ]]; then
-      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /available|connected/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F-]{36}$/) { print $i; exit } }')
+      # a PHYSICAL iPhone, by any of its UDID's forms: 8-16 hex (A12 on), a 36-character UUID, or
+      # 40 hex (older).  Matching only the 36-character form found the booted iPhone SIMULATOR
+      # (a UUID, and "connected") and never the phone, so --install went to the Simulator.
+      dev=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /physical/ && /available|connected/ {
+              for (i = 1; i <= NF; i++)
+                if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/ || $i ~ /^[0-9A-F-]{36}$/ || $i ~ /^[0-9a-f]{40}$/) { print $i; exit } }')
       [[ -n $dev ]] || die "kiln ios: no iPhone found — connect one, or pass --device=ID"
     fi
     xcrun devicectl device install app --device "$dev" "$out/Modus-device.app" >/dev/null ||

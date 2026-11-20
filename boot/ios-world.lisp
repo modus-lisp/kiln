@@ -93,6 +93,17 @@
 ;; band and the fallback faces opened on main; 48 thrashed).  Read when the first thread starts, on the
 ;; phone; the carve then fits five (MODUS_THREAD_HEAP overrides).
 (setq modus-int::*thread-heap-bytes* (* 64 1024 1024))
+;; BUT NOT EVERY WORKER IS A PAGE.  Every region at 64 MB left region 0 so little room over the world's
+;; ~310 MB of live data that a video decoder -- a worker that allocates and collects constantly -- hung at
+;; its first collection (measured on modus-mac with this core: 16 MB plays, 32 and 64 hang).  So, where
+;; modus lays regions out by size (*THREAD-HEAP-SIZES*): three 64 MB slots for pages and the agent, and
+;; eight 16 MB ones, which warp's decoder and spool's radio worker ask for (:HEAP-BYTES).  A thread that
+;; names no size asks for *THREAD-HEAP-BYTES*' 64.  336 MB in all: the carve's rule keeps region 0 half.
+(let ((sizes (find-symbol "*THREAD-HEAP-SIZES*" "MODUS-INT")))
+  (when sizes
+    (setf (symbol-value sizes)
+          (append (make-list 3 :initial-element (* 64 1024 1024))
+                  (make-list 8 :initial-element (* 16 1024 1024))))))
 ;; NO KEY RIDES IN THE SNAPSHOT.  operandi reads a provider's key when a backend is chosen, at run time; a world
 ;; build that had chosen one would carry this Mac's key inside the app.
 (when (symbol-value (find-symbol "*LLM-AUTH-TOKEN*" "OPERANDI.LLM"))

@@ -27,9 +27,10 @@ illatio         main    3baed4beff987a72b24a15dd3e1d1cb8a2c45410
 json-simple     master  a562e5a4251df5010477ba879bd7ceb8ed522588
 loom            master  ce75b02fb4713270708ef65681b06cbff5dd1905
 mill            master  2553ba57bb5c9345ed299e26d930ee88267ba457
-modus           main    0d8ff428933e08317f8c20d559730efddde921cf
+modus           main    797fe2bf5110ce2090656fbcde150efa390d069c
 natrium         master  ae956004b27330594d2a95b4c812a3f0548c79d3
 operandi        main    05934696188219c59d8a4829c23deee33f87a1c6
+operandi-gui    operandi-on-ios  432ceb6bc8bdfc64f3d123fa1f806ab5d50cd041
 pagetree        master  aee0f0fa897db04058a52f4670dcf724c115759e
 pigment         master  2105b9acd3b048dd686a2f899ef4705cdfbb10ec
 png-pure        main    074357cd479638960faf07fb45d0199a9d440e4b
@@ -44,7 +45,7 @@ skep            main    1fa33347da2f6fec4180307e10713c6d233dde14
 spool           master  b4ed1d901ad06f78ba8918e4908906a4b3d3b66a
 stave           master  12940fb63fa2cc80c58e528c6c8bff0c5965770c
 stencil         master  0a7da387844c889d3a1319037c29a68777685e49
-vessel          main    72c0a585e5b0bc26438ad31589b04864c51f311c
+vessel          main    5e0cb59e39361c20f8702874f0221e65b71d59f7
 warp            master  9600385fa169befd3844a6217c8b2c3ee86568be
 warren          master  26044e92a764df2e0c48c1d9083f54ae9f5171b2
 webp-pure       master  ff5c1e93331ebd7f318464700bebddbc3392d4c4

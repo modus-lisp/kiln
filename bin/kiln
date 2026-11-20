@@ -3032,6 +3032,9 @@ EOF
   [[ -f $KILN_ROOT/fs-fat/lib/fat32.lisp ]] || die "kiln zero: no fs-fat checkout at $KILN_ROOT/fs-fat"
   cp "$KILN_ROOT/fs-fat/lib/fat32.lisp" "$sys/src/fs-fat32.lisp"
   cp "$KILN_ROOT/vessel/src/zero-card.lisp" "$sys/src/zero-card.lisp"
+  # the screen's settings -- resolution, density, a TV's margins -- and the Settings window
+  # (vessel/src/zero-display.lisp; older vessels have none)
+  [[ -f $KILN_ROOT/vessel/src/zero-display.lisp ]] && cp "$KILN_ROOT/vessel/src/zero-display.lisp" "$sys/src/zero-display.lisp"
   # the SSH shell's line editor: quill (Emacs keys, history, C-r, multi-line forms), fed by
   # modus's session through its :INPUT
   [[ -d $KILN_ROOT/quill/src ]] || die "kiln zero: no quill checkout at $KILN_ROOT/quill"
@@ -3103,6 +3106,7 @@ EOF
   fi
   cp "$KILN_ROOT/vessel/src/zero.lisp" "$sys/src/zero.lisp"
   cp "$KILN_ROOT/vessel/src/app.lisp" "$sys/src/app.lisp"
+  local display_file=""; [[ -f $sys/src/zero-display.lisp ]] && display_file='(:file "zero-display")'
   cat > "$sys/kiln-zero.asd" <<EOF
 ;;;; kiln zero's desk, as ONE system in load order (the board installs one tarball).
 (asdf:defsystem :kiln-zero
@@ -3126,7 +3130,7 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "zero-bt")
      $media_files
-     (:file "zero") (:file "app") (:file "zero-ssh") (:file "fs-fat32") (:file "zero-card")
+     (:file "zero") (:file "app") (:file "zero-ssh") (:file "fs-fat32") (:file "zero-card") $display_file
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor") (:file "zero-shell")
      (:file "glass-term") (:file "zero-term") (:file "zero-console")
@@ -3286,6 +3290,13 @@ EOF
         || die "kiln zero: cannot resolve ${withs[*]} (see $w/packages.json)"
       rm -f "$lock"
       local order; order=$(python3 -c "import json;print(' '.join(n for n in json.load(open('$w/packages.json'))['order'] if n != 'bordeaux-threads'))")
+      # ...and what kiln-zero already carries: its glass/fb (without wordlist.lisp, whose BIP-39
+      # literal stalls the board's compiler) and cram.  Any closure that reaches glass's desk
+      # systems names both; installed again, glass/fb brings the wordlist back.
+      local o0="" n0; for n0 in $order; do
+        case $n0 in glass/fb|cram) ;; *) o0+=" $n0" ;; esac
+      done
+      order=${o0# }
       # GLASS ON THE BOARD IS KILN-ZERO'S: the trimmed package + framebuffer + desk it already
       # carries (glass/fb's McCLIM backend needs SB-CONCURRENCY, which modus has not got).  A
       # closure that reaches glass/nostr -- the lean nostr gateway's admission client and the
@@ -3363,6 +3374,20 @@ EOF
         printf '%s\n' '(asdf:defsystem :zero-cairn :components ((:file "zero-cairn")))' > "$gc/zero-cairn.asd"
         (cd "$w/tars" && tar cf zero-cairn.tar zero-cairn)
         order+=" zero-cairn"
+      fi
+      # ...and the desk's apps, the phone's (vessel/src; app.lisp registers each one it finds at the
+      # desk's start): Web over loom, Files over warren, the operandi agent's chat, and Actions --
+      # each only when its library is in the closure, in one small system after all of them
+      local za="$w/tars/zero-apps" zcomp=""
+      [[ " $order " == *" loom/glass "* ]] && zcomp+=" browser"
+      [[ " $order " == *" warren "* ]] && zcomp+=" files"
+      [[ " $order " == *" operandi-gui "* ]] && zcomp+=" operandi"
+      if [[ -n $zcomp ]]; then
+        mkdir -p "$za"; zcomp+=" actions"; local zf zl=""
+        for zf in $zcomp; do cp "$KILN_ROOT/vessel/src/$zf.lisp" "$za/"; zl+=" (:file \"$zf\")"; done
+        printf '%s\n' "(asdf:defsystem :zero-apps :serial t :components ($zl))" > "$za/zero-apps.asd"
+        (cd "$w/tars" && tar cf zero-apps.tar zero-apps)
+        order+=" zero-apps"
       fi
       note "zero: --with ${withs[*]}: $order"
       # an x/test system goes in right after x, before anything heavier: cl-fips/test

@@ -3675,7 +3675,7 @@ cmd_clean() {
 #   --name=NAME      the app's name: the Dock's, the menu bar's, the window's first title (default modus, or the
 #                    --app NAME).  The window's title and chrome change as it runs: vessel's mac-window.lisp; the
 #                    desk takes them at launch from KILN_MAC_TITLE and KILN_MAC_CHROME (standard, hidden-title,
-#                    transparent, none).
+#                    transparent, none, full-bleed).
 #   --bundle-id=ID   default org.modus-lisp.modus (org.modus-lisp.NAME with --app)
 #   --icon=PNG       the app's icon, a square PNG (1024 x 1024 is best)
 # THE MODUS IMAGE IS REUSED: a build records which modus source it came from (its tracked Lisp, committed or not --

@@ -3502,6 +3502,12 @@ EOF
     echo "(progn (setq modus-int::*tar-block-size* 512) (defvar *kz-tar* nil) (setq *kz-tar* (kz-fetch \"$base\" (quote $(cat "$out/tar.lisp")))) (if *kz-tar* (length *kz-tar*) (error \"t420: the desk system did not arrive\")))"
     echo '(modus-int::install-tarball-from-bytes *kz-tar*)'
     echo "(progn (setq *kz-tar* nil) (let ((reg (kz-fetch \"$base\" (quote $(cat "$out/regular.lisp")))) (bold (kz-fetch \"$base\" (quote $(cat "$out/bold.lisp"))))) (unless (and reg bold) (error \"t420: the fonts did not arrive\")) (setf glass::*font-regular* (scribe:open-font reg) glass::*font-bold* (scribe:open-font bold))) :fonts)"
+    # GLYPHS INTO THE CORE: the first time a character is drawn at a size, scribe rasterizes and
+    # hints it -- ~0.5 s each under QEMU, a visible hitch on the T420 -- and glass caches it.  So
+    # the sizes the desk draws (app.lisp: chrome 16, Terminal 14, Notes 17 and its bold title 22,
+    # the Clock's digits at 40) are rasterized here at each of the four quarter-pixel positions
+    # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
+    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 14 16 17)) (warm ascii sz (glass:default-font))) (warm ascii 22 (glass:default-font t)) (warm "0123456789:" 40 (glass:default-font)))) n)'
     echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
   } > "$out/forms.txt"
   ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &

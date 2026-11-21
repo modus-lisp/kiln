@@ -3667,44 +3667,83 @@ cmd_clean() {
 #   kiln mac build   builds $KILN_STATE/mac/Modus.app: the native image in the window, with the desk
 #                    loaded from source and saved into it (Contents/Resources/kiln.core).
 #   kiln mac run     restores that snapshot and runs the desk: --core, then --load run.lisp.
-# A snapshot is valid only for the binary that wrote it, so build saves the core last, from the bundle it ships in.
+#   --app=NAME       another app on the same runtime instead of the desk: its world is boot/NAME-world.lisp (it
+#                    loads the app, and saves it when KILN_CORE is set), built into $KILN_STATE/mac-NAME.
+#   --entry=FORM     the app's entry point, what a run evaluates after the restore (build only; the desk's is
+#                    (kiln-mac-main)).  The same NAME runs it: kiln mac run --app=NAME.
+#   --rebuild        build the modus image even if modus has not changed since the last build.
+# THE MODUS IMAGE IS REUSED: a build records which modus source it came from (its tracked Lisp, committed or not --
+# not host/, the window host, which every build compiles anyway), and builds the image again only when that source
+# has changed.  A snapshot is valid only for the binary that wrote it, so build saves the core last, from the
+# bundle it ships in, every time.
 cmd_mac() {
-  local sub=${1:-build}
-  local out=$KILN_STATE/mac app res
-  app=$out/Modus.app
+  local sub=build app_name="" entry="" rebuild=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      build|run) sub=$1 ;;
+      --app=*)   app_name=${1#*=} ;;
+      --entry=*) entry=${1#*=} ;;
+      --rebuild) rebuild=1 ;;
+      -h|--help) sed -n '/^# THE MAC APP/,/^cmd_mac/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' >&2; return 0 ;;
+      *) die "kiln mac: unknown argument $1 (try kiln mac --help)" ;;
+    esac
+    shift
+  done
+  # THE APP: its world (a boot file that loads it and saves it when KILN_CORE is set), and its entry point
+  local out=$KILN_STATE/mac world=$ROOT/boot/mac-desk.lisp
+  if [[ -n $app_name ]]; then
+    out=$KILN_STATE/mac-$app_name world=$ROOT/boot/$app_name-world.lisp
+    [[ -f $world ]] || die "kiln mac: no app named $app_name (no boot/$app_name-world.lisp)"
+    [[ $sub == run || -n $entry ]] || die "kiln mac: --app=$app_name needs --entry=FORM, its entry point"
+  else
+    entry=${entry:-(kiln-mac-main)}
+  fi
+  local app=$out/Modus.app res
   res=$app/Contents/Resources
-  case $sub in
-    build) ;;
-    run)
-      [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] || die "kiln mac: no app yet (kiln mac build)"
-      exec "$app/Contents/MacOS/modus" --core "$res/kiln.core" --load "$res/run.lisp" ;;
-    *) die "kiln mac: build or run (try kiln mac --help)" ;;
-  esac
+  if [[ $sub == run ]]; then
+    [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] ||
+      die "kiln mac: no app yet (kiln mac build${app_name:+ --app=$app_name --entry=FORM})"
+    exec "$app/Contents/MacOS/modus" --core "$res/kiln.core" --load "$res/run.lisp"
+  fi
   [[ $(uname -s) == Darwin ]] || die "kiln mac: needs macOS"
   command -v sbcl >/dev/null || die "kiln mac: needs sbcl (modus is built with it)"
   local modus=${KILN_MODUS:-$KILN_ROOT/modus}
   [[ -f $modus/mvm/build-aarch64-cli.lisp ]] || die "kiln mac: no modus checkout at $modus (set KILN_MODUS)"
   local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
   mkdir -p "$out"
-  # THE LAYOUT of the Mac build: the one the native runner was tested with (modus docs/macos-hosting.md, M3).
-  note "building modus for the Mac (several minutes)"
-  ( cd "$modus" && env MODUS_DARWIN=1 MODUS_CODE_BASE=7000010000 MODUS_CONV_DELTA=7040000000 \
-      MODUS_HEAP_BASE=7080000000 MODUS_JIT_ARENA_BASE=7100000000 MODUS_CLI_OUT="$out/modus.elf" \
-      sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
-    die "kiln mac: the modus build failed -- see $out/build.log"
+  # WHICH MODUS SOURCE: the index's blobs for its tracked files (so a commit, or a staged change) and the diff of
+  # what is changed but not staged, all but host/, docs/ and tests.  Empty (always rebuild) outside a git checkout.
+  # A new file nobody has added to git yet is not seen: --rebuild.
+  local spec=(. ':!host' ':!docs' ':!test' ':!tests') source=""
+  if git -C "$modus" rev-parse --git-dir >/dev/null 2>&1; then
+    source=$( { git -C "$modus" ls-files -s -- "${spec[@]}"; git -C "$modus" diff -- "${spec[@]}"; } |
+              shasum -a 256 | cut -d' ' -f1 )
+  fi
+  if [[ $rebuild == 1 || -z $source || ! -f $out/modus.elf || $(cat "$out/modus.source" 2>/dev/null) != "$source" ]]; then
+    # THE LAYOUT of the Mac build: the one the native runner was tested with (modus docs/macos-hosting.md, M3).
+    note "building modus for the Mac (several minutes)"
+    rm -f "$out/modus.source"
+    ( cd "$modus" && env MODUS_DARWIN=1 MODUS_CODE_BASE=7000010000 MODUS_CONV_DELTA=7040000000 \
+        MODUS_HEAP_BASE=7080000000 MODUS_JIT_ARENA_BASE=7100000000 MODUS_CLI_OUT="$out/modus.elf" \
+        sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
+      die "kiln mac: the modus build failed -- see $out/build.log"
+    [[ -n $source ]] && printf '%s\n' "$source" > "$out/modus.source"
+  else
+    note "modus unchanged since its last build: reusing its image (--rebuild builds it anyway)"
+  fi
   ( cd "$modus" && host/macos/build-macos.sh "$out/modus.elf" "$app" gui ) > "$out/runner.log" 2>&1 ||
     die "kiln mac: the window host failed -- see $out/runner.log"
   mkdir -p "$res"
-  # THE DESK, from source, then saved: the loader runs to save-and-die, so the commands come from a file and
-  # nothing reads a terminal.  KILN_CORE is what makes boot/mac-desk.lisp save rather than run the desk.
-  printf '(load "%s")\n' "$ROOT/boot/mac-desk.lisp" > "$out/save.lisp"
+  # THE WORLD, from source, then saved: the loader runs to save-and-die, so the commands come from a file and
+  # nothing reads a terminal.  KILN_CORE is what makes the boot file save rather than run the app.
+  printf '(load "%s")\n' "$world" > "$out/save.lisp"
   rm -f "$res/kiln.core"
-  note "loading the desk and saving it (a few minutes)"
-  env KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$res/kiln.core" \
+  note "loading ${app_name:-the desk} and saving it (a few minutes)"
+  env KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$res/kiln.core" KILN_MODUS="$modus" \
     "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
-  [[ -f $res/kiln.core ]] || die "kiln mac: the desk did not save -- see $out/save.log"
-  printf '(kiln-mac-main)\n' > "$res/run.lisp"
-  note "built $app: run it with kiln mac run"
+  [[ -f $res/kiln.core ]] || die "kiln mac: ${app_name:-the desk} did not save -- see $out/save.log"
+  printf '%s\n' "$entry" > "$res/run.lisp"
+  note "built $app: run it with kiln mac run${app_name:+ --app=$app_name}"
 }
 
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }

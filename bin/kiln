@@ -3706,7 +3706,7 @@ cmd_mac() {
   if [[ -n $app_name ]]; then
     out=$KILN_STATE/mac-$app_name world=$ROOT/boot/$app_name-world.lisp
     [[ -f $world ]] || die "kiln mac: no app named $app_name (no boot/$app_name-world.lisp)"
-    [[ $sub == run || -n $entry ]] || die "kiln mac: --app=$app_name needs --entry=FORM, its entry point"
+    [[ $sub == run || $sub == install || -n $entry ]] || die "kiln mac: --app=$app_name needs --entry=FORM, its entry point"
   else
     entry=${entry:-(kiln-mac-main)}
   fi

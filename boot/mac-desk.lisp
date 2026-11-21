@@ -53,6 +53,10 @@
 ;; A Mac has a person's home: Media offers their Music, Movies, Downloads and home at its root, and its + opens
 ;; any folder where it is (kept as a place) rather than copying files into the app's own.
 (setq *kiln-home-places* t)
+;; ...and its windows are wide as a rule: a film shares Media's window with the tabs, the transport and the list,
+;; where a turned phone gives it the whole screen (THEATER)
+(setf glass.desk::*media-theater* nil
+      warp-media-glass:*theater* nil)
 
 ;; THE NATIVE BRIDGES, as the phone's world has them (boot/ios-world.lisp): the wire format (modus net/term.lisp),
 ;; the Objective-C runtime (ios-objc.lisp, pseudo-syscall 1040), Lisp-calls-Swift (ios-swift.lisp, 1060: on the

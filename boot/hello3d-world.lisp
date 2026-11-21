@@ -2,6 +2,7 @@
 ;;;;
 ;;;;   kiln mac build --app=hello3d --entry='(hello3d:main)' --name="Hello 3D"
 ;;;;   kiln mac run --app=hello3d
+;;;;   kiln ios sim --app=hello3d --install         (the phone: entry (hello3d:main :touch t), two thumbs)
 ;;;;
 ;;;; No desk: the native bridges (the wire format, the Objective-C and Swift bridges), the window's own calls, the
 ;;;; GPU, and the game.  Saved as a snapshot when KILN_CORE is set, as boot/mac-desk.lisp is.
@@ -25,7 +26,8 @@
   (modus-int::%gc-safe-block-6 n a b c d))
 (defvar *kiln-frame-hooks* nil)
 
-(defvar *kiln-vessel* (concatenate 'string *kiln-root* "/vessel/src"))
+(defvar *kiln-vessel* (let ((v (modus-int::%cli-getenv "KILN_VESSEL")))      ; kiln ios passes it
+                        (if (and v (> (length v) 0)) v (concatenate 'string *kiln-root* "/vessel/src"))))
 (defvar *kiln-modus* (let ((m (modus-int::%cli-getenv "KILN_MODUS")))
                        (if (and m (> (length m) 0)) m (concatenate 'string *kiln-root* "/modus"))))
 (defvar *term-cursor* (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0))

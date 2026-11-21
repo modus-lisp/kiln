@@ -2109,6 +2109,8 @@ kiln ios serve — install the last --ota builds on a phone over the network (bi
                the provisioning profile for its bundle id (found automatically;
                --identity / --profile to choose)
   --install    install it (and launch it): the booted Simulator, or the device
+  --app=hello3d  hello, world in 3D (vessel's hello3d.lisp; boot/hello3d-world.lisp), org.modus-lisp.hello3d,
+               built in $KILN_STATE/hello3d
   --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa (or
                NAME.ipa, with --app=NAME), which `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
                after a one-time certificate setup at http://THIS-MAC.local:8080/
@@ -2137,6 +2139,9 @@ USAGE
   local app_world="" rotates=0 icon="" icon_dark=""
   case $app in
     "") ;;
+    # hello, world in 3D (vessel's hello3d.lisp): the GPU, a game controller, sound in 3D, and two thumbs on the glass
+    hello3d) out=$KILN_STATE/hello3d bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.hello3d} app_name="Hello 3D"
+             entry='(hello3d:main :touch t)' app_world=hello3d-world.lisp rotates=1 ;;
     *) die "kiln ios: no app named $app (try --help)" ;;
   esac
   [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
@@ -2150,6 +2155,8 @@ USAGE
   # 0x100100000 the image's syscall page (__MODUSS, a page below it) met __DATA once the Swift side grew
   # past 1 MB ("custom segments overlap" at link).  The image ends ~50 MB on, well below the region.
   local code_base=100200000 conv_delta=F5C00000 heap_base=108000000 arena_base=168000000 slide=300000000 fasl_dir=""
+  # an app's own FASL cache: one another build recorded can fault this image's world at boot when replayed
+  [[ $app == hello3d ]] && fasl_dir=$out/fasl
   # THE PHONE's heap is 1.5 GB (760 MB semispaces): a media player's threads carve their regions and a lock
   # arena off region 0, which keeps at least half a semispace -- with 1 GB, the world's ~200 MB of live data
   # left the lock arena no room, and the first decoder thread stopped the app.  The runtime region is compact

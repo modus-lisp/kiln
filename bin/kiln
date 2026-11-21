@@ -3663,9 +3663,54 @@ cmd_clean() {
   note "image removed"
 }
 
+# THE MAC APP: modus in a native AppKit window, running the desk (glass, from vessel's app.lisp).
+#   kiln mac build   builds $KILN_STATE/mac/Modus.app: the native image in the window, with the desk
+#                    loaded from source and saved into it (Contents/Resources/kiln.core).
+#   kiln mac run     restores that snapshot and runs the desk: --core, then --load run.lisp.
+# A snapshot is valid only for the binary that wrote it, so build saves the core last, from the bundle it ships in.
+cmd_mac() {
+  local sub=${1:-build}
+  local out=$KILN_STATE/mac app res
+  app=$out/Modus.app
+  res=$app/Contents/Resources
+  case $sub in
+    build) ;;
+    run)
+      [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] || die "kiln mac: no app yet (kiln mac build)"
+      exec "$app/Contents/MacOS/modus" --core "$res/kiln.core" --load "$res/run.lisp" ;;
+    *) die "kiln mac: build or run (try kiln mac --help)" ;;
+  esac
+  [[ $(uname -s) == Darwin ]] || die "kiln mac: needs macOS"
+  command -v sbcl >/dev/null || die "kiln mac: needs sbcl (modus is built with it)"
+  local modus=${KILN_MODUS:-$KILN_ROOT/modus}
+  [[ -f $modus/mvm/build-aarch64-cli.lisp ]] || die "kiln mac: no modus checkout at $modus (set KILN_MODUS)"
+  local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
+  mkdir -p "$out"
+  # THE LAYOUT of the Mac build: the one the native runner was tested with (modus docs/macos-hosting.md, M3).
+  note "building modus for the Mac (several minutes)"
+  ( cd "$modus" && env MODUS_DARWIN=1 MODUS_CODE_BASE=7000010000 MODUS_CONV_DELTA=7040000000 \
+      MODUS_HEAP_BASE=7080000000 MODUS_JIT_ARENA_BASE=7100000000 MODUS_CLI_OUT="$out/modus.elf" \
+      sbcl --dynamic-space-size 16384 --script mvm/build-aarch64-cli.lisp ) > "$out/build.log" 2>&1 ||
+    die "kiln mac: the modus build failed -- see $out/build.log"
+  ( cd "$modus" && host/macos/build-macos.sh "$out/modus.elf" "$app" gui ) > "$out/runner.log" 2>&1 ||
+    die "kiln mac: the window host failed -- see $out/runner.log"
+  mkdir -p "$res"
+  # THE DESK, from source, then saved: the loader runs to save-and-die, so the commands come from a file and
+  # nothing reads a terminal.  KILN_CORE is what makes boot/mac-desk.lisp save rather than run the desk.
+  printf '(load "%s")\n' "$ROOT/boot/mac-desk.lisp" > "$out/save.lisp"
+  rm -f "$res/kiln.core"
+  note "loading the desk and saving it (a few minutes)"
+  env KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$res/kiln.core" \
+    "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
+  [[ -f $res/kiln.core ]] || die "kiln mac: the desk did not save -- see $out/save.log"
+  printf '(kiln-mac-main)\n' > "$res/run.lisp"
+  note "built $app: run it with kiln mac run"
+}
+
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'; }
 
 case "${1:-}" in
+  mac)   shift; cmd_mac "$@" ;;
   container) shift; cmd_container "$@" ;;
   run)   shift
          # --resume here rather than inside cmd_run: it is an ENVIRONMENT for the

@@ -33,6 +33,10 @@
 ;; vessel: the platform (the same pseudo-syscalls on Mac as on the phone), then the app itself
 (defvar *kiln-vessel* (concatenate 'string *kiln-root* "/vessel/src"))
 (load (concatenate 'string *kiln-vessel* "/ios.lisp"))
+;; ios.lisp makes the desk a RACK, the phone's layout, where a tap on empty space does nothing (the root
+;; menu is a long press there).  A Mac has a pointer and floating windows: a tap on the desktop opens the
+;; root menu, as on the desk everywhere else.  Set after ios.lisp, before app.lisp reads it.
+(setq *kiln-desk-layout* :float)
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
 
 (defun kiln-mac-main ()

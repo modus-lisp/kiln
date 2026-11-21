@@ -50,6 +50,9 @@
 ;; root menu, as on the desk everywhere else.  Set after ios.lisp, before app.lisp reads it.
 (setq *kiln-desk-layout* :float)
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
+;; A Mac has a person's home: Media offers their Music, Movies, Downloads and home at its root, and its + opens
+;; any folder where it is (kept as a place) rather than copying files into the app's own.
+(setq *kiln-home-places* t)
 
 ;; THE NATIVE BRIDGES, as the phone's world has them (boot/ios-world.lisp): the wire format (modus net/term.lisp),
 ;; the Objective-C runtime (ios-objc.lisp, pseudo-syscall 1040), Lisp-calls-Swift (ios-swift.lisp, 1060: on the

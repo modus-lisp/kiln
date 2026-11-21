@@ -24,7 +24,9 @@
 
 (defvar *desk-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
-    "glass/desk" "glass/wm-core" "glass/mixer-desk" "glass/audio"))
+    "glass/desk" "glass/wm-core" "glass/mixer-desk" "glass/audio"
+    ;; seal: its UTF-8 encoder is how ios-swift.lisp hands text to the native components
+    "seal"))
 
 (dolist (s *desk-systems*)
   (format t "~&kiln: ~A~%" s)
@@ -39,9 +41,28 @@
 (setq *kiln-desk-layout* :float)
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
 
+;; THE NATIVE BRIDGES, as the phone's world has them (boot/ios-world.lisp): the wire format (modus net/term.lisp),
+;; the Objective-C runtime (ios-objc.lisp, pseudo-syscall 1040), Lisp-calls-Swift (ios-swift.lisp, 1060: on the
+;; Mac its functions are modus's host/macos/swift/, the same names), and the storybook over them.
+(defvar *kiln-modus* (let ((m (modus-int::%cli-getenv "KILN_MODUS")))
+                       (if (and m (> (length m) 0)) m (concatenate 'string *kiln-root* "/modus"))))
+(defvar *term-cursor* (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0))
+(defun decode-ptr-addr ()
+  (+ (modus-int::%gc-word-of *term-cursor* (modus-int::%conv-addr #x100050A0)) 7))
+(load (concatenate 'string *kiln-modus* "/net/term.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-objc.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
+;; the storybook's GPU and speech stories name these packages (their Swift halves are not on the Mac yet)
+(load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
+(load (concatenate 'string *kiln-vessel* "/speech.lisp"))
+(load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
+
 (defun kiln-mac-main ()
   "The desk in the window.  A restored snapshot calls this (see below); a source load calls it at once."
   (format t "~&kiln: the desk~%")
+  ;; KILN_STORYBOOK=1 opens the native components' storybook over the desk at start, as on the phone
+  (when (modus-int::%cli-getenv "KILN_STORYBOOK")
+    (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK")))
   (kiln-app-main :top 0 :media nil))
 
 ;; KILN_CORE=PATH: compile the loaded world to native code and SAVE it, rather than run the desk: a later

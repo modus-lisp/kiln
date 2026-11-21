@@ -116,13 +116,19 @@
   "Point DIR's BRANCH at COMMIT, so git agrees with the files cairn just checked out.
 
    Written directly because that is what a ref IS — forty hex digits and a newline in
-   .git/refs/heads/<branch>.  Loose refs win over packed ones, so this is also the whole of
-   what has to change."
+   .git/refs/heads/<branch>.  Loose refs win over packed ones.
+
+   HEAD is pointed at BRANCH too.  The clone left it on the remote's default branch, so
+   when the lock names another (operandi-gui on operandi-on-ios) the pin landed on a ref
+   HEAD did not name, and the image's lock check read the default branch's tip instead."
   (let ((path (format nil "~a/.git/refs/heads/~a" dir branch)))
     (ensure-directories-exist path)
     (with-open-file (out path :direction :output :if-exists :supersede
                               :if-does-not-exist :create)
-      (format out "~a~%" commit))))
+      (format out "~a~%" commit)))
+  (with-open-file (out (format nil "~a/.git/HEAD" dir) :direction :output
+                       :if-exists :supersede :if-does-not-exist :create)
+    (format out "ref: refs/heads/~a~%" branch)))
 
 (defun clone-with-retry (name branch commit)
   "One retry: a TLS handshake or a socket can lose a race under parallelism."

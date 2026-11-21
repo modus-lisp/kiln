@@ -3768,7 +3768,10 @@ cmd_mac() {
   printf '(load "%s")\n' "$world" > "$out/save.lisp"
   rm -f "$res/kiln.core"
   note "loading ${app_name:-the desk} and saving it (a few minutes)"
+  # ITS OWN FASL CACHE, kept between Mac builds: the shared ~/.cache/modus/fasl holds other builds' entries (the
+  # phone's, other layouts'), and one replayed into this image faults it at boot
   env KILN_ROOT="$KILN_ROOT" KILN_QL="$ql" KILN_CORE="$res/kiln.core" KILN_MODUS="$modus" \
+      MODUS_FASL_DIR="$out/fasl" \
     "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
   [[ -f $res/kiln.core ]] || die "kiln mac: ${app_name:-the desk} did not save -- see $out/save.log"
   printf '%s\n' "$entry" > "$res/run.lisp"

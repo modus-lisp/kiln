@@ -57,6 +57,10 @@
 ;; the storybook's GPU and speech stories name these packages (their Swift halves are not on the Mac yet)
 (load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
 (load (concatenate 'string *kiln-vessel* "/speech.lisp"))
+;; the camera (modus's host/ios/swift/Camera.swift): the storybook's camera story names its package
+(load (concatenate 'string *kiln-vessel* "/camera.lisp"))
+;; the microphone's samples (modus's host/ios/swift/Microphone.swift), for the storybook's microphone story
+(load (concatenate 'string *kiln-vessel* "/microphone.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 
 (defun kiln-mac-main ()
@@ -69,9 +73,11 @@
     (when (and chrome (> (length chrome) 0))
       (kiln-mac:window-chrome (intern (string-upcase chrome) :keyword)))
     (when (and title (> (length title) 0)) (kiln-mac:window-title title)))
-  ;; KILN_STORYBOOK=1 opens the native components' storybook over the desk at start, as on the phone
-  (when (modus-int::%cli-getenv "KILN_STORYBOOK")
-    (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK")))
+  ;; KILN_STORYBOOK=1 opens the native components' storybook over the desk at start, as on the phone;
+  ;; KILN_STORYBOOK=NAME opens it at the story NAME (mic, camera, ...)
+  (let ((story (modus-int::%cli-getenv "KILN_STORYBOOK")))
+    (when story
+      (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK") (if (string= story "1") nil story))))
   (kiln-app-main :top 0 :media nil))
 
 ;; KILN_CORE=PATH: compile the loaded world to native code and SAVE it, rather than run the desk: a later

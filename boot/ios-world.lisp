@@ -108,6 +108,10 @@
 ;; build that had chosen one would carry this Mac's key inside the app.
 (when (symbol-value (find-symbol "*LLM-AUTH-TOKEN*" "OPERANDI.LLM"))
   (error "kiln: operandi has an API key set while building the world; it would be saved into the app"))
+;; the camera (modus's host/ios/swift/Camera.swift): the storybook's camera story names its package
+(load (concatenate 'string *kiln-vessel* "/camera.lisp"))
+;; the microphone's samples (modus's host/ios/swift/Microphone.swift), for the storybook's microphone story
+(load (concatenate 'string *kiln-vessel* "/microphone.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))

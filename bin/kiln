@@ -3756,6 +3756,10 @@ cmd_mac() {
     "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
   [[ -f $res/kiln.core ]] || die "kiln mac: ${app_name:-the desk} did not save -- see $out/save.log"
   printf '%s\n' "$entry" > "$res/run.lisp"
+  # SIGNED AGAIN, the core and run.lisp now in it, as build-macos.sh signed it: the bundle's seal covers what it
+  # ships (the executable's code is unchanged, so the core still fits it)
+  local sign=${MODUS_MAC_SIGN:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ { print $2; exit }')}
+  codesign --force --sign "${sign:--}" "$app" >/dev/null 2>&1 || codesign --force --sign - "$app" >/dev/null 2>&1 || true
   note "built $app: run it with kiln mac run${app_name:+ --app=$app_name}"
 }
 

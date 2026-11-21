@@ -3667,6 +3667,8 @@ cmd_clean() {
 #   kiln mac build   builds $KILN_STATE/mac/Modus.app: the native image in the window, with the desk
 #                    loaded from source and saved into it (Contents/Resources/kiln.core).
 #   kiln mac run     restores that snapshot and runs the desk: --core, then --load run.lisp.
+#   kiln mac install copies the built app into ~/Applications (--to=DIR elsewhere), named as --name named it, to
+#                    open from Launchpad, Spotlight, the Dock or the Finder (Resources/modus.args says what it runs).
 #   --app=NAME       another app on the same runtime instead of the desk: its world is boot/NAME-world.lisp (it
 #                    loads the app, and saves it when KILN_CORE is set), built into $KILN_STATE/mac-NAME.
 #   --entry=FORM     the app's entry point, what a run evaluates after the restore (build only; the desk's is
@@ -3683,10 +3685,11 @@ cmd_clean() {
 # has changed.  A snapshot is valid only for the binary that wrote it, so build saves the core last, from the
 # bundle it ships in, every time.
 cmd_mac() {
-  local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon=""
+  local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon="" install_to=""
   while [[ $# -gt 0 ]]; do
     case $1 in
-      build|run) sub=$1 ;;
+      build|run|install) sub=$1 ;;
+      --to=*)    install_to=${1#*=} ;;
       --app=*)   app_name=${1#*=} ;;
       --entry=*) entry=${1#*=} ;;
       --rebuild) rebuild=1 ;;
@@ -3713,6 +3716,19 @@ cmd_mac() {
     [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] ||
       die "kiln mac: no app yet (kiln mac build${app_name:+ --app=$app_name --entry=FORM})"
     exec "$app/Contents/MacOS/modus" --core "$res/kiln.core" --load "$res/run.lisp"
+  fi
+  # INSTALL: the built app copied into ~/Applications (or --to=DIR) under its own name -- Launchpad, Spotlight and
+  # the Dock then have it as any other app.  An earlier copy is replaced.
+  if [[ $sub == install ]]; then
+    [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] ||
+      die "kiln mac: no app yet (kiln mac build${app_name:+ --app=$app_name --entry=FORM})"
+    local shown; shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$app/Contents/Info.plist" 2>/dev/null)
+    local dest="${install_to:-$HOME/Applications}/${shown:-Modus}.app"
+    mkdir -p "$(dirname "$dest")"
+    rm -rf "$dest"
+    ditto "$app" "$dest"
+    note "installed $dest: open it from Launchpad, Spotlight or the Finder"
+    return 0
   fi
   [[ $(uname -s) == Darwin ]] || die "kiln mac: needs macOS"
   command -v sbcl >/dev/null || die "kiln mac: needs sbcl (modus is built with it)"
@@ -3756,6 +3772,9 @@ cmd_mac() {
     "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
   [[ -f $res/kiln.core ]] || die "kiln mac: ${app_name:-the desk} did not save -- see $out/save.log"
   printf '%s\n' "$entry" > "$res/run.lisp"
+  # WHAT THE APP RUNS when it is opened with no arguments -- from the Finder, the Dock, `open' -- one per line, @ a
+  # path from the executable (modus's host/macos/modus-shim.c reads Resources/modus.args)
+  printf '%s\n' --core @../Resources/kiln.core --load @../Resources/run.lisp > "$res/modus.args"
   # THE SAMPLE MEDIA, as kiln ios ships them: a film, a film with sound, and kiln's test pattern (a 440 Hz beep a
   # second, FLAC).  The desk copies them into its own media folder, Samples, the first time it starts.
   rm -rf "$res/media"; mkdir -p "$res/media"

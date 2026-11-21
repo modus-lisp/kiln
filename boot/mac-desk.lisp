@@ -52,6 +52,8 @@
 (load (concatenate 'string *kiln-modus* "/net/term.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-objc.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
+;; the Mac's own: the window's title, chrome and size (modus's host/macos/swift/MacWindow.swift)
+(load (concatenate 'string *kiln-vessel* "/mac-window.lisp"))
 ;; the storybook's GPU and speech stories name these packages (their Swift halves are not on the Mac yet)
 (load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
 (load (concatenate 'string *kiln-vessel* "/speech.lisp"))
@@ -60,6 +62,13 @@
 (defun kiln-mac-main ()
   "The desk in the window.  A restored snapshot calls this (see below); a source load calls it at once."
   (format t "~&kiln: the desk~%")
+  ;; THE WINDOW, as the person asked for it at launch: KILN_MAC_TITLE, and KILN_MAC_CHROME (standard, hidden-title,
+  ;; transparent or none).  Before the desk lays itself out, so it starts clear of a transparent bar.
+  (let ((title (modus-int::%cli-getenv "KILN_MAC_TITLE"))
+        (chrome (modus-int::%cli-getenv "KILN_MAC_CHROME")))
+    (when (and chrome (> (length chrome) 0))
+      (kiln-mac:window-chrome (intern (string-upcase chrome) :keyword)))
+    (when (and title (> (length title) 0)) (kiln-mac:window-title title)))
   ;; KILN_STORYBOOK=1 opens the native components' storybook over the desk at start, as on the phone
   (when (modus-int::%cli-getenv "KILN_STORYBOOK")
     (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK")))

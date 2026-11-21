@@ -3672,18 +3672,27 @@ cmd_clean() {
 #   --entry=FORM     the app's entry point, what a run evaluates after the restore (build only; the desk's is
 #                    (kiln-mac-main)).  The same NAME runs it: kiln mac run --app=NAME.
 #   --rebuild        build the modus image even if modus has not changed since the last build.
+#   --name=NAME      the app's name: the Dock's, the menu bar's, the window's first title (default modus, or the
+#                    --app NAME).  The window's title and chrome change as it runs: vessel's mac-window.lisp; the
+#                    desk takes them at launch from KILN_MAC_TITLE and KILN_MAC_CHROME (standard, hidden-title,
+#                    transparent, none).
+#   --bundle-id=ID   default org.modus-lisp.modus (org.modus-lisp.NAME with --app)
+#   --icon=PNG       the app's icon, a square PNG (1024 x 1024 is best)
 # THE MODUS IMAGE IS REUSED: a build records which modus source it came from (its tracked Lisp, committed or not --
 # not host/, the window host, which every build compiles anyway), and builds the image again only when that source
 # has changed.  A snapshot is valid only for the binary that wrote it, so build saves the core last, from the
 # bundle it ships in, every time.
 cmd_mac() {
-  local sub=build app_name="" entry="" rebuild=0
+  local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon=""
   while [[ $# -gt 0 ]]; do
     case $1 in
       build|run) sub=$1 ;;
       --app=*)   app_name=${1#*=} ;;
       --entry=*) entry=${1#*=} ;;
       --rebuild) rebuild=1 ;;
+      --name=*)  name=${1#*=} ;;
+      --bundle-id=*) bundle_id=${1#*=} ;;
+      --icon=*)  icon=${1#*=}; [[ -f $icon ]] || die "kiln mac: no icon at $icon" ;;
       -h|--help) sed -n '/^# THE MAC APP/,/^cmd_mac/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' >&2; return 0 ;;
       *) die "kiln mac: unknown argument $1 (try kiln mac --help)" ;;
     esac
@@ -3731,7 +3740,11 @@ cmd_mac() {
   else
     note "modus unchanged since its last build: reusing its image (--rebuild builds it anyway)"
   fi
-  ( cd "$modus" && host/macos/build-macos.sh "$out/modus.elf" "$app" gui ) > "$out/runner.log" 2>&1 ||
+  # THE APP'S NAME, identity and icon, in its bundle (modus's host/macos/build-macos.sh)
+  [[ -n $icon ]] && icon=$(cd "$(dirname "$icon")" && pwd)/$(basename "$icon")
+  ( cd "$modus" && env MODUS_MAC_NAME="${name:-${app_name:-modus}}" \
+      MODUS_MAC_BUNDLE_ID="${bundle_id:-org.modus-lisp.${app_name:-modus}}" MODUS_MAC_ICON="$icon" \
+      host/macos/build-macos.sh "$out/modus.elf" "$app" gui ) > "$out/runner.log" 2>&1 ||
     die "kiln mac: the window host failed -- see $out/runner.log"
   mkdir -p "$res"
   # THE WORLD, from source, then saved: the loader runs to save-and-die, so the commands come from a file and

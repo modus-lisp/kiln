@@ -3756,6 +3756,13 @@ cmd_mac() {
     "$app/Contents/MacOS/modus" < "$out/save.lisp" > "$out/save.log" 2>&1 || true
   [[ -f $res/kiln.core ]] || die "kiln mac: ${app_name:-the desk} did not save -- see $out/save.log"
   printf '%s\n' "$entry" > "$res/run.lisp"
+  # THE SAMPLE MEDIA, as kiln ios ships them: a film, a film with sound, and kiln's test pattern (a 440 Hz beep a
+  # second, FLAC).  The desk copies them into its own media folder, Samples, the first time it starts.
+  rm -rf "$res/media"; mkdir -p "$res/media"
+  if [[ -z $app_name ]]; then
+    for f in bbb360.webm wpt-test.webm; do cp "$KILN_ROOT/cassette/vectors/$f" "$res/media/" 2>/dev/null || true; done
+    cp "$KILN_ROOT/kiln/media/"* "$res/media/" 2>/dev/null || true
+  fi
   # SIGNED AGAIN, the core and run.lisp now in it, as build-macos.sh signed it: the bundle's seal covers what it
   # ships (the executable's code is unchanged, so the core still fits it)
   local sign=${MODUS_MAC_SIGN:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ { print $2; exit }')}

@@ -19,12 +19,22 @@
 (dolist (repo '("glass" "cram" "gesso" "scribe" "brotli-pure" "pigment" "stencil" "png-pure" "webp-pure"
                 "quill" "warren" "json-simple"
                 ;; glass depends on cl-transport (its listeners), and glass/audio on reed; both take seal and natrium
-                "cl-transport" "reed" "seal" "natrium"))
+                "cl-transport" "reed" "seal" "natrium"
+                ;; the media player: warp's window over cassette (containers) and reel/reed (video and audio
+                ;; decoders), glass's audio mixing it; Media's Stations are spool's radio
+                "warp" "warp/glass" "warp/media" "cassette" "reel" "spool"
+                ;; spool fetches its streams with weft's fetcher, which decodes zstd
+                "weft" "zstd-pure"
+                ;; Media's Documents tab reads PDFs with folio
+                "folio"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 
 (defvar *desk-systems*
   '("glass/fb" "bordeaux-threads" "cram" "scribe" "gesso" "glass" "glass/text"
     "glass/desk" "glass/wm-core" "glass/mixer-desk" "glass/audio"
+    ;; Media: Music (warp's player), Stations, Pictures, Documents
+    "warp" "warp-glass" "reel" "reed" "cassette" "warp-media" "warp-media/glass"
+    "spool" "glass/media-pictures" "glass/media-documents"
     ;; seal: its UTF-8 encoder is how ios-swift.lisp hands text to the native components
     "seal"))
 
@@ -80,7 +90,7 @@
   (let ((story (modus-int::%cli-getenv "KILN_STORYBOOK")))
     (when story
       (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK") (if (string= story "1") nil story))))
-  (kiln-app-main :top 0 :media nil))
+  (kiln-app-main :top 0 :media t))
 
 ;; KILN_CORE=PATH: compile the loaded world to native code and SAVE it, rather than run the desk: a later
 ;; run starts from the snapshot (modus --core PATH, then (kiln-mac-main)).  The same steps as kiln ios's

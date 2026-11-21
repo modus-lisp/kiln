@@ -36,6 +36,7 @@
 (load (concatenate 'string *kiln-vessel* "/ios-swift.lisp"))
 (load (concatenate 'string *kiln-vessel* "/mac-window.lisp"))
 (load (concatenate 'string *kiln-vessel* "/gpu.lisp"))
+(load (concatenate 'string *kiln-vessel* "/gamepad.lisp"))
 (load (concatenate 'string *kiln-vessel* "/hello3d.lisp"))
 
 ;; KILN_CORE=PATH: compile the world and save it; a run restores it and evaluates the entry, (hello3d:main)

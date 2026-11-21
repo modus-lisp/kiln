@@ -112,6 +112,8 @@
 (load (concatenate 'string *kiln-vessel* "/camera.lisp"))
 ;; the microphone's samples (modus's host/ios/swift/Microphone.swift), for the storybook's microphone story
 (load (concatenate 'string *kiln-vessel* "/microphone.lisp"))
+;; Now Playing and the media keys (modus's host/ios/swift/NowPlaying.swift), for the storybook's playing story
+(load (concatenate 'string *kiln-vessel* "/now-playing.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/watch-storybook.lisp"))
 (load (concatenate 'string *kiln-vessel* "/actions.lisp"))

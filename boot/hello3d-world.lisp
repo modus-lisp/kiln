@@ -15,9 +15,12 @@
   (dolist (d (directory (concatenate 'string *kiln-ql* "/*/")))
     (push d asdf:*central-registry*)))
 ;; seal: its UTF-8 encoder is how ios-swift.lisp hands text to the native components (with natrium beneath it)
-(dolist (repo '("seal" "natrium" "cl-transport"))
+(dolist (repo '("seal" "natrium" "cl-transport"
+                ;; pigment: an image dropped on the window becomes the cubes' faces
+                "pigment" "scribe" "stencil" "webp-pure" "png-pure" "cram" "brotli-pure" "gesso" "reel"))
   (push (concatenate 'string *kiln-root* "/" repo "/") asdf:*central-registry*))
 (asdf:load-system "seal")
+(asdf:load-system "pigment")
 
 ;; the platform's calls, as vessel's ios.lisp makes them (the Mac window answers the same pseudo-syscalls), and
 ;; the frame hooks ios-swift.lisp hangs its event pump on (the desk's app.lisp defines them; there is no desk here)

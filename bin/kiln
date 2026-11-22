@@ -3694,12 +3694,15 @@ cmd_clean() {
 #                    transparent, none, full-bleed).
 #   --bundle-id=ID   default org.modus-lisp.modus (org.modus-lisp.NAME with --app)
 #   --icon=PNG       the app's icon, a square PNG (1024 x 1024 is best)
+#   --url-scheme=S   links S://... open the app, and its Lisp hears them (kiln-mac:on-open); the desk's is modus
+#   --opens=UTIS     what the Finder offers to open with it (Open With), as UTIs, comma-separated -- the desk's are
+#                    audio, video, images and PDFs; never taking a type over from the app that has it
 # THE MODUS IMAGE IS REUSED: a build records which modus source it came from (its tracked Lisp, committed or not --
 # not host/, the window host, which every build compiles anyway), and builds the image again only when that source
 # has changed.  A snapshot is valid only for the binary that wrote it, so build saves the core last, from the
 # bundle it ships in, every time.
 cmd_mac() {
-  local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon="" install_to=""
+  local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon="" install_to="" url_scheme="-" opens="-"
   while [[ $# -gt 0 ]]; do
     case $1 in
       build|run|install) sub=$1 ;;
@@ -3710,6 +3713,8 @@ cmd_mac() {
       --name=*)  name=${1#*=} ;;
       --bundle-id=*) bundle_id=${1#*=} ;;
       --icon=*)  icon=${1#*=}; [[ -f $icon ]] || die "kiln mac: no icon at $icon" ;;
+      --url-scheme=*) url_scheme=${1#*=} ;;
+      --opens=*) opens=${1#*=} ;;
       -h|--help) sed -n '/^# THE MAC APP/,/^cmd_mac/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' >&2; return 0 ;;
       *) die "kiln mac: unknown argument $1 (try kiln mac --help)" ;;
     esac
@@ -3772,8 +3777,17 @@ cmd_mac() {
   fi
   # THE APP'S NAME, identity and icon, in its bundle (modus's host/macos/build-macos.sh)
   [[ -n $icon ]] && icon=$(cd "$(dirname "$icon")" && pwd)/$(basename "$icon")
+  # what it opens: the desk, by default, links modus://... and media files; another app what it says
+  # (plain IFs: a substitution whose test fails ends the script, under set -e)
+  if [[ $url_scheme == - ]]; then
+    if [[ -z $app_name ]]; then url_scheme=modus; else url_scheme=""; fi
+  fi
+  if [[ $opens == - ]]; then
+    if [[ -z $app_name ]]; then opens=public.audio,public.movie,public.image,com.adobe.pdf; else opens=""; fi
+  fi
   ( cd "$modus" && env MODUS_MAC_NAME="${name:-${app_name:-modus}}" \
       MODUS_MAC_BUNDLE_ID="${bundle_id:-org.modus-lisp.${app_name:-modus}}" MODUS_MAC_ICON="$icon" \
+      MODUS_MAC_URL_SCHEME="$url_scheme" MODUS_MAC_OPENS="$opens" \
       host/macos/build-macos.sh "$out/modus.elf" "$app" gui ) > "$out/runner.log" 2>&1 ||
     die "kiln mac: the window host failed -- see $out/runner.log"
   mkdir -p "$res"

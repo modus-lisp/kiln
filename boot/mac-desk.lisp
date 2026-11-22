@@ -82,6 +82,20 @@
 (load (concatenate 'string *kiln-vessel* "/now-playing.lisp"))
 (load (concatenate 'string *kiln-vessel* "/ios-storybook.lisp"))
 
+(defun %kiln-mac-open (what)
+  "A file or folder opened with the desk (the Finder's Open With, `open', dropped on the window), or a modus://
+   link: a folder is opened in Media; a file, its folder opened there and, if Media plays it, played."
+  (format t "~&kiln: opened ~A~%" what)
+  (let* ((sym (find-symbol "*MEDIA-LIBRARY*" "GLASS.DESK"))
+         (lib (and sym (boundp sym) (symbol-value sym))))
+    (when (and lib (plusp (length what)) (char= (char what 0) #\/))
+      (let ((dir (uiop:directory-exists-p what)))
+        (cond (dir (warp-media:library-open lib dir))
+              ((probe-file what)
+               (warp-media:library-open lib (directory-namestring what))
+               (when (warp-media:playable-p what)
+                 (warp-media:play-path (warp-media:library-player lib) (probe-file what)))))))))
+
 (defun kiln-mac-main ()
   "The desk in the window.  A restored snapshot calls this (see below); a source load calls it at once."
   (format t "~&kiln: the desk~%")
@@ -97,6 +111,9 @@
   (let ((story (modus-int::%cli-getenv "KILN_STORYBOOK")))
     (when story
       (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK") (if (string= story "1") nil story))))
+  ;; WHAT IS OPENED WITH THE DESK, or dropped on it: Media opens it where it is, and plays it
+  (kiln-mac:on-open #'%kiln-mac-open)
+  (kiln-mac:on-drop #'%kiln-mac-open)
   (kiln-app-main :top 0 :media t))
 
 ;; KILN_CORE=PATH: compile the loaded world to native code and SAVE it, rather than run the desk: a later

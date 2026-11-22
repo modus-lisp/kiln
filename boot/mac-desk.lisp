@@ -112,6 +112,9 @@
     (when story
       (funcall (find-symbol "STORYBOOK" "KILN-STORYBOOK") (if (string= story "1") nil story))))
   ;; WHAT IS OPENED WITH THE DESK, or dropped on it: Media opens it where it is, and plays it
+  ;; FILE > PRINT: the desk's window as it looks
+  (let ((file (kiln-mac:menu "File")))
+    (kiln-mac:menu-item file "Print..." (lambda () (kiln-mac:print-window "Desk")) :key "p"))
   (kiln-mac:on-open #'%kiln-mac-open)
   (kiln-mac:on-drop #'%kiln-mac-open)
   (kiln-app-main :top 0 :media t))

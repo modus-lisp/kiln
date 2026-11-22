@@ -3393,8 +3393,10 @@ kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep]
 
   KILN_MODUS / KILN_VESSEL name a modus / vessel checkout to build from instead.
   Takes ~10 minutes: the image build (~4), the install under QEMU (~5), the disk.
-  On the machine: the desk comes up ~30 s after the BIOS hands over.  A byte on COM1
-  (where there is one) gets the REPL; so does the desk's Terminal window.
+  On the machine: the desk comes up ~30 s after the BIOS hands over; its Terminal window
+  evaluates Lisp.  What the console prints goes to the disk's sectors 64000-68095:
+    dd if=OUT.img bs=512 skip=64001 count=4095 2>/dev/null | tr -d '\0'
+  (the header at 64000 holds the byte count).
 USAGE
         return 0 ;;
       *) die "kiln t420: unknown argument $arg (try --help)" ;;
@@ -3525,7 +3527,12 @@ EOF
   kill "$srv" 2>/dev/null
 
   # THE DISK
-  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" > "$out/disk.log" 2>&1) \
+  # THE LOG REGION: the desk writes what its console prints to the disk's sectors 64000-68095
+  # (vessel src/t420.lisp *T4-LOG-LBA*): a PC has no serial port to read.  The disk is padded to
+  # hold them, after MODUS.BIN, which must end first.
+  local bin_sec=$(( ($(stat -c %s "$out/modus-desk.bin") + 511) / 512 + 15 ))
+  (( bin_sec < 64000 )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at 64000"
+  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors 68096 > "$out/disk.log" 2>&1) \
     || die "kiln t420: writing the disk failed (see $out/disk.log)"
   [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold}
   note "t420: $out_img ($(du -h "$out_img" | cut -f1)) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"

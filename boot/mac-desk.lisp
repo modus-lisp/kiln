@@ -35,6 +35,8 @@
     ;; Media: Music (warp's player), Stations, Pictures, Documents
     "warp" "warp-glass" "reel" "reed" "cassette" "warp-media" "warp-media/glass"
     "spool" "glass/media-pictures" "glass/media-documents"
+    ;; Files: warren, the column file browser
+    "warren"
     ;; seal: its UTF-8 encoder is how ios-swift.lisp hands text to the native components
     "seal"))
 
@@ -50,6 +52,8 @@
 ;; root menu, as on the desk everywhere else.  Set after ios.lisp, before app.lisp reads it.
 (setq *kiln-desk-layout* :float)
 (load (concatenate 'string *kiln-vessel* "/app.lisp"))
+;; FILES: warren in a desk window, rooted at home (vessel's mac-files.lisp, the phone's files.lisp for a Mac)
+(load (concatenate 'string *kiln-vessel* "/mac-files.lisp"))
 ;; A Mac has a person's home: Media offers their Music, Movies, Downloads and home at its root, and its + opens
 ;; any folder where it is (kept as a place) rather than copying files into the app's own.
 (setq *kiln-home-places* t)
@@ -116,7 +120,8 @@
   (let ((file (kiln-mac:menu "File")))
     (kiln-mac:menu-item file "Print..." (lambda () (kiln-mac:print-window "Desk")) :key "p"))
   (kiln-mac:on-open #'%kiln-mac-open)
-  (kiln-mac:on-drop #'%kiln-mac-open)
+  ;; A FILE DROPPED ON THE DESK is shown in Files (warren), its folder open and it selected
+  (kiln-mac:on-drop (lambda (path) (format t "~&kiln: dropped ~A~%" path) (kiln-files:reveal path)))
   (kiln-app-main :top 0 :media t))
 
 ;; KILN_CORE=PATH: compile the loaded world to native code and SAVE it, rather than run the desk: a later

@@ -3701,6 +3701,7 @@ cmd_clean() {
 # not host/, the window host, which every build compiles anyway), and builds the image again only when that source
 # has changed.  A snapshot is valid only for the binary that wrote it, so build saves the core last, from the
 # bundle it ships in, every time.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 cmd_mac() {
   local sub=build app_name="" entry="" rebuild=0 name="" bundle_id="" icon="" install_to="" url_scheme="-" opens="-"
   while [[ $# -gt 0 ]]; do
@@ -3749,6 +3750,9 @@ cmd_mac() {
     trap 'kill $opener $tailer 2>/dev/null; pkill -f "$app/Contents/MacOS/modus" 2>/dev/null; rm -f "$log"' INT TERM
     wait $opener || true
     sleep 0.3; kill $tailer 2>/dev/null || true; rm -f "$log"
+    # an installed copy is the app macOS should open (a notification clicked, a link): this one forgotten again
+    local shown; shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$app/Contents/Info.plist" 2>/dev/null)
+    [[ -d $HOME/Applications/${shown:-Modus}.app ]] && "$LSREGISTER" -u "$app" 2>/dev/null
     return 0
   fi
   # INSTALL: the built app copied into ~/Applications (or --to=DIR) under its own name -- Launchpad, Spotlight and
@@ -3761,6 +3765,10 @@ cmd_mac() {
     mkdir -p "$(dirname "$dest")"
     rm -rf "$dest"
     ditto "$app" "$dest"
+    # ONE COPY FOR macOS: the build's, which has the same identity, is forgotten -- a notification clicked, or a link,
+    # opened it as a second app beside the installed one
+    "$LSREGISTER" -u "$app" 2>/dev/null || true
+    "$LSREGISTER" -f "$dest" 2>/dev/null || true
     note "installed $dest: open it from Launchpad, Spotlight or the Finder"
     return 0
   fi

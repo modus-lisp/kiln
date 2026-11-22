@@ -2111,6 +2111,9 @@ kiln ios serve — install the last --ota builds on a phone over the network (bi
   --install    install it (and launch it): the booted Simulator, or the device
   --app=hello3d  hello, world in 3D (vessel's hello3d.lisp; boot/hello3d-world.lisp), org.modus-lisp.hello3d,
                built in $KILN_STATE/hello3d
+  --app=NAME   another app on the same runtime, instead of the modus desk: hello3d (above), or an app whose
+               own repo, beside kiln, says how it is built in NAME/kiln-app.sh -- sourced here, it sets out,
+               bundle_id, app_name, entry, app_world (a path), rotates, and icon and icon_dark
   --ota        (device) also package it for an over-the-air install: $KILN_STATE/ota/modus.ipa (or
                NAME.ipa, with --app=NAME), which `kiln ios serve` offers to any phone on the network -- https://THIS-MAC.local:8443/,
                after a one-time certificate setup at http://THIS-MAC.local:8080/
@@ -2142,7 +2145,10 @@ USAGE
     # hello, world in 3D (vessel's hello3d.lisp): the GPU, a game controller, sound in 3D, and two thumbs on the glass
     hello3d) out=$KILN_STATE/hello3d bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.hello3d} app_name="Hello 3D"
              entry='(hello3d:main :touch t)' app_world=hello3d-world.lisp rotates=1 ;;
-    *) die "kiln ios: no app named $app (try --help)" ;;
+    # AN APP FROM ITS OWN REPO: NAME/kiln-app.sh, beside kiln, says how it is built (its world lives there too)
+    *) [[ -f $KILN_ROOT/$app/kiln-app.sh ]] || die "kiln ios: no app named $app (no $KILN_ROOT/$app/kiln-app.sh)"
+       # shellcheck disable=SC1090
+       source "$KILN_ROOT/$app/kiln-app.sh" ;;
   esac
   [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
   # THE LAYOUT, at about 4 GB: the phone's launchd refuses the image's reservations up near 13 GB (ENOMEM at
@@ -2222,7 +2228,8 @@ USAGE
         KILN_ROOT="$KILN_ROOT" KILN_VESSEL="$VESSEL/src" KILN_QL="$ql" KILN_CORE="$out/kiln.core" \
         KILN_MODUS="$modus" \
         MODUS_SLIDE="$s" \
-        "$out/modus-mac" --script "$ROOT/boot/$world" > "$out/world.log" 2>&1 || true
+        "$out/modus-mac" --script "$([[ $world == /* ]] && echo "$world" || echo "$ROOT/boot/$world")" \
+          > "$out/world.log" 2>&1 || true
       [[ -f $out/kiln.core ]] && break
       note "no snapshot with the world slid by $s on the Mac: trying the next"
     done

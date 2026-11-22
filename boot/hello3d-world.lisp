@@ -44,6 +44,7 @@
 (load (concatenate 'string *kiln-vessel* "/gamepad.lisp"))
 (load (concatenate 'string *kiln-vessel* "/sound.lisp"))
 (load (concatenate 'string *kiln-vessel* "/notify.lisp"))
+(load (concatenate 'string *kiln-vessel* "/location.lisp"))
 (load (concatenate 'string *kiln-vessel* "/motion.lisp"))
 (load (concatenate 'string *kiln-vessel* "/link.lisp"))
 (load (concatenate 'string *kiln-vessel* "/hello3d.lisp"))

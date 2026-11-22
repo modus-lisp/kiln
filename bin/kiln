@@ -3411,13 +3411,13 @@ USAGE
   [[ ${#miss[@]} -eq 0 ]] || die "kiln t420: missing ${miss[*]}.
   Debian/Ubuntu:  sudo apt install sbcl git python3 qemu-system-x86 binutils gcc"
   if [[ $workspace == 0 ]]; then
-    KILN_ROOT=$(zero_sources vessel brotli-pure cram scribe glass modus --) || exit 1
+    KILN_ROOT=$(zero_sources vessel brotli-pure cram scribe glass quill modus --) || exit 1
     note "t420: sources at repos.lock's pins in $KILN_ROOT"
   fi
   local modus=${KILN_MODUS:-$KILN_ROOT/modus} vessel=${KILN_VESSEL:-$KILN_ROOT/vessel} r
   [[ -f $modus/mvm/build-i386-cl-repl.lisp ]] || die "kiln t420: no modus checkout at $modus"
   [[ -f $vessel/src/t420.lisp ]] || die "kiln t420: $vessel has no src/t420.lisp (a vessel with the PC desk)"
-  for r in brotli-pure cram scribe glass; do
+  for r in brotli-pure cram scribe glass quill; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln t420: no $r checkout at $KILN_ROOT/$r"
   done
   local out=$KILN_STATE/t420 sys f
@@ -3443,6 +3443,13 @@ USAGE
 EOF
   for f in packages record framebuffer text desk; do
     cp "$KILN_ROOT/glass/src/$f.lisp" "$sys/src/glass-$f.lisp"; done
+  # the Terminal as a terminal: glass/term's VT grid and parser, quill as its line editor,
+  # vessel's window over them (zero-term.lisp: nothing in it is the Zero's)
+  [[ -d $KILN_ROOT/quill/src ]] || die "kiln t420: no quill checkout at $KILN_ROOT/quill"
+  for f in package port keys buffer history render editor; do
+    cp "$KILN_ROOT/quill/src/$f.lisp" "$sys/src/quill-$f.lisp"; done
+  cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
+  cp "$vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
   cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
@@ -3467,10 +3474,15 @@ EOF
                    (:file "otl") (:file "hint") (:file "metrics") (:file "color")))
      (:file "glass-packages") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
-     (:file "t420") (:file "app") (:file "t420-desk")))))
+     (:file "t420") (:file "app")
+     (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
+     (:file "quill-history") (:file "quill-render") (:file "quill-editor")
+     (:file "glass-term") (:file "zero-term")
+     (:file "t420-desk")))))
 EOF
   (cd "$out" && tar cf t420-desk.tar t420-desk)
-  cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" "$out/"
+  cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" \
+     "$KILN_ROOT/scribe/fonts/LiberationMono-Regular.ttf" "$out/"
   python3 - "$out" <<'EOF'
 import os, sys
 out = sys.argv[1]
@@ -3485,12 +3497,13 @@ def pieces(name, src):
         entries.append('("%s/%s" %d %d)' % (name, fn, len(chunk), h))
     open(os.path.join(out, name + ".lisp"), "w").write("(" + " ".join(entries) + ")")
 pieces("tar", "t420-desk.tar"); pieces("regular", "LiberationSans-Regular.ttf"); pieces("bold", "LiberationSans-Bold.ttf")
+pieces("mono", "LiberationMono-Regular.ttf")
 EOF
 
   # THE IMAGE: modus's bare i386 CL image, the network built in and not started (the install
   # runs it), the native tier (it stays off while the core is built: SAVELATER)
   note "t420: building the i386 image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
-  (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_VESSEL="$vessel" MODUS_I386_JIT=1 \
+  (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_NET_NOFETCH=1 MODUS_VESSEL="$vessel" MODUS_I386_JIT=1 \
      MODUS_I386_COLD_KEEP=mvm/i386-keep.txt MODUS_I386_FP=x87 MODUS_CL_REPL_OUT="$out/modus.bin" \
      sbcl --dynamic-space-size 12288 --script mvm/build-i386-cl-repl.lisp > "$out/image-build.log" 2>&1) \
     || die "kiln t420: image build failed (see $out/image-build.log)"
@@ -3504,12 +3517,13 @@ EOF
     echo "(progn (setq modus-int::*tar-block-size* 512) (defvar *kz-tar* nil) (setq *kz-tar* (kz-fetch \"$base\" (quote $(cat "$out/tar.lisp")))) (if *kz-tar* (length *kz-tar*) (error \"t420: the desk system did not arrive\")))"
     echo '(modus-int::install-tarball-from-bytes *kz-tar*)'
     echo "(progn (setq *kz-tar* nil) (let ((reg (kz-fetch \"$base\" (quote $(cat "$out/regular.lisp")))) (bold (kz-fetch \"$base\" (quote $(cat "$out/bold.lisp"))))) (unless (and reg bold) (error \"t420: the fonts did not arrive\")) (setf glass::*font-regular* (scribe:open-font reg) glass::*font-bold* (scribe:open-font bold))) :fonts)"
+    echo "(let ((mono (kz-fetch \"$base\" (quote $(cat "$out/mono.lisp"))))) (unless mono (error \"t420: the mono font did not arrive\")) (setf *kiln-mono-font* (scribe:open-font mono)) :mono)"
     # GLYPHS INTO THE CORE: the first time a character is drawn at a size, scribe rasterizes and
     # hints it -- ~0.5 s each under QEMU, a visible hitch on the T420 -- and glass caches it.  So
     # the sizes the desk draws (app.lisp: chrome 16, Terminal 14, Notes 17 and its bold title 22,
-    # the Clock's digits at 40) are rasterized here at each of the four quarter-pixel positions
+    # the Clock's digits at 40; the VT Terminal's Liberation Mono at 14) are rasterized here at each of the four quarter-pixel positions
     # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
-    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 14 16 17)) (warm ascii sz (glass:default-font))) (warm ascii 22 (glass:default-font t)) (warm "0123456789:" 40 (glass:default-font)))) n)'
+    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 14 16 17)) (warm ascii sz (glass:default-font))) (warm ascii 22 (glass:default-font t)) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
     echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
   } > "$out/forms.txt"
   ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &
@@ -3534,7 +3548,7 @@ EOF
   (( bin_sec < 64000 )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at 64000"
   (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors 68096 > "$out/disk.log" 2>&1) \
     || die "kiln t420: writing the disk failed (see $out/disk.log)"
-  [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold}
+  [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold,mono}
   note "t420: $out_img ($(du -h "$out_img" | cut -f1)) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"
 }
 

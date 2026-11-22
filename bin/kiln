@@ -3394,9 +3394,9 @@ kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep]
   KILN_MODUS / KILN_VESSEL name a modus / vessel checkout to build from instead.
   Takes ~10 minutes: the image build (~4), the install under QEMU (~5), the disk.
   On the machine: the desk comes up ~30 s after the BIOS hands over; its Terminal window
-  evaluates Lisp.  What the console prints goes to the disk's sectors 64000-68095:
+  evaluates Lisp.  What the console prints goes to the disk's sectors 128000-132095:
     dd if=OUT.img bs=512 skip=64001 count=4095 2>/dev/null | tr -d '\0'
-  (the header at 64000 holds the byte count).
+  (the header at 128000 holds the byte count).
 USAGE
         return 0 ;;
       *) die "kiln t420: unknown argument $arg (try --help)" ;;
@@ -3430,7 +3430,7 @@ USAGE
     cp "$KILN_ROOT/brotli-pure/src/$f.lisp" "$sys/src/brotli-$f.lisp"; done
   for f in packages deflate inflate prefix lzw tar; do
     cp "$KILN_ROOT/cram/src/$f.lisp" "$sys/src/cram-$f.lisp"; done
-  for f in packages blend font woff cmap cff var glyf raster shape otl hint color; do
+  for f in packages blend font woff cmap cff var glyf raster shape otl hint match color threads; do
     cp "$KILN_ROOT/scribe/src/$f.lisp" "$sys/src/scribe/$f.lisp"; done
   for f in hmtx os_2 post name cmap-0 cmap-4 cmap-12; do
     cp "$KILN_ROOT/scribe/src/tables/$f.lisp" "$sys/src/scribe/tables/$f.lisp"; done
@@ -3441,8 +3441,12 @@ USAGE
 (defun font-descent (font) (cdr (assoc "descent" (parse-hhea font) :test #'string=)))
 (defun font-line-gap (font) (cdr (assoc "lineGap" (parse-hhea font) :test #'string=)))
 EOF
-  for f in packages record framebuffer text desk; do
+  for f in packages wordlist record framebuffer text desk; do
     cp "$KILN_ROOT/glass/src/$f.lisp" "$sys/src/glass-$f.lisp"; done
+  # THE WINDOW MANAGER: glass/wm-core (glass.wm without its server) -- vessel's app.lisp makes
+  # the desk with it wherever the image has it, as the phone's and the Mac's do
+  for f in package chrome wm rack; do
+    cp "$KILN_ROOT/glass/src/wm/$f.lisp" "$sys/src/glass-wm-$f.lisp"; done
   # the Terminal as a terminal: glass/term's VT grid and parser, quill as its line editor,
   # vessel's window over them (zero-term.lisp: nothing in it is the Zero's)
   [[ -d $KILN_ROOT/quill/src ]] || die "kiln t420: no quill checkout at $KILN_ROOT/quill"
@@ -3471,9 +3475,11 @@ EOF
                    (:file "tables/name") (:file "cmap") (:file "tables/cmap-0")
                    (:file "tables/cmap-4") (:file "tables/cmap-12") (:file "cff")
                    (:file "var") (:file "glyf") (:file "raster") (:file "shape")
-                   (:file "otl") (:file "hint") (:file "metrics") (:file "color")))
-     (:file "glass-packages") (:file "glass-record") (:file "glass-framebuffer")
+                   (:file "otl") (:file "hint") (:file "metrics") (:file "match") (:file "color")
+                   (:file "threads")))
+     (:file "glass-packages") (:file "glass-wordlist") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
+     (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
      (:file "t420") (:file "app")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor")
@@ -3541,12 +3547,12 @@ EOF
   kill "$srv" 2>/dev/null
 
   # THE DISK
-  # THE LOG REGION: the desk writes what its console prints to the disk's sectors 64000-68095
+  # THE LOG REGION: the desk writes what its console prints to the disk's sectors 128000-132095
   # (vessel src/t420.lisp *T4-LOG-LBA*): a PC has no serial port to read.  The disk is padded to
   # hold them, after MODUS.BIN, which must end first.
   local bin_sec=$(( ($(stat -c %s "$out/modus-desk.bin") + 511) / 512 + 15 ))
-  (( bin_sec < 64000 )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at 64000"
-  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors 68096 > "$out/disk.log" 2>&1) \
+  (( bin_sec < 128000 )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at 128000"
+  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors 132096 > "$out/disk.log" 2>&1) \
     || die "kiln t420: writing the disk failed (see $out/disk.log)"
   [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold,mono}
   note "t420: $out_img ($(du -h "$out_img" | cut -f1)) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"

@@ -44,6 +44,8 @@
 (load (concatenate 'string *kiln-vessel* "/gamepad.lisp"))
 (load (concatenate 'string *kiln-vessel* "/sound.lisp"))
 (load (concatenate 'string *kiln-vessel* "/notify.lisp"))
+(load (concatenate 'string *kiln-vessel* "/motion.lisp"))
+(load (concatenate 'string *kiln-vessel* "/link.lisp"))
 (load (concatenate 'string *kiln-vessel* "/hello3d.lisp"))
 
 ;; KILN_CORE=PATH: compile the world and save it; a run restores it and evaluates the entry, (hello3d:main)

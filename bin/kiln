@@ -2139,18 +2139,21 @@ USAGE
   local ql=${KILN_QL:-$HOME/quicklisp/dists/quicklisp/software}
   local out=$KILN_STATE/ios bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.modus} app_name=modus entry='(kiln-ios-main)'
   # ANOTHER APP on the same runtime and layout: its own world, entry point, bundle id and name, built beside
-  local app_world="" rotates=0 icon="" icon_dark=""
+  local app_world="" rotates=0 icon="" icon_dark="" watch_world="" watch_entry=""
   case $app in
     "") ;;
     # hello, world in 3D (vessel's hello3d.lisp): the GPU, a game controller, sound in 3D, and two thumbs on the glass
     hello3d) out=$KILN_STATE/hello3d bundle_id=${MODUS_IOS_BUNDLE_ID:-org.modus-lisp.hello3d} app_name="Hello 3D"
-             entry='(hello3d:main :touch t)' app_world=hello3d-world.lisp rotates=1 ;;
+             entry='(hello3d:main :touch t)' app_world=hello3d-world.lisp rotates=1
+             # and its watch app (watch-device): the watch's sensors, sent to the phone as it plays
+             watch_world=hello3d-watch-world.lisp watch_entry='(kiln-hello3d-watch:run)' ;;
     # AN APP FROM ITS OWN REPO: NAME/kiln-app.sh, beside kiln, says how it is built (its world lives there too)
     *) [[ -f $KILN_ROOT/$app/kiln-app.sh ]] || die "kiln ios: no app named $app (no $KILN_ROOT/$app/kiln-app.sh)"
        # shellcheck disable=SC1090
        source "$KILN_ROOT/$app/kiln-app.sh" ;;
   esac
-  [[ -z $app || $kind == sim || $kind == device ]] || die "kiln ios: --app is for the phone (sim or device)"
+  [[ -z $app || $kind == sim || $kind == device || ( $kind == watch-device && -n $watch_world ) ]] ||
+    die "kiln ios: --app is for the phone (sim or device), or watch-device for an app with a watch app"
   # THE LAYOUT, at about 4 GB: the phone's launchd refuses the image's reservations up near 13 GB (ENOMEM at
   # spawn), and accepts them at 4.25 GB.  The Mac runner slides it by 12 GB, past the Mac's shared cache.
   # THE WATCH's is up at 12 GB (host/watch/build-watch.sh), a build of its own: the watch Simulator's dyld maps
@@ -2186,6 +2189,8 @@ USAGE
   # phone's snapshot is 200 MB).
   if [[ $kind == watch-device ]]; then
     out=$KILN_STATE/watch-device fasl_dir=$KILN_STATE/watch-device/fasl world=watch-world.lisp
+    # an app's watch app: its own world, built beside the storybook's, and the phone app its companion
+    if [[ -n $app ]]; then out=$KILN_STATE/$app-watch fasl_dir=$KILN_STATE/$app-watch/fasl world=$watch_world; fi
     code_base=300010000 conv_delta=2F5000000 heap_base=306000000 arena_base=312000000
     heap_size=B000000 midpoint=5000000
     layout_extra="MODUS_REGION_SIZE=1100000 MODUS_JIT_ARENA_SIZE=2000000 MODUS_DARWIN_TSD_KEY=150"
@@ -2241,7 +2246,7 @@ USAGE
   if [[ $kind == watch ]]; then
     printf '%s\n' --core @kiln.core --eval '(kiln-watch-main)' > "$out/modus.args"
   elif [[ $kind == watch-device ]]; then
-    printf '%s\n' --core @kiln.core --eval '(kiln-watch-run)' > "$out/modus.args"   # vessel/src/watch.lisp
+    printf '%s\n' --core @kiln.core --eval "${watch_entry:-(kiln-watch-run)}" > "$out/modus.args"   # vessel/src/watch.lisp
   elif [[ -n $autoplay && -z $app ]]; then
     printf '%s\n' --core @kiln.core --eval "(kiln-ios-main :autoplay \"$autoplay\")" > "$out/modus.args"
   else
@@ -2288,6 +2293,7 @@ USAGE
   note "packaging the $kind app"
   if [[ $kind == watch-device ]]; then
     ( cd "$modus" && MODUS_CORE="$out/kiln.core" MODUS_WATCH_BUNDLE_ID="$app_id" \
+        MODUS_WATCH_COMPANION="${app:+$bundle_id}" MODUS_WATCH_NAME="${app:+$app_name}" \
         MODUS_WATCH_FILES="$out/kiln.core $out/modus.args" \
         host/watch/build-watch.sh "$out/modus.elf" "$out/Modus-watch.app" device "$ident" "$profile" ) \
       > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
@@ -2327,10 +2333,15 @@ USAGE
     xcrun simctl launch "$watch" "$bundle_id.watch" >/dev/null && note "launched in the watch Simulator ($watch)"
     return 0
   fi
+  # an app's watch app, built (watch-device --app=NAME), goes inside the phone's: the phone links to it only there
+  local watch_app=""
+  [[ $kind == device && -n $watch_world && -d $KILN_STATE/$app-watch/Modus-watch.app ]] &&
+    { watch_app=$KILN_STATE/$app-watch/Modus-watch.app; note "with its watch app, $watch_app"; }
   ( cd "$modus" && MODUS_IN_PLACE=1 MODUS_CORE="$out/kiln.core" MODUS_IOS_BUNDLE_ID="$bundle_id" \
       MODUS_IOS_NAME="$app_name" MODUS_IOS_ROTATES="$rotates" \
       MODUS_IOS_ICON="$icon" MODUS_IOS_ICON_DARK="$icon_dark" \
       MODUS_IOS_FILES="$out/kiln.core $out/modus.args $out/media $out/fonts" \
+      MODUS_IOS_WATCH_APP="$watch_app" \
       host/ios/build-ios.sh "$out/modus.elf" "$out/Modus-$kind.app" "$kind" "$ident" "$profile" ) \
     > "$out/package.log" 2>&1 || die "kiln ios: packaging failed — see $out/package.log"
   note "app       $out/Modus-$kind.app"

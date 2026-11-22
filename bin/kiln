@@ -3734,7 +3734,22 @@ cmd_mac() {
   if [[ $sub == run ]]; then
     [[ -x $app/Contents/MacOS/modus && -f $res/kiln.core ]] ||
       die "kiln mac: no app yet (kiln mac build${app_name:+ --app=$app_name --entry=FORM})"
-    exec "$app/Contents/MacOS/modus" --core "$res/kiln.core" --load "$res/run.lisp"
+    # THROUGH LAUNCH SERVICES (open), not exec'd from this shell: macOS asks for privacy-sensitive things (the
+    # headphones' motion, the camera) on behalf of the app that is RESPONSIBLE for the process, and a program a
+    # terminal starts is the terminal's -- whose Info.plist has no reason for them, so the request killed the app.
+    # Its output comes back here; KILN_* and MODUS_* go with it.  It reads what to run from its own
+    # Resources/modus.args.  Interrupting this quits it.
+    local log; log=$(mktemp -t kiln-mac-run)
+    local envs=()
+    while IFS= read -r v; do envs+=(--env "$v"); done < <(env | grep -E '^(KILN|MODUS)_[A-Z_]*=' || true)
+    open -n -W --stdout "$log" --stderr "$log" ${envs[@]+"${envs[@]}"} "$app" &
+    local opener=$!
+    tail -n +1 -f "$log" &
+    local tailer=$!
+    trap 'kill $opener $tailer 2>/dev/null; pkill -f "$app/Contents/MacOS/modus" 2>/dev/null; rm -f "$log"' INT TERM
+    wait $opener || true
+    sleep 0.3; kill $tailer 2>/dev/null || true; rm -f "$log"
+    return 0
   fi
   # INSTALL: the built app copied into ~/Applications (or --to=DIR) under its own name -- Launchpad, Spotlight and
   # the Dock then have it as any other app.  An earlier copy is replaced.

@@ -3457,6 +3457,14 @@ EOF
   cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
   cp "$vessel/src/t420-usb.lisp" "$sys/src/t420-usb.lisp"
   cp "$vessel/src/t420-gpu.lisp" "$sys/src/t420-gpu.lisp"
+  # hardware video decode: reel's H.264 parser keeps the headers, references and output order,
+  # and the GPU's video engine decodes (t420-video.lisp); reel's own decoder rides along
+  [[ -d $KILN_ROOT/reel/src/h264 ]] || die "kiln t420: no reel checkout at $KILN_ROOT/reel"
+  cp "$KILN_ROOT/reel/src/packages.lisp" "$sys/src/reel-packages.lisp"
+  for f in bits tables scaling-tables transform8-tables params picture cavlc cabac-tables \
+           transform transform8 intra intra8 motion slice cabac deblock-tables deblock decode; do
+    cp "$KILN_ROOT/reel/src/h264/$f.lisp" "$sys/src/reel-h264-$f.lisp"; done
+  cp "$vessel/src/t420-video.lisp" "$sys/src/t420-video.lisp"
   cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
@@ -3484,6 +3492,14 @@ EOF
      (:file "glass-text") (:file "glass-desk")
      (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
      (:file "t420") (:file "t420-usb") (:file "app") (:file "t420-gpu")
+     (:file "reel-packages")
+     (:file "reel-h264-bits") (:file "reel-h264-tables") (:file "reel-h264-scaling-tables")
+     (:file "reel-h264-transform8-tables") (:file "reel-h264-params") (:file "reel-h264-picture")
+     (:file "reel-h264-cavlc") (:file "reel-h264-cabac-tables") (:file "reel-h264-transform")
+     (:file "reel-h264-transform8") (:file "reel-h264-intra") (:file "reel-h264-intra8")
+     (:file "reel-h264-motion") (:file "reel-h264-slice") (:file "reel-h264-cabac")
+     (:file "reel-h264-deblock-tables") (:file "reel-h264-deblock") (:file "reel-h264-decode")
+     (:file "t420-video")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor")
      (:file "glass-term") (:file "zero-term")

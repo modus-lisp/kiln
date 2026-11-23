@@ -3468,6 +3468,7 @@ EOF
     cp "$KILN_ROOT/reel/src/mpeg2/$f.lisp" "$sys/src/reel-mpeg2-$f.lisp"; done
   cp "$vessel/src/t420-video.lisp" "$sys/src/t420-video.lisp"
   cp "$vessel/src/t420-video-mpeg2.lisp" "$sys/src/t420-video-mpeg2.lisp"
+  cp "$vessel/src/t420-video-vc1.lisp" "$sys/src/t420-video-vc1.lisp"
   cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
@@ -3505,7 +3506,7 @@ EOF
      (:file "reel-mpeg2-tables") (:file "reel-mpeg2-bits") (:file "reel-mpeg2-headers")
      (:file "reel-mpeg2-idct") (:file "reel-mpeg2-motion") (:file "reel-mpeg2-slice")
      (:file "reel-mpeg2-decode")
-     (:file "t420-video") (:file "t420-video-mpeg2")
+     (:file "t420-video") (:file "t420-video-mpeg2") (:file "t420-video-vc1")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor")
      (:file "glass-term") (:file "zero-term")

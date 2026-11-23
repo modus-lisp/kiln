@@ -3456,6 +3456,7 @@ EOF
   cp "$vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
   cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
   cp "$vessel/src/t420-usb.lisp" "$sys/src/t420-usb.lisp"
+  cp "$vessel/src/t420-gpu.lisp" "$sys/src/t420-gpu.lisp"
   cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
@@ -3482,7 +3483,7 @@ EOF
      (:file "glass-packages") (:file "glass-wordlist") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
      (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
-     (:file "t420") (:file "t420-usb") (:file "app")
+     (:file "t420") (:file "t420-usb") (:file "app") (:file "t420-gpu")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor")
      (:file "glass-term") (:file "zero-term")

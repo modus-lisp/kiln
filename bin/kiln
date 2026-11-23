@@ -3455,6 +3455,8 @@ EOF
   cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
   cp "$vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
   cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
+  cp "$vessel/src/t420-usb.lisp" "$sys/src/t420-usb.lisp"
+  cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
   cat > "$sys/t420-desk.asd" <<'EOF'
@@ -3480,11 +3482,11 @@ EOF
      (:file "glass-packages") (:file "glass-wordlist") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
      (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
-     (:file "t420") (:file "app")
+     (:file "t420") (:file "t420-usb") (:file "app")
      (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
      (:file "quill-history") (:file "quill-render") (:file "quill-editor")
      (:file "glass-term") (:file "zero-term")
-     (:file "t420-desk")))))
+     (:file "t420-settings") (:file "t420-desk")))))
 EOF
   (cd "$out" && tar cf t420-desk.tar t420-desk)
   cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" \

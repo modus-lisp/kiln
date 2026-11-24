@@ -3456,6 +3456,8 @@ EOF
   cp "$vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
   cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
   cp "$vessel/src/t420-usb.lisp" "$sys/src/t420-usb.lisp"
+  cp "$vessel/src/t420-usb-disk.lisp" "$sys/src/t420-usb-disk.lisp"
+  cp "$vessel/src/t420-usb-audio.lisp" "$sys/src/t420-usb-audio.lisp"
   cp "$vessel/src/t420-gpu.lisp" "$sys/src/t420-gpu.lisp"
   # hardware video decode: reel's H.264 parser keeps the headers, references and output order,
   # and the GPU's video engine decodes (t420-video.lisp); reel's own decoder rides along
@@ -3495,7 +3497,7 @@ EOF
      (:file "glass-packages") (:file "glass-wordlist") (:file "glass-record") (:file "glass-framebuffer")
      (:file "glass-text") (:file "glass-desk")
      (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
-     (:file "t420") (:file "t420-usb") (:file "app") (:file "t420-gpu")
+     (:file "t420") (:file "t420-usb") (:file "t420-usb-disk") (:file "t420-usb-audio") (:file "app") (:file "t420-gpu")
      (:file "reel-packages")
      (:file "reel-h264-bits") (:file "reel-h264-tables") (:file "reel-h264-scaling-tables")
      (:file "reel-h264-transform8-tables") (:file "reel-h264-params") (:file "reel-h264-picture")
@@ -3553,9 +3555,12 @@ EOF
     # GLYPHS INTO THE CORE: the first time a character is drawn at a size, scribe rasterizes and
     # hints it -- ~0.5 s each under QEMU, a visible hitch on the T420 -- and glass caches it.  So
     # the sizes the desk draws (app.lisp: chrome 16, Terminal 14, Notes 17 and its bold title 22,
+    # Settings and the panes 12 and 13, regular and bold -- measured: 318 glyphs drawn cold there
+    # in one session, 9 ms each on the T420, so a pane's first view stalled ~0.5 s; bold also at
+    # the regular sizes),
     # the Clock's digits at 40; the VT Terminal's Liberation Mono at 14) are rasterized here at each of the four quarter-pixel positions
     # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
-    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 14 16 17)) (warm ascii sz (glass:default-font))) (warm ascii 22 (glass:default-font t)) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
+    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 12 13 14 16 17)) (warm ascii sz (glass:default-font))) (dolist (sz (list 12 13 14 16 17 22)) (warm ascii sz (glass:default-font t))) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
     echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
     # EVERYTHING NATIVE BEFORE THE SAVE: the tier translates a function at its first call,
     # so whatever the install did not call -- the Terminal, each Settings pane, the players --

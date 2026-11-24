@@ -3557,6 +3557,12 @@ EOF
     # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
     echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 14 16 17)) (warm ascii sz (glass:default-font))) (warm ascii 22 (glass:default-font t)) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
     echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
+    # EVERYTHING NATIVE BEFORE THE SAVE: the tier translates a function at its first call,
+    # so whatever the install did not call -- the Terminal, each Settings pane, the players --
+    # paused the desk the first time it was used.  The core carries the code area, so
+    # translating every module here ships it hot.  (The area is a sixteenth of the RAM, up to
+    # ~103 MB: boot-i386-cl.lisp +I386-CL-JIT-MAX+; 64 MB under this 1 GB QEMU.)
+    echo '(let ((n (modus-int::%jit-eager-all))) (list :jit-eager n modus-int::*n386-translated* (- modus-int::*n386-ptr* #x12000000) modus-int::*n386-why* (length modus-int::*n386-refused*)))'
   } > "$out/forms.txt"
   ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &
   local srv=$!

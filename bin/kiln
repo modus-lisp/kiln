@@ -36,6 +36,8 @@
 #   kiln lock             refresh repos.lock from the org's live refs
 #   kiln sync [DIR]       every org repo beside kiln: clone what is missing,
 #                         fast-forward what is safe to (--locked: only repos.lock's)
+#   kiln windows          on a Windows PC: build modus.exe with modus, install vessel's apps
+#                         (Hello 3D, Storybook, chirp) in the Start menu
 #   kiln clean            remove the container and the image
 #
 # Env: KILN_ENGINE, KILN_IMAGE, KILN_NAME, KILN_DNS, KILN_HEAP,
@@ -3701,6 +3703,96 @@ cmd_sync() {
     bash "$ROOT/boot/sync.sh" "$dest" ${flags[@]+"${flags[@]}"}
 }
 
+cmd_windows() {
+  # VESSEL'S APPS ON THIS WINDOWS PC, installed: modus.exe built from the workspace's modus checkout by modus itself
+  # (dist's release builder; no SBCL), put in %LOCALAPPDATA%\Programs\Vessel as vessel.exe, and Hello 3D, the
+  # Storybook and chirp in the Start menu, each under its own App User Model ID so its notifications are toasts.
+  # Nothing needs an administrator.  Runs in Git Bash, where `kiln sync' runs.
+  #
+  # TWO STAGES, because a builder carries its own compiled copy of modus's mvm/ and boot/: a change there (a runtime
+  # fix) reaches modus.exe only through a builder built from the same tree.  So stage 1 builds that builder with
+  # dist's, and stage 2 builds modus.exe with it.  The tree is a clean, LF-only worktree of the checkout's commit
+  # (a CRLF checkout -- core.autocrlf -- builds different bytes), in kiln/.kiln-win/modus-build.
+  local build=1 from="HEAD" dest="" a
+  for a in "$@"; do
+    case $a in
+      --no-build) build=0 ;;
+      --from=*)   from=${a#*=} ;;
+      --dest=*)   dest=${a#*=} ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln windows [--no-build] [--from=REF] [--dest=DIR] — vessel's apps, installed on this Windows PC.
+
+  Builds modus.exe from the workspace's modus checkout (REF, default HEAD) with dist's release builder, in two
+  stages (a builder from the tree, then modus.exe from that builder), installs it as DIR\vessel.exe (default
+  %LOCALAPPDATA%\Programs\Vessel), and puts Hello 3D, Storybook and chirp in the Start menu.  The apps read their
+  Lisp from this workspace.  --no-build installs the last build again.  No administrator; Git Bash.
+USAGE
+        return 0 ;;
+      *) die "windows: unknown argument $a (kiln windows --help)" ;;
+    esac
+  done
+  case $(uname -s) in MINGW*|MSYS*|CYGWIN*) ;; *) die "kiln windows: run it on Windows, in Git Bash" ;; esac
+  local ws=$KILN_ROOT modus=$KILN_ROOT/modus state=$ROOT/.kiln-win
+  local tree=$state/modus-build
+  [[ -d $modus/.git || -f $modus/.git ]] || die "no modus checkout at $modus (kiln sync)"
+  [[ -n $dest ]] || dest=$(cygpath -u "${LOCALAPPDATA:?no LOCALAPPDATA}")/Programs/Vessel
+  mkdir -p "$state" "$dest"
+
+  if (( build )); then
+    local builder commit
+    builder=$(ls -d "$ws"/dist/bin/*/modus-builder-windows-x64.exe 2>/dev/null | sort | tail -1)
+    [[ -n $builder ]] || die "no release builder in $ws/dist/bin (kiln sync)"
+    commit=$(git -C "$modus" rev-parse --verify "$from^{commit}") || die "no commit $from in $modus"
+    if [[ -e $tree/.git ]]; then
+      git -C "$tree" -c core.autocrlf=false checkout -q --detach "$commit"
+    else
+      git -C "$modus" -c core.autocrlf=false worktree add -q --detach "$tree" "$commit"
+    fi
+    git -C "$tree" config core.autocrlf false
+    note "modus $(git -C "$tree" log --oneline -1), built by $(basename "$(dirname "$builder")")'s builder"
+    note "stage 1: a builder from this tree (a few minutes)"
+    ( cd "$tree" && MODUS_BUILDER=1 MODUS_NARROW_STRINGS=1 MODUS_FASL=0 MODUS_WIN64_OUT=builder.exe \
+        "$builder" --script mvm/build-win64-cli.lisp ) > "$state/stage1.log" 2>&1 \
+      || { tail -5 "$state/stage1.log" >&2
+           grep -q "MVM-TEXT" "$state/stage1.log" &&
+             note "this modus commit cannot be built by modus yet: it needs the selfhost-build branch's builder support"
+           die "stage 1 failed: $state/stage1.log"; }
+    note "stage 2: modus.exe from that builder"
+    ( cd "$tree" && MODUS_FASL=0 MODUS_WIN64_OUT=modus.exe ./builder.exe --script mvm/build-win64-cli.lisp ) \
+      > "$state/stage2.log" 2>&1 || { tail -5 "$state/stage2.log" >&2; die "stage 2 failed: $state/stage2.log"; }
+    printf '(princ (+ 1 2))\n' > "$state/check.lisp"
+    [[ $("$tree/modus.exe" --script "$(cygpath -w "$state/check.lisp")" 2>/dev/null | tail -c 1) == 3 ]] \
+      || die "the new modus.exe does not run"
+  fi
+  [[ -f $tree/modus.exe ]] || die "no build to install (run kiln windows without --no-build)"
+
+  cp -f "$tree/modus.exe" "$dest/vessel.exe"
+  # Windows 10 compatibility, so Windows does not treat it as an older app (child windows may then be layered: a
+  # view can fade).  mt.exe is the Windows SDK's; without it the exe runs as it is.
+  local mt
+  mt=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/mt.exe 2>/dev/null | sort | tail -1)
+  if [[ -n $mt ]]; then
+    cat > "$state/vessel.exe.manifest" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application><supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/></application>
+  </compatibility>
+</assembly>
+XML
+    "$mt" -nologo -manifest "$(cygpath -w "$state/vessel.exe.manifest")" \
+      "-outputresource:$(cygpath -w "$dest/vessel.exe");#1" >/dev/null || note "mt.exe failed: no manifest"
+  else
+    note "no Windows SDK mt.exe: vessel.exe without its compatibility manifest (views cannot fade)"
+  fi
+  note "installed $(cygpath -w "$dest/vessel.exe")"
+  VESSEL_INSTALL_EXE=$(cygpath -w "$dest/vessel.exe") \
+    "$dest/vessel.exe" --script "$(cygpath -m "$ws/vessel/windows/install.lisp")" 2>&1 | grep -E '^install:' >&2 \
+    || die "the Start menu items were not made"
+  note "in the Start menu: Hello 3D, Storybook, chirp"
+}
+
 cmd_lock() {
   # NO CONTAINER.  This reads each repo's info/refs through cairn — pure Common
   # Lisp git over seal's TLS, one HTTPS GET apiece, no GitHub API and so no token
@@ -3941,6 +4033,7 @@ case "${1:-}" in
   speech) shift; cmd_speech "$@" ;;
   lock)  shift; cmd_lock ;;
   sync)  shift; cmd_sync "$@" ;;
+  windows) shift; cmd_windows "$@" ;;
   clean) shift; cmd_clean ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try --help)" ;;

@@ -3668,13 +3668,13 @@ USAGE
   [[ ${#miss[@]} -eq 0 ]] || die "kiln t420: missing ${miss[*]}.
   Debian/Ubuntu:  sudo apt install sbcl git python3 qemu-system-x86 binutils gcc"
   if [[ $workspace == 0 ]]; then
-    KILN_ROOT=$(zero_sources vessel brotli-pure cram scribe glass quill modus --) || exit 1
+    KILN_ROOT=$(zero_sources vessel brotli-pure cram scribe glass quill reel modus --) || exit 1
     note "t420: sources at repos.lock's pins in $KILN_ROOT"
   fi
   local modus=${KILN_MODUS:-$KILN_ROOT/modus} vessel=${KILN_VESSEL:-$KILN_ROOT/vessel} r
   [[ -f $modus/mvm/build-i386-cl-repl.lisp ]] || die "kiln t420: no modus checkout at $modus"
   [[ -f $vessel/src/t420.lisp ]] || die "kiln t420: $vessel has no src/t420.lisp (a vessel with the PC desk)"
-  for r in brotli-pure cram scribe glass quill; do
+  for r in brotli-pure cram scribe glass quill reel; do
     [[ -d $KILN_ROOT/$r/src ]] || die "kiln t420: no $r checkout at $KILN_ROOT/$r"
   done
   local out=$KILN_STATE/t420 sys f

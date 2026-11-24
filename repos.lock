@@ -15,12 +15,12 @@ cl-sev-snp      main    dfa76291c00f13f68c46e14cc59e542ec28b0619
 cl-tor          master  1ffbfe8b8e4ec17dbb315e458ea09597427b6cfd
 cl-transport    master  e8767dad3dc958e5800d01cb047a8737526a4ce2
 conch           master  6a7f67ab71c845e2b729829bb64b7f1ee5dff470
-cram            master  b6585dec83aef61c02218b63e1d62da4b1c82a93
+cram            master  3b2ebfbd1881a2a815092e2ad60d1837ed8f6e42
 dist            main    f3ebe6577ac6e54f6a4721724c4c60a5f62fcccc
 folio           master  f418fc5e4aaf15fef306e63768b9d436818215d9
 fs-fat          main    e7dac888e0c912e898f1ec3ecd1bd9dbbb134cf7
 gesso           master  6981f2d1fc5c0af7ffd2ea97666387226df08fb0
-glass           master  3d38b762295b5afb421728339e717b05e68c58b5
+glass           master  4c1b9ab3f43d4c93bd9af3b55ec2b2ba6ee77e8f
 glass-sdl       master  5a5e0e10cbe49a853d1758576f0cb6af6f86eb61
 glass-webrtc    master  d7825edfe3fa4154d9110fc810d4b0599baa1383
 illatio         main    3baed4beff987a72b24a15dd3e1d1cb8a2c45410
@@ -37,7 +37,7 @@ png-pure        main    074357cd479638960faf07fb45d0199a9d440e4b
 quill           master  af1e68ad60e67daa90227280c5099bbfce51749d
 reed            master  9992a5a51576944fc584e6d9af5095de2db92e25
 reel            master  8dcaa237ce74c4923f2bf827ba8dfcb3cdff3093
-scribe          master  6e4b82415dea72e6efe65347b1c985c7162116a9
+scribe          master  d6c6442f0f49ad0d885d722085c21080a80e5a67
 seal            master  d5032b6abb204fc54eba02631dd89a6405b19c69
 secp256k1-fast  master  e49023e0617024638b46713273c784aefc6d3ab9
 shuttle         master  4406e01cf306efc175a2cdaae98e87a41824d143

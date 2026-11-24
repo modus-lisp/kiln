@@ -30,6 +30,7 @@
 #   kiln image TARGET ... an attestable bare-metal modus image + core (x64-uefi | zero2w)
 #   kiln ios [sim|device] the iPhone app: glass on the phone's screen (built here)
 #   kiln android          the Android app: the same, as an APK (built here)
+#   kiln t420 --sd-image=OUT.img   the desk on a PC (ThinkPad T420): a disk to boot
 #   kiln test             glass's RFB self-test, in a throwaway container
 #   kiln profiles         saved flag sets: kiln local ... --save-profile=NAME
 #   kiln speech           voices and recognizers: what is here, and fetch more
@@ -3611,6 +3612,249 @@ EOF
   fi
 }
 
+cmd_t420() {
+  # THE DESK ON A PC, bare-metal modus on 32-bit x86: the ThinkPad T420 first.  One disk image
+  # (a USB stick or an SD card behind a USB reader; any BIOS, or a UEFI machine's CSM, boots
+  # it) that starts straight into the desk -- vessel/src/app.lisp's desk over
+  # vessel/src/t420.lisp, the VBE framebuffer, the PS/2 keyboard and the TrackPoint/touchpad.
+  #
+  # How, as `kiln zero --sd-image' does it for the Pi: build modus's bare i386 image from the
+  # modus checkout (networking built in, not started), boot it under QEMU with SAVELATER, have
+  # it fetch the desk system from here over QEMU's user network and install it (one ASDF system,
+  # 16 KB pieces each checked against an FNV-1a manifest), set the core's restart hook to the
+  # desk and save the core (modus scripts/dos386-core.py).  Then write a disk that boots it
+  # (modus scripts/pcboot.sh): no DOS, no GRUB, the core in MODUS.BIN.
+  local out_img="" workspace=0 port=8099 keep=0 log_lba=262144
+  while [[ $# -gt 0 ]]; do
+    local arg=$1 val=""
+    [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
+    case $arg in
+      --sd-image|--image) out_img=${val:?--sd-image=OUT.img} ;;
+      --workspace) workspace=1 ;;
+      --port) port=${val:?--port=N} ;;
+      --keep) keep=1 ;;
+      --log-lba) log_lba=${val:?--log-lba=SECTOR} ;;
+      -h|--help)
+        cat >&2 <<'USAGE'
+kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep] [--log-lba=SECTOR]
+  — the desk on a PC with a BIOS (or a UEFI machine's CSM), 32-bit bare-metal modus:
+    write OUT.img to a USB stick or SD card and boot it.  Built and tested on a ThinkPad T420.
+
+  --sd-image=OUT.img  the disk to write (dd if=OUT.img of=/dev/sdX bs=4M conv=fsync)
+  --workspace         build from the sibling checkouts as they are (for working on them).
+                      The default is every repo at repos.lock's pin under $KILN_STATE/src
+  --port=N            the port this machine serves the desk system on to the QEMU guest
+                      during the build (default 8099; QEMU's user network, nothing else sees it)
+  --keep              keep the build directory ($KILN_STATE/t420)
+  --log-lba=SECTOR    where the desk's log (4096 sectors, the command sectors 2560 in) goes
+                      (default 262144, 128 MB in: MODUS.BIN must end before it)
+
+  KILN_MODUS / KILN_VESSEL name a modus / vessel checkout to build from instead.
+  Takes ~10 minutes: the image build (~4), the install under QEMU (~5), the disk.
+  On the machine: the desk comes up ~30 s after the BIOS hands over; its Terminal window
+  evaluates Lisp.  What the console prints goes to the disk's sectors from the log LBA on
+  (the header there holds the byte count; the text follows):
+    dd if=OUT.img bs=512 skip=$((LOG+1)) count=4095 2>/dev/null | tr -d '\0'
+  It also goes to 10.0.0.1:7778 as UDP once the network is up.
+USAGE
+        return 0 ;;
+      *) die "kiln t420: unknown argument $arg (try --help)" ;;
+    esac
+    shift
+  done
+  [[ -n $out_img ]] || die "kiln t420: --sd-image=OUT.img is required (try --help)"
+  out_img=$(realpath -m "$out_img")
+  local -a miss=(); local c
+  have_sbcl || miss+=("sbcl")
+  for c in git python3 qemu-system-i386 as ld cc; do command -v "$c" >/dev/null 2>&1 || miss+=("$c"); done
+  [[ ${#miss[@]} -eq 0 ]] || die "kiln t420: missing ${miss[*]}.
+  Debian/Ubuntu:  sudo apt install sbcl git python3 qemu-system-x86 binutils gcc"
+  if [[ $workspace == 0 ]]; then
+    KILN_ROOT=$(zero_sources vessel brotli-pure cram scribe glass quill reel modus --) || exit 1
+    note "t420: sources at repos.lock's pins in $KILN_ROOT"
+  fi
+  local modus=${KILN_MODUS:-$KILN_ROOT/modus} vessel=${KILN_VESSEL:-$KILN_ROOT/vessel} r
+  [[ -f $modus/mvm/build-i386-cl-repl.lisp ]] || die "kiln t420: no modus checkout at $modus"
+  [[ -f $vessel/src/t420.lisp ]] || die "kiln t420: $vessel has no src/t420.lisp (a vessel with the PC desk)"
+  for r in brotli-pure cram scribe glass quill reel; do
+    [[ -d $KILN_ROOT/$r/src ]] || die "kiln t420: no $r checkout at $KILN_ROOT/$r"
+  done
+  local out=$KILN_STATE/t420 sys f
+  sys=$out/t420-desk
+  rm -rf "$out"; mkdir -p "$sys/src/scribe/tables"
+
+  # THE DESK SYSTEM: kiln zero's file set, less the board's network and shell, plus the PC
+  # platform layer around app.lisp
+  for f in packages bitio tables huffman dict decompress brotli; do
+    cp "$KILN_ROOT/brotli-pure/src/$f.lisp" "$sys/src/brotli-$f.lisp"; done
+  for f in packages deflate inflate prefix lzw tar; do
+    cp "$KILN_ROOT/cram/src/$f.lisp" "$sys/src/cram-$f.lisp"; done
+  for f in packages blend font woff cmap cff var glyf raster shape otl hint match color threads; do
+    cp "$KILN_ROOT/scribe/src/$f.lisp" "$sys/src/scribe/$f.lisp"; done
+  for f in hmtx os_2 post name cmap-0 cmap-4 cmap-12; do
+    cp "$KILN_ROOT/scribe/src/tables/$f.lisp" "$sys/src/scribe/tables/$f.lisp"; done
+  cat > "$sys/src/scribe/metrics.lisp" <<'EOF'
+;;;; From scribe's src/match.lisp, which the desk leaves out.
+(in-package :scribe)
+(defun font-ascent (font) (cdr (assoc "ascent" (parse-hhea font) :test #'string=)))
+(defun font-descent (font) (cdr (assoc "descent" (parse-hhea font) :test #'string=)))
+(defun font-line-gap (font) (cdr (assoc "lineGap" (parse-hhea font) :test #'string=)))
+EOF
+  for f in packages wordlist record framebuffer text desk; do
+    cp "$KILN_ROOT/glass/src/$f.lisp" "$sys/src/glass-$f.lisp"; done
+  # THE WINDOW MANAGER: glass/wm-core (glass.wm without its server) -- vessel's app.lisp makes
+  # the desk with it wherever the image has it, as the phone's and the Mac's do
+  for f in package chrome wm rack; do
+    cp "$KILN_ROOT/glass/src/wm/$f.lisp" "$sys/src/glass-wm-$f.lisp"; done
+  # the Terminal as a terminal: glass/term's VT grid and parser, quill as its line editor,
+  # vessel's window over them (zero-term.lisp: nothing in it is the Zero's)
+  [[ -d $KILN_ROOT/quill/src ]] || die "kiln t420: no quill checkout at $KILN_ROOT/quill"
+  for f in package port keys buffer history render editor; do
+    cp "$KILN_ROOT/quill/src/$f.lisp" "$sys/src/quill-$f.lisp"; done
+  cp "$KILN_ROOT/glass/src/term.lisp" "$sys/src/glass-term.lisp"
+  cp "$vessel/src/zero-term.lisp" "$sys/src/zero-term.lisp"
+  cp "$vessel/src/t420.lisp" "$sys/src/t420.lisp"
+  cp "$vessel/src/t420-usb.lisp" "$sys/src/t420-usb.lisp"
+  cp "$vessel/src/t420-usb-disk.lisp" "$sys/src/t420-usb-disk.lisp"
+  cp "$vessel/src/t420-usb-audio.lisp" "$sys/src/t420-usb-audio.lisp"
+  cp "$vessel/src/t420-gpu.lisp" "$sys/src/t420-gpu.lisp"
+  # hardware video decode: reel's H.264 parser keeps the headers, references and output order,
+  # and the GPU's video engine decodes (t420-video.lisp); reel's own decoder rides along
+  [[ -d $KILN_ROOT/reel/src/h264 ]] || die "kiln t420: no reel checkout at $KILN_ROOT/reel"
+  cp "$KILN_ROOT/reel/src/packages.lisp" "$sys/src/reel-packages.lisp"
+  for f in bits tables scaling-tables transform8-tables params picture cavlc cabac-tables \
+           transform transform8 intra intra8 motion slice cabac deblock-tables deblock decode; do
+    cp "$KILN_ROOT/reel/src/h264/$f.lisp" "$sys/src/reel-h264-$f.lisp"; done
+  for f in tables bits headers idct motion slice decode; do
+    cp "$KILN_ROOT/reel/src/mpeg2/$f.lisp" "$sys/src/reel-mpeg2-$f.lisp"; done
+  cp "$vessel/src/t420-video.lisp" "$sys/src/t420-video.lisp"
+  cp "$vessel/src/t420-video-mpeg2.lisp" "$sys/src/t420-video-mpeg2.lisp"
+  cp "$vessel/src/t420-video-vc1.lisp" "$sys/src/t420-video-vc1.lisp"
+  cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
+  cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
+  cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
+  cat > "$sys/t420-desk.asd" <<'EOF'
+;;;; kiln t420's desk, as ONE system in load order (the image installs one tarball).
+(asdf:defsystem :t420-desk
+  :serial t
+  :components
+  ((:module "src" :serial t
+    :components
+    ((:file "brotli-packages") (:file "brotli-bitio") (:file "brotli-tables")
+     (:file "brotli-huffman") (:file "brotli-dict") (:file "brotli-decompress")
+     (:file "brotli-brotli")
+     (:file "cram-packages") (:file "cram-deflate") (:file "cram-inflate")
+     (:file "cram-prefix") (:file "cram-lzw") (:file "cram-tar")
+     (:module "scribe" :serial t
+      :components ((:file "packages") (:file "blend") (:file "font") (:file "woff")
+                   (:file "tables/hmtx") (:file "tables/os_2") (:file "tables/post")
+                   (:file "tables/name") (:file "cmap") (:file "tables/cmap-0")
+                   (:file "tables/cmap-4") (:file "tables/cmap-12") (:file "cff")
+                   (:file "var") (:file "glyf") (:file "raster") (:file "shape")
+                   (:file "otl") (:file "hint") (:file "metrics") (:file "match") (:file "color")
+                   (:file "threads")))
+     (:file "glass-packages") (:file "glass-wordlist") (:file "glass-record") (:file "glass-framebuffer")
+     (:file "glass-text") (:file "glass-desk")
+     (:file "glass-wm-package") (:file "glass-wm-chrome") (:file "glass-wm-wm") (:file "glass-wm-rack")
+     (:file "t420") (:file "t420-usb") (:file "t420-usb-disk") (:file "t420-usb-audio") (:file "app") (:file "t420-gpu")
+     (:file "reel-packages")
+     (:file "reel-h264-bits") (:file "reel-h264-tables") (:file "reel-h264-scaling-tables")
+     (:file "reel-h264-transform8-tables") (:file "reel-h264-params") (:file "reel-h264-picture")
+     (:file "reel-h264-cavlc") (:file "reel-h264-cabac-tables") (:file "reel-h264-transform")
+     (:file "reel-h264-transform8") (:file "reel-h264-intra") (:file "reel-h264-intra8")
+     (:file "reel-h264-motion") (:file "reel-h264-slice") (:file "reel-h264-cabac")
+     (:file "reel-h264-deblock-tables") (:file "reel-h264-deblock") (:file "reel-h264-decode")
+     (:file "reel-mpeg2-tables") (:file "reel-mpeg2-bits") (:file "reel-mpeg2-headers")
+     (:file "reel-mpeg2-idct") (:file "reel-mpeg2-motion") (:file "reel-mpeg2-slice")
+     (:file "reel-mpeg2-decode")
+     (:file "t420-video") (:file "t420-video-mpeg2") (:file "t420-video-vc1")
+     (:file "quill-package") (:file "quill-port") (:file "quill-keys") (:file "quill-buffer")
+     (:file "quill-history") (:file "quill-render") (:file "quill-editor")
+     (:file "glass-term") (:file "zero-term")
+     (:file "t420-settings") (:file "t420-desk")))))
+EOF
+  (cd "$out" && tar cf t420-desk.tar t420-desk)
+  cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" \
+     "$KILN_ROOT/scribe/fonts/LiberationMono-Regular.ttf" "$out/"
+  python3 - "$out" <<'EOF'
+import os, sys
+out = sys.argv[1]
+def pieces(name, src):
+    d = os.path.join(out, name); os.makedirs(d, exist_ok=True)
+    data = open(os.path.join(out, src), "rb").read(); entries = []
+    for i in range(0, len(data), 16384):
+        chunk = data[i:i+16384]; h = 2166136261
+        for b in chunk: h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+        fn = "p%04d" % (i // 16384)
+        open(os.path.join(d, fn), "wb").write(chunk)
+        entries.append('("%s/%s" %d %d)' % (name, fn, len(chunk), h))
+    open(os.path.join(out, name + ".lisp"), "w").write("(" + " ".join(entries) + ")")
+pieces("tar", "t420-desk.tar"); pieces("regular", "LiberationSans-Regular.ttf"); pieces("bold", "LiberationSans-Bold.ttf")
+pieces("mono", "LiberationMono-Regular.ttf")
+EOF
+
+  # THE IMAGE: modus's bare i386 CL image, the network built in and not started (the install
+  # runs it), the native tier (it stays off while the core is built: SAVELATER)
+  note "t420: building the i386 image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
+  (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_NET_NOFETCH=1 MODUS_VESSEL="$vessel" MODUS_I386_JIT=1 \
+     MODUS_I386_COLD_KEEP=mvm/i386-keep.txt MODUS_I386_FP=x87 MODUS_CL_REPL_OUT="$out/modus.bin" \
+     sbcl --dynamic-space-size 12288 --script mvm/build-i386-cl-repl.lisp > "$out/image-build.log" 2>&1) \
+    || die "kiln t420: image build failed (see $out/image-build.log)"
+
+  # THE CORE: the image installs the desk from here, then saves itself
+  local base="http://10.0.2.2:$port/"
+  { echo '(run-net-pipeline)'
+    echo '(defun kz-fnv (arr n) (let ((h 2166136261) (i 0)) (loop (when (>= i n) (return h)) (setq h (logand (* (logxor h (aref arr i)) 16777619) 4294967295)) (setq i (+ i 1)))))'
+    echo '(defun kz-piece (url n hash) (let ((tries 0)) (loop (when (> tries 30) (return nil)) (let ((tb (modus-int::net-fetch-bytes url))) (when (and tb (= (cdr tb) n) (= (kz-fnv (car tb) n) hash)) (return (car tb)))) (setq tries (+ tries 1)))))'
+    echo '(defun kz-fetch (base m) (let* ((total (let ((s 0)) (dolist (e m s) (setq s (+ s (cadr e)))))) (v (make-array total :element-type (quote (unsigned-byte 8)))) (off 0)) (dolist (e m v) (let ((p (kz-piece (concatenate (quote string) base (car e)) (cadr e) (caddr e)))) (when (null p) (return nil)) (replace v p :start1 off) (setq off (+ off (cadr e)))))))'
+    echo "(progn (setq modus-int::*tar-block-size* 512) (defvar *kz-tar* nil) (setq *kz-tar* (kz-fetch \"$base\" (quote $(cat "$out/tar.lisp")))) (if *kz-tar* (length *kz-tar*) (error \"t420: the desk system did not arrive\")))"
+    echo '(modus-int::install-tarball-from-bytes *kz-tar*)'
+    echo "(progn (setq *kz-tar* nil) (let ((reg (kz-fetch \"$base\" (quote $(cat "$out/regular.lisp")))) (bold (kz-fetch \"$base\" (quote $(cat "$out/bold.lisp"))))) (unless (and reg bold) (error \"t420: the fonts did not arrive\")) (setf glass::*font-regular* (scribe:open-font reg) glass::*font-bold* (scribe:open-font bold))) :fonts)"
+    echo "(let ((mono (kz-fetch \"$base\" (quote $(cat "$out/mono.lisp"))))) (unless mono (error \"t420: the mono font did not arrive\")) (setf *kiln-mono-font* (scribe:open-font mono)) :mono)"
+    # GLYPHS INTO THE CORE: the first time a character is drawn at a size, scribe rasterizes and
+    # hints it -- ~0.5 s each under QEMU, a visible hitch on the T420 -- and glass caches it.  So
+    # the sizes the desk draws (app.lisp: chrome 16, Terminal 14, Notes 17 and its bold title 22,
+    # Settings and the panes 12 and 13, regular and bold -- measured: 318 glyphs drawn cold there
+    # in one session, 9 ms each on the T420, so a pane's first view stalled ~0.5 s; bold also at
+    # the regular sizes),
+    # the Clock's digits at 40; the VT Terminal's Liberation Mono at 14) are rasterized here at each of the four quarter-pixel positions
+    # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
+    echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 12 13 14 16 17)) (warm ascii sz (glass:default-font))) (dolist (sz (list 12 13 14 16 17 22)) (warm ascii sz (glass:default-font t))) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
+    echo "(progn (setq *t4-log-lba* $log_lba *t4-cmd-lba* $((log_lba + 2560))) :log-lba)"
+    echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
+    # EVERYTHING NATIVE BEFORE THE SAVE: the tier translates a function at its first call,
+    # so whatever the install did not call -- the Terminal, each Settings pane, the players --
+    # paused the desk the first time it was used.  The core carries the code area, so
+    # translating every module here ships it hot.  (The area is a sixteenth of the RAM, up to
+    # ~103 MB: boot-i386-cl.lisp +I386-CL-JIT-MAX+; 64 MB under this 1 GB QEMU.)
+    echo '(let ((n (modus-int::%jit-eager-all))) (list :jit-eager n modus-int::*n386-translated* (- modus-int::*n386-ptr* #x12000000) modus-int::*n386-why* (length modus-int::*n386-refused*)))'
+  } > "$out/forms.txt"
+  ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &
+  local srv=$!
+  note "t420: installing the desk into the image under QEMU (~5 min)"
+  # The native tier runs during the install (CORE_APPEND empty: no SAVELATER) and the core
+  # carries its code area: the install is faster native, and the bare i386 interpreter has
+  # a bignum fault on this workload (FNV over the pieces) that the native code does not.
+  if ! (cd "$modus" && CORE_APPEND="" CORE_FORMS="$out/forms.txt" CORE_LOG="$out/core-serial.log" QEMU_MEM=1024 QEMU_CPU=SandyBridge \
+          QEMU_EXTRA="-device e1000,netdev=n0 -netdev user,id=n0" \
+          python3 scripts/dos386-core.py "$out/modus.bin" "$out/modus-desk.bin" > "$out/core.log" 2>&1); then
+    kill "$srv" 2>/dev/null
+    die "kiln t420: building the core failed (see $out/core.log and $out/core-serial.log)"
+  fi
+  kill "$srv" 2>/dev/null
+
+  # THE DISK
+  # THE LOG REGION: the desk writes what its console prints to 4096 sectors at --log-lba
+  # (vessel src/t420.lisp *T4-LOG-LBA*): a PC has no serial port to read.  The disk is padded to
+  # hold them, after MODUS.BIN, which must end first.
+  local bin_sec=$(( ($(stat -c %s "$out/modus-desk.bin") + 511) / 512 + 15 ))
+  (( bin_sec < log_lba )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at $log_lba (--log-lba)"
+  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors $((log_lba + 4096)) > "$out/disk.log" 2>&1) \
+    || die "kiln t420: writing the disk failed (see $out/disk.log)"
+  [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold,mono}
+  note "t420: $out_img ($(du -h "$out_img" | cut -f1)) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"
+}
+
 cmd_modus_rfb() {
   # glass's RFB server, running on MODUS instead of on SBCL, in the image.
   #
@@ -4027,6 +4271,7 @@ case "${1:-}" in
   ios) shift; cmd_ios "$@" ;;
   android) shift; cmd_android "$@" ;;
   zero) shift; cmd_zero "$@" ;;
+  t420) shift; cmd_t420 "$@" ;;
   desktop) shift; cmd_desktop "$@" ;;
   profiles) shift; cmd_profiles ;;
   build) shift; cmd_build "$@" ;;

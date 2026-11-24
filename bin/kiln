@@ -3369,7 +3369,7 @@ cmd_t420() {
   # 16 KB pieces each checked against an FNV-1a manifest), set the core's restart hook to the
   # desk and save the core (modus scripts/dos386-core.py).  Then write a disk that boots it
   # (modus scripts/pcboot.sh): no DOS, no GRUB, the core in MODUS.BIN.
-  local out_img="" workspace=0 port=8099 keep=0
+  local out_img="" workspace=0 port=8099 keep=0 log_lba=262144
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -3378,9 +3378,10 @@ cmd_t420() {
       --workspace) workspace=1 ;;
       --port) port=${val:?--port=N} ;;
       --keep) keep=1 ;;
+      --log-lba) log_lba=${val:?--log-lba=SECTOR} ;;
       -h|--help)
         cat >&2 <<'USAGE'
-kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep]
+kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep] [--log-lba=SECTOR]
   — the desk on a PC with a BIOS (or a UEFI machine's CSM), 32-bit bare-metal modus:
     write OUT.img to a USB stick or SD card and boot it.  Built and tested on a ThinkPad T420.
 
@@ -3390,13 +3391,16 @@ kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep]
   --port=N            the port this machine serves the desk system on to the QEMU guest
                       during the build (default 8099; QEMU's user network, nothing else sees it)
   --keep              keep the build directory ($KILN_STATE/t420)
+  --log-lba=SECTOR    where the desk's log (4096 sectors, the command sectors 2560 in) goes
+                      (default 262144, 128 MB in: MODUS.BIN must end before it)
 
   KILN_MODUS / KILN_VESSEL name a modus / vessel checkout to build from instead.
   Takes ~10 minutes: the image build (~4), the install under QEMU (~5), the disk.
   On the machine: the desk comes up ~30 s after the BIOS hands over; its Terminal window
-  evaluates Lisp.  What the console prints goes to the disk's sectors 128000-132095:
-    dd if=OUT.img bs=512 skip=64001 count=4095 2>/dev/null | tr -d '\0'
-  (the header at 128000 holds the byte count).
+  evaluates Lisp.  What the console prints goes to the disk's sectors from the log LBA on
+  (the header there holds the byte count; the text follows):
+    dd if=OUT.img bs=512 skip=$((LOG+1)) count=4095 2>/dev/null | tr -d '\0'
+  It also goes to 10.0.0.1:7778 as UDP once the network is up.
 USAGE
         return 0 ;;
       *) die "kiln t420: unknown argument $arg (try --help)" ;;
@@ -3561,6 +3565,7 @@ EOF
     # the Clock's digits at 40; the VT Terminal's Liberation Mono at 14) are rasterized here at each of the four quarter-pixel positions
     # glass caches a glyph at (glass/text.lisp %GLYPH-ENTRY), and the cache ships in the core.
     echo '(let ((n 0)) (flet ((warm (chars size font) (dotimes (i (length chars)) (let ((gid (scribe:font-glyph-index font (char-code (char chars i))))) (dotimes (q 4) (glass::%glyph-entry font gid size q) (incf n)))))) (let ((ascii (make-string 95))) (dotimes (i 95) (setf (char ascii i) (code-char (+ 32 i)))) (dolist (sz (list 12 13 14 16 17)) (warm ascii sz (glass:default-font))) (dolist (sz (list 12 13 14 16 17 22)) (warm ascii sz (glass:default-font t))) (warm "0123456789:" 40 (glass:default-font)) (warm ascii 14 *kiln-mono-font*))) n)'
+    echo "(progn (setq *t4-log-lba* $log_lba *t4-cmd-lba* $((log_lba + 2560))) :log-lba)"
     echo '(progn (glass.desk:make-desk (glass:make-framebuffer 64 48)) (setq modus-int::*core-restart-hook* (quote kiln-t420-main)) :desk)'
     # EVERYTHING NATIVE BEFORE THE SAVE: the tier translates a function at its first call,
     # so whatever the install did not call -- the Terminal, each Settings pane, the players --
@@ -3584,12 +3589,12 @@ EOF
   kill "$srv" 2>/dev/null
 
   # THE DISK
-  # THE LOG REGION: the desk writes what its console prints to the disk's sectors 128000-132095
+  # THE LOG REGION: the desk writes what its console prints to 4096 sectors at --log-lba
   # (vessel src/t420.lisp *T4-LOG-LBA*): a PC has no serial port to read.  The disk is padded to
   # hold them, after MODUS.BIN, which must end first.
   local bin_sec=$(( ($(stat -c %s "$out/modus-desk.bin") + 511) / 512 + 15 ))
-  (( bin_sec < 128000 )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at 128000"
-  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors 132096 > "$out/disk.log" 2>&1) \
+  (( bin_sec < log_lba )) || die "kiln t420: MODUS.BIN reaches sector $bin_sec, over the log at $log_lba (--log-lba)"
+  (cd "$modus" && sh scripts/pcboot.sh "$out_img" "$out/modus-desk.bin" --sectors $((log_lba + 4096)) > "$out/disk.log" 2>&1) \
     || die "kiln t420: writing the disk failed (see $out/disk.log)"
   [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold,mono}
   note "t420: $out_img ($(du -h "$out_img" | cut -f1)) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"

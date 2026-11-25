@@ -3859,6 +3859,10 @@ EOF
   } > "$out/forms.txt"
   ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &
   local srv=$!
+  # A PORT IN USE: the server exits at once, and the guest then fetches from whatever else holds
+  # the port -- another build's server answered with other files and the desk never arrived.
+  sleep 1
+  kill -0 "$srv" 2>/dev/null || die "kiln t420: port $port is in use (see $out/http.log); pick another with --port=N"
   note "t420: installing the desk into the image under QEMU (~5 min)"
   # The native tier runs during the install (CORE_APPEND empty: no SAVELATER) and the core
   # carries its code area: the install is faster native, and the bare i386 interpreter has
@@ -3873,6 +3877,8 @@ EOF
       die "kiln t420: building the core failed (see $out/core.log and $out/core-serial.log)"
     fi
     kill "$srv" 2>/dev/null || true      # (it may have exited: a port already in use)
+    grep -aq ':DESK' "$out/core-serial.log" \
+      || die "kiln t420: the install did not reach the desk (see $out/core-serial.log); no disk written"
     # THE DISK: GPT, the EFI System Partition (120 MB) with BOOTX64.EFI and CORE.BIN, then the
     # log region (4096 sectors at --log-lba), which must start past the partition
     (( log_lba > 247808 )) || die "kiln t420: --log-lba=$log_lba is inside the EFI System Partition (it ends at sector 247808)"
@@ -3890,6 +3896,8 @@ EOF
   fi
   kill "$srv" 2>/dev/null
 
+  grep -aq ':DESK' "$out/core-serial.log" \
+    || die "kiln t420: the install did not reach the desk (see $out/core-serial.log); no disk written"
   # THE DISK
   # THE LOG REGION: the desk writes what its console prints to 4096 sectors at --log-lba
   # (vessel src/t420.lisp *T4-LOG-LBA*): a PC has no serial port to read.  The disk is padded to

@@ -3622,7 +3622,7 @@ cmd_t420() {
   # 16 KB pieces each checked against an FNV-1a manifest), set the core's restart hook to the
   # desk and save the core (modus scripts/dos386-core.py).  Then write a disk that boots it
   # (modus scripts/pcboot.sh): no DOS, no GRUB, the core in MODUS.BIN.
-  local out_img="" workspace=0 port=8099 keep=0 log_lba=262144
+  local out_img="" workspace=0 port=8099 keep=0 log_lba=262144 x64=0
   while [[ $# -gt 0 ]]; do
     local arg=$1 val=""
     [[ $arg == *=* ]] && { val=${arg#*=}; arg=${arg%%=*}; }
@@ -3632,9 +3632,10 @@ cmd_t420() {
       --port) port=${val:?--port=N} ;;
       --keep) keep=1 ;;
       --log-lba) log_lba=${val:?--log-lba=SECTOR} ;;
+      --x64) x64=1 ;;
       -h|--help)
         cat >&2 <<'USAGE'
-kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep] [--log-lba=SECTOR]
+kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep] [--log-lba=SECTOR] [--x64]
   — the desk on a PC with a BIOS (or a UEFI machine's CSM), 32-bit bare-metal modus:
     write OUT.img to a USB stick or SD card and boot it.  Built and tested on a ThinkPad T420.
 
@@ -3646,6 +3647,10 @@ kiln t420 --sd-image=OUT.img [--workspace] [--port=N] [--keep] [--log-lba=SECTOR
   --keep              keep the build directory ($KILN_STATE/t420)
   --log-lba=SECTOR    where the desk's log (4096 sectors, the command sectors 2560 in) goes
                       (default 262144, 128 MB in: MODUS.BIN must end before it)
+  --x64               64-bit modus booted by UEFI instead: a GPT disk whose EFI System
+                      Partition holds the image (BOOTX64.EFI) and the saved core (CORE.BIN).
+                      No BIOS on the machine, so the desk drives its boot disk itself
+                      (vessel src/t420-x64.lisp).  Needs OVMF, sfdisk and mtools to build.
 
   KILN_MODUS / KILN_VESSEL name a modus / vessel checkout to build from instead.
   Takes ~10 minutes: the image build (~4), the install under QEMU (~5), the disk.
@@ -3665,6 +3670,11 @@ USAGE
   local -a miss=(); local c
   have_sbcl || miss+=("sbcl")
   for c in git python3 qemu-system-i386 as ld cc; do command -v "$c" >/dev/null 2>&1 || miss+=("$c"); done
+  if [[ $x64 == 1 ]]; then
+    for c in qemu-system-x86_64 mformat mcopy; do command -v "$c" >/dev/null 2>&1 || miss+=("$c"); done
+    [[ -x /sbin/sfdisk ]] || miss+=("sfdisk")
+    [[ -f ${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE.fd} ]] || miss+=("OVMF (ovmf)")
+  fi
   [[ ${#miss[@]} -eq 0 ]] || die "kiln t420: missing ${miss[*]}.
   Debian/Ubuntu:  sudo apt install sbcl git python3 qemu-system-x86 binutils gcc"
   if [[ $workspace == 0 ]]; then
@@ -3731,6 +3741,8 @@ EOF
   cp "$vessel/src/t420-settings.lisp" "$sys/src/t420-settings.lisp"
   cp "$vessel/src/app.lisp" "$sys/src/app.lisp"
   cp "$vessel/src/t420-desk.lisp" "$sys/src/t420-desk.lisp"
+  # --x64: the UEFI platform layer, LAST (it replaces i386 calls of t420.lisp and t420-desk.lisp)
+  [[ $x64 == 1 ]] && cp "$vessel/src/t420-x64.lisp" "$sys/src/t420-x64.lisp"
   cat > "$sys/t420-desk.asd" <<'EOF'
 ;;;; kiln t420's desk, as ONE system in load order (the image installs one tarball).
 (asdf:defsystem :t420-desk
@@ -3771,6 +3783,7 @@ EOF
      (:file "glass-term") (:file "zero-term")
      (:file "t420-settings") (:file "t420-desk")))))
 EOF
+  [[ $x64 == 1 ]] && sed -i 's/(:file "t420-desk")))))/(:file "t420-desk") (:file "t420-x64")))))/' "$sys/t420-desk.asd"
   (cd "$out" && tar cf t420-desk.tar t420-desk)
   cp "$KILN_ROOT/scribe/fonts/LiberationSans-Regular.ttf" "$KILN_ROOT/scribe/fonts/LiberationSans-Bold.ttf" \
      "$KILN_ROOT/scribe/fonts/LiberationMono-Regular.ttf" "$out/"
@@ -3793,11 +3806,21 @@ EOF
 
   # THE IMAGE: modus's bare i386 CL image, the network built in and not started (the install
   # runs it), the native tier (it stays off while the core is built: SAVELATER)
+  if [[ $x64 == 1 ]]; then
+    # --x64: the bare x86-64 UEFI image, the same network built in and not started, the runtime
+    # JIT on (MODUS_X64_JIT: runtime DEFUNs go native, and the core carries the code)
+    note "t420: building the x64 UEFI image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
+    (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_NET_NOFETCH=1 MODUS_VESSEL="$vessel" MODUS_X64_JIT=1 \
+       MODUS_CL_REPL_OUT="$out/modus.efi" \
+       sbcl --dynamic-space-size 12288 --script mvm/build-uefi-cl-repl.lisp > "$out/image-build.log" 2>&1) \
+      || die "kiln t420: image build failed (see $out/image-build.log)"
+  else
   note "t420: building the i386 image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
   (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_NET_NOFETCH=1 MODUS_VESSEL="$vessel" MODUS_I386_JIT=1 \
      MODUS_I386_COLD_KEEP=mvm/i386-keep.txt MODUS_I386_FP=x87 MODUS_CL_REPL_OUT="$out/modus.bin" \
      sbcl --dynamic-space-size 12288 --script mvm/build-i386-cl-repl.lisp > "$out/image-build.log" 2>&1) \
     || die "kiln t420: image build failed (see $out/image-build.log)"
+  fi
 
   # THE CORE: the image installs the desk from here, then saves itself
   local base="http://10.0.2.2:$port/"
@@ -3825,7 +3848,12 @@ EOF
     # paused the desk the first time it was used.  The core carries the code area, so
     # translating every module here ships it hot.  (The area is a sixteenth of the RAM, up to
     # ~103 MB: boot-i386-cl.lisp +I386-CL-JIT-MAX+; 64 MB under this 1 GB QEMU.)
-    echo '(let ((n (modus-int::%jit-eager-all))) (list :jit-eager n modus-int::*n386-translated* (- modus-int::*n386-ptr* #x12000000) modus-int::*n386-why* (length modus-int::*n386-refused*)))'
+    if [[ $x64 == 1 ]]; then
+      echo '(list :jit-eager (modus-int::%jit-eager-all))'
+      echo '(save-and-die nil)'
+    else
+      echo '(let ((n (modus-int::%jit-eager-all))) (list :jit-eager n modus-int::*n386-translated* (- modus-int::*n386-ptr* #x12000000) modus-int::*n386-why* (length modus-int::*n386-refused*)))'
+    fi
   } > "$out/forms.txt"
   ( cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$out/http.log" 2>&1 &
   local srv=$!
@@ -3833,6 +3861,25 @@ EOF
   # The native tier runs during the install (CORE_APPEND empty: no SAVELATER) and the core
   # carries its code area: the install is faster native, and the bare i386 interpreter has
   # a bignum fault on this workload (FNV over the pieces) that the native code does not.
+  if [[ $x64 == 1 ]]; then
+    # the core is RAM the image saved itself into (SAVE-AND-DIE, the last form), read out over
+    # QMP; it boots from the ESP as \CORE.BIN
+    if ! (cd "$modus" && CORE_FORMS="$out/forms.txt" CORE_LOG="$out/core-serial.log" QEMU_MEM=1024 QEMU_CPU=SandyBridge \
+            QEMU_EXTRA="-device e1000,netdev=n0 -netdev user,id=n0" \
+            python3 scripts/uefi-core.py "$out/modus.efi" "$out/modus-desk.core" > "$out/core.log" 2>&1); then
+      kill "$srv" 2>/dev/null || true
+      die "kiln t420: building the core failed (see $out/core.log and $out/core-serial.log)"
+    fi
+    kill "$srv" 2>/dev/null || true      # (it may have exited: a port already in use)
+    # THE DISK: GPT, the EFI System Partition (120 MB) with BOOTX64.EFI and CORE.BIN, then the
+    # log region (4096 sectors at --log-lba), which must start past the partition
+    (( log_lba > 247808 )) || die "kiln t420: --log-lba=$log_lba is inside the EFI System Partition (it ends at sector 247808)"
+    (cd "$modus" && sh scripts/uefi-disk.sh "$out/modus.efi" "$out/modus-desk.core" "$out_img" $((log_lba + 4096)) > "$out/disk.log" 2>&1) \
+      || die "kiln t420: writing the disk failed (see $out/disk.log)"
+    [[ $keep == 1 ]] || rm -rf "$sys" "$out"/{tar,regular,bold,mono}
+    note "t420: $out_img ($(du -h --apparent-size "$out_img" | cut -f1), UEFI x64) -- write it with: sudo dd if=$out_img of=/dev/sdX bs=4M conv=fsync status=progress"
+    return 0
+  fi
   if ! (cd "$modus" && CORE_APPEND="" CORE_FORMS="$out/forms.txt" CORE_LOG="$out/core-serial.log" QEMU_MEM=1024 QEMU_CPU=SandyBridge \
           QEMU_EXTRA="-device e1000,netdev=n0 -netdev user,id=n0" \
           python3 scripts/dos386-core.py "$out/modus.bin" "$out/modus-desk.bin" > "$out/core.log" 2>&1); then

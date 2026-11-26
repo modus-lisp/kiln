@@ -162,6 +162,7 @@ if set); `--ssh` clones over SSH, `--jobs=N` sets the parallelism (8).
 | `kiln modus-rfb PORT` | glass's RFB **server**, on modus, on a port you name |
 | `kiln eval '(form)'` | evaluate in the **running** desktop, live |
 | `kiln test` | glass's RFB self-test in a throwaway container |
+| `kiln image TARGET` | **bare-metal** modus: build the kernel, boot it under QEMU, check a probe ([below](#the-attestable-image)) |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
 | `kiln sync [DIR]` | every org repo beside kiln: clone what's missing, fast-forward what's safe |
 | `kiln clean` | remove the container and the image |
@@ -212,7 +213,16 @@ no Docker and no nitro-cli
 ([modus/docs/nitro-enclaves.md](https://github.com/modus-lisp/modus/blob/main/docs/nitro-enclaves.md)).
 It runs on this machine,
 not in the container, because it needs SBCL to build, QEMU to boot, and the
-workspace checkouts to archive packages from.
+workspace checkouts to archive packages from (`bin/kiln sync`).  On Debian or
+Ubuntu, x64-uefi needs `sbcl qemu-system-x86 ovmf mtools python3`; no KVM is
+required — under TCG the whole run takes about five minutes.
+
+**This is also the way to run bare-metal modus at all**, attestation or not:
+`--with` is optional, and `kiln image x64-uefi --probe='(expt 2 100)' --expect=1267650600228229401496703205376`
+builds the real CL image, boots it, restores a core and checks the answer.
+The `generic.efi` it leaves behind boots to a serial REPL with
+`modus/scripts/run-uefi-cl.sh generic.efi`.  (modus's own `scripts/run.sh
+x64-repl` is the legacy mini-Lisp, not this.)
 
 ```sh
 kiln image x64-uefi --with=alexandria --probe='(alexandria:iota 3)' --expect='(0 1 2)'

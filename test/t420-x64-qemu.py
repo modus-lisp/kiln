@@ -158,16 +158,30 @@ try:
     check('channel', a == '42', 'answer %r' % a)
     s = channel('(list *t4-w* *t4-h*)')
     check('screen', s is not None and s.startswith('(') and s != '(0 0)', 'GOP %s' % s)
-    c1 = region(screen(), 40, 60, 300, 170); time.sleep(3); c2 = region(screen(), 40, 60, 300, 170)
+    c1 = region(screen(), 40, 60, 300, 170); end = time.time() + 20
+    while True:                                          # a second's tick, given 20 s on a busy host
+        time.sleep(2); c2 = region(screen(), 40, 60, 300, 170)
+        if c2 != c1 or time.time() > end: break
     check('clock', c1 != c2, 'the Clock region changed' if c1 != c2 else 'the Clock region did not change')
     before = screen()
     click(400, 400, 'right'); time.sleep(2)
     after = screen()
     menu = region(before, 400, 400, 510, 540) != region(after, 400, 400, 510, 540)
     check('menu', menu, 'the Workspace menu' if menu else 'nothing appeared at the right click')
-    click(438, 470); time.sleep(5)                       # Terminal, the menu's third item
-    type_text('(setq *smoke* (* 6 7))'); time.sleep(4)
-    t = channel('*smoke*')
+    # Terminal, the menu's third item.  Polled, not slept: on a loaded host the window took
+    # 6 s to appear and keys typed before it has the focus go nowhere.
+    w0 = region(screen(), 300, 200, 900, 700)
+    click(438, 470)
+    end = time.time() + 60
+    while time.time() < end and region(screen(), 300, 200, 900, 700) == w0:
+        time.sleep(2)
+    time.sleep(3)
+    type_text('(setq *smoke* (* 6 7))')
+    end = time.time() + 60; t = None
+    while time.time() < end:
+        t = channel('*smoke*')
+        if t == '42': break
+        time.sleep(3)
     check('terminal', t == '42', '*SMOKE* read back as %r' % t)
 except Stop:
     pass

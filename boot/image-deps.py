@@ -117,7 +117,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True); ap.add_argument("--root", default=os.environ.get("KILN_ROOT", os.path.expanduser("~/modus-lisp")))
     ap.add_argument("--lock", default=None); ap.add_argument("--archives", action="append", default=[])
-    ap.add_argument("--strict", action="store_true"); ap.add_argument("names", nargs="+")
+    ap.add_argument("--strict", action="store_true"); ap.add_argument("names", nargs="*")
     a = ap.parse_args()
     archives = a.archives + glob.glob(os.path.expanduser("~/quicklisp/dists/*/archives"))
     pins = read_lock(a.lock); os.makedirs(a.out, exist_ok=True)

@@ -3812,8 +3812,10 @@ EOF
     # --x64: the bare x86-64 UEFI image, the same network built in and not started, the runtime
     # JIT on (MODUS_X64_JIT: runtime DEFUNs go native, and the core carries the code)
     note "t420: building the x64 UEFI image from $modus ($(git -C "$modus" rev-parse --short HEAD 2>/dev/null))"
+    # MODUS_X64_BIG_HEAP: two ~216 MB semispaces instead of 104 MB (the browser's libraries did not
+    # fit), the saved core at 0x38000000 -- so the machine needs ~1.1 GB (a T420 has 2 GB or more)
     (cd "$modus" && MODUS_NET_BUILD=1 MODUS_NET_NOAUTO=1 MODUS_NET_NOFETCH=1 MODUS_VESSEL="$vessel" MODUS_X64_JIT=1 \
-       MODUS_CL_REPL_OUT="$out/modus.efi" \
+       MODUS_X64_BIG_HEAP=1 MODUS_CL_REPL_OUT="$out/modus.efi" \
        sbcl --dynamic-space-size 12288 --script mvm/build-uefi-cl-repl.lisp > "$out/image-build.log" 2>&1) \
       || die "kiln t420: image build failed (see $out/image-build.log)"
   else
@@ -3870,7 +3872,7 @@ EOF
   if [[ $x64 == 1 ]]; then
     # the core is RAM the image saved itself into (SAVE-AND-DIE, the last form), read out over
     # QMP; it boots from the ESP as \CORE.BIN
-    if ! (cd "$modus" && CORE_FORMS="$out/forms.txt" CORE_LOG="$out/core-serial.log" QEMU_MEM=1024 QEMU_CPU=SandyBridge \
+    if ! (cd "$modus" && CORE_FORMS="$out/forms.txt" CORE_LOG="$out/core-serial.log" QEMU_MEM=2048 QEMU_CPU=SandyBridge CORE_BASE=0x38000000 \
             QEMU_EXTRA="-device e1000,netdev=n0 -netdev user,id=n0" \
             python3 scripts/uefi-core.py "$out/modus.efi" "$out/modus-desk.core" > "$out/core.log" 2>&1); then
       kill "$srv" 2>/dev/null || true

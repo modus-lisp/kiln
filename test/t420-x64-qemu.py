@@ -21,7 +21,7 @@ screendump).  The checks:
 
 Exit 0 when every check passes.  The desk's log region must be where the disk's core says
 (kiln t420's --log-lba; this script's default is kiln's, 262144).  Needs qemu-system-x86_64 and
-OVMF (OVMF_CODE / OVMF_VARS override the Debian paths).  QEMU_MEM (MB, default 1024) and
+OVMF (OVMF_CODE / OVMF_VARS override the Debian paths).  QEMU_MEM (MB, default 2048: the desk's big heap puts its core at 0x38000000) and
 QEMU_CPU (default SandyBridge, the T420's) vary the machine; SMOKE_IDLE_S (default 600) bounds
 the wait for the desk.  Scratch files go beside DISK.
 """
@@ -47,7 +47,7 @@ with open(usb, 'wb') as f:                      # sparse, a partition table's si
 shutil.copy(OVMF_VARS, os.path.join(work, 'vars.fd'))
 sock = os.path.join(work, 'qmp.sock')
 qemu = subprocess.Popen(
-    ['qemu-system-x86_64', '-m', os.environ.get('QEMU_MEM', '1024'), '-cpu', os.environ.get('QEMU_CPU', 'SandyBridge'),
+    ['qemu-system-x86_64', '-m', os.environ.get('QEMU_MEM', '2048'), '-cpu', os.environ.get('QEMU_CPU', 'SandyBridge'),
      '-drive', 'if=pflash,format=raw,readonly=on,file=' + OVMF_CODE,
      '-drive', 'if=pflash,format=raw,file=' + os.path.join(work, 'vars.fd'),
      '-drive', 'file=%s,format=raw,snapshot=on' % os.path.abspath(DISK),

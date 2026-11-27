@@ -18,6 +18,13 @@ screendump).  The checks:
   menu     a right click on the desktop changes the screen (the Workspace menu)
   terminal Terminal opened from that menu, (setq *smoke* (* 6 7)) typed and entered, and the
            channel then reads *SMOKE* as 42: keyboard, Terminal and evaluation together
+  usbbind  a USB keyboard and mouse on the disk's own EHCI (the rig's Zero is a disk, a keyboard
+           and a mouse) are bound by the desk's disk driver, beside the disk, and took reports:
+           QEMU sends its input to the USB devices once they are there, so the menu and terminal
+           checks above went that way
+  usbmouse a move of (+37, -23) moves the desk's pointer by exactly that, through the USB mouse
+  ps2mouse then the USB keyboard and mouse are unplugged and the same move goes through PS/2
+  ps2kbd   (setq *ps2* (* 7 6)) typed on the PS/2 keyboard into the Terminal reads back as 42
 
 Exit 0 when every check passes.  The desk's log region must be where the disk's core says
 (kiln t420's --log-lba; this script's default is kiln's, 262144).  Needs qemu-system-x86_64 and
@@ -56,6 +63,7 @@ qemu = subprocess.Popen(
      '-device', 'ich9-usb-ehci1,id=ehci,addr=1a.0',
      '-drive', 'if=none,id=ud,file=%s,format=raw' % usb,
      '-device', 'usb-storage,bus=ehci.0,drive=ud',
+     '-device', 'usb-kbd,bus=ehci.0,id=ukbd', '-device', 'usb-mouse,bus=ehci.0,id=umouse',
      '-qmp', 'unix:%s,server,nowait' % sock],
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -183,6 +191,39 @@ try:
         if t == '42': break
         time.sleep(3)
     check('terminal', t == '42', '*SMOKE* read back as %r' % t)
+    b = channel('(let ((h (getf *t4d* :hid))) (list (and h (aref h 0) t) (and h (aref h 1) t) (getf *t4d* :hid-reports)))')
+    bound = b is not None and b.startswith('(T T #(') and '#(0 ' not in b and ' 0)' not in b
+    check('usbbind', bound, 'keyboard, mouse bound on the disk bus; reports taken: %s' % b)
+    def pos():
+        p = channel('(list *t4-px* *t4-py*)')
+        try:
+            return tuple(map(int, p.strip('()').split()))
+        except (AttributeError, ValueError):
+            return None
+    def exact_move(name):
+        p0 = pos()
+        qmp('input-send-event', {'events': [{'type': 'rel', 'data': {'axis': 'x', 'value': 37}},
+                                            {'type': 'rel', 'data': {'axis': 'y', 'value': -23}}]})
+        time.sleep(2)
+        p1 = pos()
+        ok = p0 is not None and p1 is not None and (p1[0] - p0[0], p1[1] - p0[1]) == (37, -23)
+        check(name, ok, 'pointer %s -> %s' % (p0, p1))
+    r0 = channel('(aref (getf *t4d* :hid-reports) 1)')
+    exact_move('usbmouse')
+    r1 = channel('(aref (getf *t4d* :hid-reports) 1)')
+    if r0 == r1:
+        check('usbmouse', False, 'the USB mouse took no report for it (%s -> %s)' % (r0, r1))
+    for d in ('umouse', 'ukbd'):
+        qmp('device_del', {'id': d})
+    time.sleep(2)
+    exact_move('ps2mouse')
+    type_text('(setq *ps2* (* 7 6))')
+    end = time.time() + 60; u = None
+    while time.time() < end:
+        u = channel('*ps2*')
+        if u == '42': break
+        time.sleep(3)
+    check('ps2kbd', u == '42', '*PS2* read back as %r' % u)
 except Stop:
     pass
 finally:

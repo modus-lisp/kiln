@@ -165,6 +165,7 @@ if set); `--ssh` clones over SSH, `--jobs=N` sets the parallelism (8).
 | `kiln image TARGET` | **bare-metal** modus: build the kernel, boot it under QEMU, check a probe ([below](#the-attestable-image)) |
 | `kiln lock` | refresh `repos.lock` from the org's live refs |
 | `kiln sync [DIR]` | every org repo beside kiln: clone what's missing, fast-forward what's safe |
+| `modus.exe --kiln sync` / `windows` | the same on Windows, with nothing else installed ([below](#on-windows-with-nothing-but-modusexe)) |
 | `kiln clean` | remove the container and the image |
 
 The engine is auto-detected — Apple's `container` on macOS, else docker, else
@@ -386,6 +387,39 @@ the desktop; `--full` keeps them. The bundle's `kiln-run` builds its core *in th
 bundle*, from the bundle's own sources, so it works wherever you unpack it — the
 wallpaper and fonts resolve to the copy sitting next to them. `repos.lock` travels
 with it, recording the commit each repo came from.
+
+## On Windows, with nothing but modus.exe
+
+On Windows you don't need git, bash, SBCL or administrator rights. All you need is the
+dist release's `modus-kiln-windows-x64.exe`: a modus builder with kiln, and kiln's
+git (cairn and what it loads), packed inside it as source. Run it from the directory
+that is to become the workspace:
+
+```bat
+mkdir modus-lisp & cd modus-lisp
+modus-kiln-windows-x64.exe --kiln sync      &REM every repo in repos.lock, cloned with cairn
+modus-kiln-windows-x64.exe --kiln windows   &REM sync, build modus.exe from the checkout, install
+modus-kiln-windows-x64.exe --kiln help
+```
+
+`sync` clones whatever is missing and fast-forwards whatever can be fast-forwarded
+safely. It leaves alone anything with uncommitted changes, a detached HEAD or a diverged branch.
+`windows` syncs the workspace, then builds modus.exe from the workspace's modus checkout
+with the executable it runs in, in two stages. It installs the result as
+`%LOCALAPPDATA%\Programs\Vessel\vessel.exe` and puts Hello 3D, Storybook and chirp in
+the Start menu. `--no-sync`, `--no-build` and `--dest=DIR` change those steps.
+`--workspace=DIR`, given before the command, names a workspace other than the current
+directory.
+
+The first run unpacks the sources into `%LOCALAPPDATA%\modus\kiln\` and compiles cairn
+once. Later runs start from modus's FASL cache. `boot/bundle.lisp` builds the
+executable from any modus builder:
+
+```sh
+modus --script kiln/boot/bundle.lisp modus-builder-windows-x64.exe modus-kiln-windows-x64.exe
+```
+
+The bundler sorts the pack, so SBCL and modus make the same bytes from the same workspace.
 
 ## The fences
 

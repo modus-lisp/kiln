@@ -1,8 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
-REM  kiln.cmd -- kiln on Windows.
+REM  kiln.cmd -- kiln's desktop viewer on Windows.
 REM
-REM  Windows is a CLIENT here, not a host: the container half is Linux (and
+REM  To set up a workspace and build modus on Windows, use the dist release's
+REM  modus-kiln-windows-x64.exe instead: `--kiln sync' and `--kiln windows' need
+REM  nothing else installed (README, "On Windows, with nothing but modus.exe").
+REM
+REM  For the desktop, Windows is a CLIENT, not a host: the container half is Linux (and
 REM  Apple's container at that), and `kiln local' would need McCLIM plus a pty
 REM  that Windows has no equivalent of.  What Windows can do is look at a desktop
 REM  running somewhere else, which is `view', and that is what this supports.
